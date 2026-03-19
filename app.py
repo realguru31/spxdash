@@ -1,14 +1,6 @@
 """
 app.py — SPX Gamma Exposure Dashboard
 Replicates SPX_Gamma_Dashboard_v1_3b.xlsm with Barchart data.
-
-Sections:
-  1. SPX Price Summary
-  2. Key Levels (Call Wall, Put Wall, COI, GEX levels, transitions)
-  3. Buying Pressure Gauges (from Excel AQ/AR — Call/Put needle gauges)
-  4. Aggregated Metrics (PCR, totals, gamma dominance)
-  5. GEX Profile Charts
-  6. Options Chain Table
 """
 
 import streamlit as st
@@ -19,13 +11,10 @@ from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import logging
 
-from data_fetcher import get_spx_quote, get_options_chain, get_active_source
+from data_fetcher import get_spx_quote, get_options_chain, get_active_source, get_expirations
 from calculations import compute_chain_metrics, compute_dashboard_levels, filter_chain_for_display
-from utils import check_password, get_ny_time, get_ny_datetime, is_market_hours, get_upcoming_expirations
+from utils import check_password, get_ny_time, get_ny_datetime, is_market_hours
 
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
 st.set_page_config(
     page_title="SPX Gamma Dashboard",
     page_icon="📊",
@@ -37,10 +26,16 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Custom CSS
+# CSS — hide Streamlit banner/footer + custom styling
 # ---------------------------------------------------------------------------
 st.markdown("""
 <style>
+    #MainMenu {visibility: hidden;}
+    header {visibility: hidden;}
+    footer {visibility: hidden;}
+    [data-testid="stHeader"] {display: none;}
+    [data-testid="stToolbar"] {display: none;}
+    .block-container { padding-top: 1rem; }
     .stMetric { background: #0e1117; border: 1px solid #262730; border-radius: 8px; padding: 12px; }
     .level-card { background: #1a1a2e; border-radius: 8px; padding: 10px 14px; margin: 4px 0;
                   border-left: 4px solid; }
@@ -68,17 +63,46 @@ if not check_password():
     st.stop()
 
 # ---------------------------------------------------------------------------
-# Sidebar controls
+# Sidebar
 # ---------------------------------------------------------------------------
 with st.sidebar:
-    st.markdown("## ⚙️ Controls")
+    st.markdown("## ⚡ SPX Gamma")
 
-    exp_presets = get_upcoming_expirations()
-    exp_labels = list(exp_presets.keys())
-    selected_label = st.selectbox("Expiration", exp_labels, index=0)
-    selected_date = exp_presets[selected_label]
-    exp_str = selected_date.strftime("%Y-%m-%d")
-    st.caption(f"📅 {exp_str}")
+    # Get ACTUAL available expiry dates from Barchart
+    available_expiries = get_expirations()
+
+    if available_expiries:
+        # Build labels: "2026-03-19 (0DTE)" etc
+        try:
+            import pytz
+            today = datetime.now(pytz.timezone("US/Eastern")).date()
+        except Exception:
+            today = datetime.now().date()
+
+        def _exp_label(d):
+            dt = datetime.strptime(d, "%Y-%m-%d").date()
+            diff = (dt - today).days
+            if diff == 0:
+                return f"{d} (0DTE)"
+            elif diff == 1:
+                return f"{d} (1DTE)"
+            elif dt.weekday() == 4:
+                return f"{d} (Fri)"
+            else:
+                return f"{d} ({diff}DTE)"
+
+        # Show up to 15 expiries
+        display_expiries = available_expiries[:15]
+        selected_exp = st.selectbox(
+            "Expiration",
+            display_expiries,
+            format_func=_exp_label,
+            index=0,
+        )
+        exp_str = selected_exp
+    else:
+        st.warning("No expiry dates found")
+        exp_str = datetime.now().strftime("%Y-%m-%d")
 
     st.divider()
 
@@ -100,8 +124,19 @@ with st.sidebar:
         st.rerun()
 
     st.divider()
-    st.caption(f"🕐 {get_ny_time()}")
-    st.caption("Market " + ("🟢 OPEN" if is_market_hours() else "🔴 CLOSED"))
+    et_now = get_ny_datetime()
+    st.markdown(f"**{'🟢 MARKET OPEN' if is_market_hours() else '🔴 MARKET CLOSED'}**")
+    st.markdown(f"**ET:** {et_now.strftime('%H:%M:%S')}")
+
+    # Expiry diagnostics
+    with st.expander("📅 Available Expiries", expanded=False):
+        if available_expiries:
+            for d in available_expiries[:20]:
+                st.text(f"  {_exp_label(d)}")
+            if len(available_expiries) > 20:
+                st.text(f"  … +{len(available_expiries) - 20} more")
+        else:
+            st.text("  None found")
 
 # ---------------------------------------------------------------------------
 # Auto-refresh
@@ -122,19 +157,19 @@ def load_data(exp_date: str, _n_above: int = 20, _n_below: int = 20, _ts: int = 
 
     chain = get_options_chain(exp_date)
     if chain is None or chain.empty:
-        return quote, pd.DataFrame(), {}, pd.DataFrame(), get_active_source()
+        return quote, pd.DataFrame(), {}, pd.DataFrame()
 
     chain = compute_chain_metrics(chain, spot)
     levels = compute_dashboard_levels(chain, spot)
     display = filter_chain_for_display(chain, spot, _n_above, _n_below)
 
-    return quote, chain, levels, display, get_active_source()
+    return quote, chain, levels, display
 
 
 ts = int(datetime.now().timestamp() // 55)
 
-with st.spinner("Fetching SPX options data…"):
-    quote, full_chain, levels, display_chain, data_source = load_data(
+with st.spinner("Fetching…"):
+    quote, full_chain, levels, display_chain = load_data(
         exp_str, num_strikes_above, num_strikes_below, ts
     )
 
@@ -144,46 +179,59 @@ if display_chain.empty:
     st.error("❌ Could not fetch options chain.")
     st.markdown("""
 **Troubleshooting:**
-1. **Market closed / weekend?** — 0DTE doesn't exist outside market hours. Try "Tomorrow" or "Friday".
-2. **Barchart rate-limited?** — Wait 60s and click Refresh.
-3. **Check logs** — Manage app → Logs for detailed errors.
+1. **Market closed / weekend?** — 0DTE chain is empty after hours. Select tomorrow's expiry.
+2. **Rate-limited?** — Wait 60s and click Refresh.
+3. **Check logs** — Manage app → Logs.
     """)
     with st.expander("🔍 Debug Info"):
         st.json({
             "expiration_requested": exp_str,
             "spot_price": spot,
-            "data_source": data_source,
             "quote": quote,
-            "timestamp": datetime.now().isoformat(),
+            "available_expiries": available_expiries[:10] if available_expiries else [],
         })
     st.stop()
 
-source_label = "🟢 Barchart" if data_source == "barchart" else "⚪ Unknown"
+# ---------------------------------------------------------------------------
+# 1. HEADER
+# ---------------------------------------------------------------------------
+# Determine DTE label
+try:
+    exp_dt = datetime.strptime(exp_str, "%Y-%m-%d").date()
+    import pytz
+    today_date = datetime.now(pytz.timezone("US/Eastern")).date()
+    dte = (exp_dt - today_date).days
+    dte_label = "0DTE" if dte == 0 else f"{dte}DTE"
+except Exception:
+    dte_label = exp_str
 
-# ---------------------------------------------------------------------------
-# 1. SPX PRICE SUMMARY
-# ---------------------------------------------------------------------------
 st.markdown(f"""
 <div class="status-bar">
-    <span class="status-text">SPX Gamma Dashboard — {selected_label} ({exp_str})</span>
-    <span class="status-text">{source_label} &nbsp;•&nbsp; Last update: {get_ny_time()}</span>
+    <span class="status-text">SPX Gamma Dashboard — {dte_label} ({exp_str})</span>
+    <span class="status-text">Last update: {get_ny_time()}</span>
 </div>
 """, unsafe_allow_html=True)
 
-col1, col2, col3, col4, col5, col6 = st.columns(6)
+# Price metrics — fix delta color: use percentChange sign
+pct_chg = quote.get("percentChange", 0)
+net_chg = quote.get("netChange", 0)
+
+col1, col2, col3, col4, col5 = st.columns(5)
 with col1:
-    chg = quote.get("netChange", 0)
-    st.metric("SPX", f"{spot:,.2f}", f"{chg:+.2f} ({quote.get('percentChange', 0):+.2f}%)")
+    # Show net change with correct sign coloring
+    delta_str = f"{net_chg:+.2f} ({pct_chg:+.2f}%)" if net_chg != 0 else f"({pct_chg:+.2f}%)"
+    st.metric("SPX", f"{spot:,.2f}", delta_str, delta_color="normal" if pct_chg >= 0 else "inverse")
 with col2:
     st.metric("ATM Strike", f"{levels.get('centered_spot', 0):,}")
 with col3:
     st.metric("Open", f"{quote.get('openPrice', 0):,.2f}")
 with col4:
-    st.metric("High", f"{quote.get('highPrice', 0):,.2f}")
+    hi = quote.get("highPrice", 0)
+    lo = quote.get("lowPrice", 0)
+    st.metric("High / Low", f"{hi:,.2f} / {lo:,.2f}")
 with col5:
-    st.metric("Low", f"{quote.get('lowPrice', 0):,.2f}")
-with col6:
-    st.metric("Prev Close", f"{quote.get('previousClose', 0):,.2f}")
+    pc = quote.get("previousClose", 0)
+    st.metric("Prev Close", f"{pc:,.2f}" if pc > 0 else "—")
 
 # ---------------------------------------------------------------------------
 # 2. KEY LEVELS + GAMMA REGIME
@@ -222,18 +270,11 @@ with lcol4:
     st.markdown(_level_card("🔶 −Transition (Below)", levels.get("ntrans"), "level-trans"), unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
-# 3. BUYING PRESSURE GAUGES (Excel AQ/AR — Call/Put Needle)
+# 3. BUYING PRESSURE GAUGES
 # ---------------------------------------------------------------------------
-# Excel gauge bands: Red(0-10), Gray(10-25), Green(25-75), Gray(75-90), Red(90-100)
-# Needle = avg buying pressure % near ATM (AO51, AP51)
 st.markdown("---")
 
 def create_bp_gauge(value, title):
-    """
-    Replicate Excel buying pressure gauge.
-    Bands: Red(0-10) Gray(10-25) Green(25-75) Gray(75-90) Red(90-100)
-    0% = all selling, 100% = all buying, 50% = neutral
-    """
     fig = go.Figure(go.Indicator(
         mode="gauge+number",
         value=value,
@@ -247,11 +288,11 @@ def create_bp_gauge(value, title):
             "borderwidth": 1,
             "bordercolor": "#333",
             "steps": [
-                {"range": [0, 10], "color": "rgba(255,23,68,0.5)"},      # Red — heavy selling
-                {"range": [10, 25], "color": "rgba(150,150,150,0.3)"},    # Gray
-                {"range": [25, 75], "color": "rgba(0,200,83,0.35)"},      # Green — balanced
-                {"range": [75, 90], "color": "rgba(150,150,150,0.3)"},    # Gray
-                {"range": [90, 100], "color": "rgba(255,23,68,0.5)"},     # Red — heavy buying
+                {"range": [0, 10], "color": "rgba(255,23,68,0.5)"},
+                {"range": [10, 25], "color": "rgba(150,150,150,0.3)"},
+                {"range": [25, 75], "color": "rgba(0,200,83,0.35)"},
+                {"range": [75, 90], "color": "rgba(150,150,150,0.3)"},
+                {"range": [90, 100], "color": "rgba(255,23,68,0.5)"},
             ],
             "threshold": {
                 "line": {"color": "#ffd600", "width": 3},
@@ -261,32 +302,27 @@ def create_bp_gauge(value, title):
         },
     ))
     fig.update_layout(
-        paper_bgcolor="#0e1117",
-        plot_bgcolor="#0e1117",
-        font={"color": "#e0e0e0"},
-        height=220,
+        paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
+        font={"color": "#e0e0e0"}, height=220,
         margin=dict(t=40, b=10, l=30, r=30),
     )
     return fig
 
 
-gcol1, gcol2, gcol3 = st.columns([1, 1, 1])
+gcol1, gcol2, gcol3 = st.columns(3)
+call_bp = levels.get("avg_bp_call", 50)
+put_bp = levels.get("avg_bp_put", 50)
+combo = (call_bp + put_bp) / 2 if (call_bp + put_bp) > 0 else 50
 
 with gcol1:
-    call_bp = levels.get("avg_bp_call", 50)
-    st.plotly_chart(create_bp_gauge(call_bp, "Call Buying Pressure (ATM)"),
-                    use_container_width=True)
-
+    st.plotly_chart(create_bp_gauge(call_bp, "Call BP% (ATM)"), use_container_width=True)
 with gcol2:
-    put_bp = levels.get("avg_bp_put", 50)
-    st.plotly_chart(create_bp_gauge(put_bp, "Put Buying Pressure (ATM)"),
-                    use_container_width=True)
-
+    st.plotly_chart(create_bp_gauge(put_bp, "Put BP% (ATM)"), use_container_width=True)
 with gcol3:
-    # Combined gauge: average of call + put BP
-    combo = (call_bp + put_bp) / 2 if (call_bp + put_bp) > 0 else 50
-    st.plotly_chart(create_bp_gauge(combo, "Combined Buying Pressure"),
-                    use_container_width=True)
+    st.plotly_chart(create_bp_gauge(combo, "Combined BP%"), use_container_width=True)
+
+if not is_market_hours():
+    st.caption("⚠️ Buying pressure gauges require RTH data for accurate readings.")
 
 # ---------------------------------------------------------------------------
 # 4. AGGREGATE METRICS
@@ -326,30 +362,23 @@ fig.add_trace(go.Bar(
     marker_color=colors, name="Net GEX",
     hovertemplate="Strike: %{x}<br>Net GEX: %{y:,}<extra></extra>",
 ), row=1, col=1)
-
 fig.add_vline(x=spot, line_dash="dash", line_color="#ffd600", line_width=1.5,
-              annotation_text=f"SPX {spot:.0f}", row=1, col=1)
+              annotation_text=f"Spot {spot:.0f}", row=1, col=1)
 
 fig.add_trace(go.Bar(
     x=chart_df["strike"], y=chart_df["raw_pos"],
     marker_color="rgba(0,200,83,0.6)", name="+GEX",
-    hovertemplate="Strike: %{x}<br>+GEX: %{y:.4f}<extra></extra>",
 ), row=1, col=2)
 fig.add_trace(go.Bar(
     x=chart_df["strike"], y=chart_df["raw_neg"],
     marker_color="rgba(255,23,68,0.6)", name="−GEX",
-    hovertemplate="Strike: %{x}<br>−GEX: %{y:.4f}<extra></extra>",
 ), row=1, col=2)
 fig.add_vline(x=spot, line_dash="dash", line_color="#ffd600", line_width=1.5, row=1, col=2)
 
 fig.update_layout(
-    height=420,
-    template="plotly_dark",
-    paper_bgcolor="#0e1117",
-    plot_bgcolor="#0e1117",
-    showlegend=False,
-    margin=dict(t=40, b=40, l=50, r=20),
-    font=dict(size=11),
+    height=420, template="plotly_dark",
+    paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
+    showlegend=False, margin=dict(t=40, b=40, l=50, r=20), font=dict(size=11),
 )
 fig.update_xaxes(title_text="Strike", row=1, col=1)
 fig.update_xaxes(title_text="Strike", row=1, col=2)
@@ -361,63 +390,40 @@ st.plotly_chart(fig, use_container_width=True)
 # OI Profile
 with st.expander("📈 Open Interest Profile", expanded=False):
     oi_fig = go.Figure()
-    oi_fig.add_trace(go.Bar(
-        x=chart_df["strike"], y=chart_df["c_oi"],
-        name="Call OI", marker_color="rgba(0,200,83,0.5)",
-    ))
-    oi_fig.add_trace(go.Bar(
-        x=chart_df["strike"], y=chart_df["p_oi"],
-        name="Put OI", marker_color="rgba(255,23,68,0.5)",
-    ))
-    oi_fig.add_vline(x=spot, line_dash="dash", line_color="#ffd600", line_width=1.5,
-                     annotation_text=f"SPX {spot:.0f}")
-    oi_fig.update_layout(
-        title="Open Interest by Strike",
-        barmode="group", height=350,
-        template="plotly_dark", paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
-        margin=dict(t=40, b=40, l=50, r=20), font=dict(size=11),
-    )
+    oi_fig.add_trace(go.Bar(x=chart_df["strike"], y=chart_df["c_oi"],
+                            name="Call OI", marker_color="rgba(0,200,83,0.5)"))
+    oi_fig.add_trace(go.Bar(x=chart_df["strike"], y=chart_df["p_oi"],
+                            name="Put OI", marker_color="rgba(255,23,68,0.5)"))
+    oi_fig.add_vline(x=spot, line_dash="dash", line_color="#ffd600", line_width=1.5)
+    oi_fig.update_layout(title="Open Interest by Strike", barmode="group", height=350,
+                         template="plotly_dark", paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
+                         margin=dict(t=40, b=40, l=50, r=20), font=dict(size=11))
     st.plotly_chart(oi_fig, use_container_width=True)
 
 # Delta-adjusted GEX
 with st.expander("📊 Delta-Adjusted GEX Profile", expanded=False):
     dadj_fig = go.Figure()
-    dadj_fig.add_trace(go.Bar(
-        x=chart_df["strike"], y=chart_df["dadj_pos"],
-        name="+DAdj GEX", marker_color="rgba(0,200,83,0.6)",
-    ))
-    dadj_fig.add_trace(go.Bar(
-        x=chart_df["strike"], y=chart_df["dadj_neg"],
-        name="−DAdj GEX", marker_color="rgba(255,23,68,0.6)",
-    ))
-    dadj_fig.add_vline(x=spot, line_dash="dash", line_color="#ffd600", line_width=1.5,
-                       annotation_text=f"SPX {spot:.0f}")
-    dadj_fig.update_layout(
-        title="Delta-Adjusted GEX by Strike (S²-Normalized × Delta)",
-        barmode="relative", height=380,
-        template="plotly_dark", paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
-        margin=dict(t=40, b=40, l=50, r=20), font=dict(size=11),
-    )
+    dadj_fig.add_trace(go.Bar(x=chart_df["strike"], y=chart_df["dadj_pos"],
+                              name="+DAdj", marker_color="rgba(0,200,83,0.6)"))
+    dadj_fig.add_trace(go.Bar(x=chart_df["strike"], y=chart_df["dadj_neg"],
+                              name="−DAdj", marker_color="rgba(255,23,68,0.6)"))
+    dadj_fig.add_vline(x=spot, line_dash="dash", line_color="#ffd600", line_width=1.5)
+    dadj_fig.update_layout(title="Delta-Adjusted GEX (S² × Delta)", barmode="relative", height=380,
+                           template="plotly_dark", paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
+                           margin=dict(t=40, b=40, l=50, r=20), font=dict(size=11))
     st.plotly_chart(dadj_fig, use_container_width=True)
 
-# Volume Profile
+# Volume
 with st.expander("📊 Volume Profile", expanded=False):
     vol_fig = go.Figure()
-    vol_fig.add_trace(go.Bar(
-        x=chart_df["strike"], y=chart_df["c_volume"],
-        name="Call Volume", marker_color="rgba(0,200,83,0.5)",
-    ))
-    vol_fig.add_trace(go.Bar(
-        x=chart_df["strike"], y=chart_df["p_volume"],
-        name="Put Volume", marker_color="rgba(255,23,68,0.5)",
-    ))
+    vol_fig.add_trace(go.Bar(x=chart_df["strike"], y=chart_df["c_volume"],
+                             name="Call Vol", marker_color="rgba(0,200,83,0.5)"))
+    vol_fig.add_trace(go.Bar(x=chart_df["strike"], y=chart_df["p_volume"],
+                             name="Put Vol", marker_color="rgba(255,23,68,0.5)"))
     vol_fig.add_vline(x=spot, line_dash="dash", line_color="#ffd600", line_width=1.5)
-    vol_fig.update_layout(
-        title="Volume by Strike",
-        barmode="group", height=350,
-        template="plotly_dark", paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
-        margin=dict(t=40, b=40, l=50, r=20), font=dict(size=11),
-    )
+    vol_fig.update_layout(title="Volume by Strike", barmode="group", height=350,
+                          template="plotly_dark", paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
+                          margin=dict(t=40, b=40, l=50, r=20), font=dict(size=11))
     st.plotly_chart(vol_fig, use_container_width=True)
 
 # ---------------------------------------------------------------------------
@@ -443,23 +449,19 @@ if show_puts:
         display_cols += ["bp_put"]
 
 display_cols += ["net_gex", "net_dex", "call_gex", "put_gex", "total_oi", "net_oi", "pct_from_spot"]
-
 display_cols = [c for c in display_cols if c in display_chain.columns]
 table_df = display_chain[display_cols].copy()
 
 col_rename = {
     "strike": "Strike", "c_volume": "C Vol", "c_oi": "C OI", "c_mark": "C Mark",
     "c_bid": "C Bid", "c_ask": "C Ask", "c_voi": "C V/OI",
-    "c_delta": "C Δ", "c_gamma": "C Γ", "c_iv": "C IV",
-    "bp_call": "C BP%",
+    "c_delta": "C Δ", "c_gamma": "C Γ", "c_iv": "C IV", "bp_call": "C BP%",
     "p_mark": "P Mark", "p_bid": "P Bid", "p_ask": "P Ask",
     "p_volume": "P Vol", "p_oi": "P OI", "p_voi": "P V/OI",
-    "p_delta": "P Δ", "p_gamma": "P Γ", "p_iv": "P IV",
-    "bp_put": "P BP%",
+    "p_delta": "P Δ", "p_gamma": "P Γ", "p_iv": "P IV", "bp_put": "P BP%",
     "net_gex": "Net GEX", "net_dex": "Net DEX",
     "call_gex": "C GEX", "put_gex": "P GEX",
-    "total_oi": "Total OI", "net_oi": "Net OI",
-    "pct_from_spot": "% Spot",
+    "total_oi": "Total OI", "net_oi": "Net OI", "pct_from_spot": "% Spot",
 }
 table_df = table_df.rename(columns=col_rename)
 
@@ -506,27 +508,7 @@ styled = (
 st.dataframe(styled, use_container_width=True, height=600)
 
 # ---------------------------------------------------------------------------
-# 7. CSV EXPORT
-# ---------------------------------------------------------------------------
-st.markdown("---")
-ecol1, ecol2 = st.columns(2)
-with ecol1:
-    csv = display_chain.to_csv(index=False)
-    st.download_button("📥 Export Chain (CSV)", csv,
-                       f"spx_gamma_{exp_str}.csv", "text/csv",
-                       use_container_width=True)
-with ecol2:
-    levels_df = pd.DataFrame([levels])
-    st.download_button("📥 Export Levels (CSV)", levels_df.to_csv(index=False),
-                       f"spx_levels_{exp_str}.csv", "text/csv",
-                       use_container_width=True)
-
-# ---------------------------------------------------------------------------
 # Footer
 # ---------------------------------------------------------------------------
 st.markdown("---")
-st.caption(
-    f"SPX Gamma Dashboard v2.0 — Barchart data — "
-    f"Last refresh: {get_ny_time()} — "
-    f"Replicates SPX_Gamma_Dashboard_v1_3b.xlsm logic"
-)
+st.caption(f"SPX Gamma Dashboard — Last refresh: {get_ny_time()}")
