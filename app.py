@@ -1,6 +1,6 @@
 """
 app.py — SPX Gamma Exposure Dashboard
-Replicates SPX_Gamma_Dashboard_v1_3b.xlsm with Barchart data.
+Replicates SPX_Gamma_Dashboard_v1_3b.xlsm
 """
 
 import streamlit as st
@@ -11,7 +11,7 @@ from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import logging
 
-from data_fetcher import get_spx_quote, get_options_chain, get_active_source, get_expirations
+from data_fetcher import get_spx_quote, get_options_chain, get_active_source
 from calculations import compute_chain_metrics, compute_dashboard_levels, filter_chain_for_display
 from utils import check_password, get_ny_time, get_ny_datetime, is_market_hours, get_upcoming_expirations
 
@@ -26,7 +26,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# CSS — hide Streamlit banner/footer
+# CSS
 # ---------------------------------------------------------------------------
 st.markdown("""
 <style>
@@ -57,43 +57,23 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
-# Auth gate
+# Auth
 # ---------------------------------------------------------------------------
 if not check_password():
     st.stop()
 
 # ---------------------------------------------------------------------------
-# Sidebar — 0DTE / Tomorrow / Friday / OPEX + actual available expiries
+# Sidebar — 0DTE / Tomorrow / Friday / OPEX (pass directly, no gatekeeping)
 # ---------------------------------------------------------------------------
 with st.sidebar:
     st.markdown("## ⚡ SPX Gamma")
 
-    # Get actual Barchart expiry dates
-    available_expiries = get_expirations()
-
-    # Build preset labels (0DTE, Tomorrow, Friday, OPEX)
     exp_presets = get_upcoming_expirations()
     exp_labels = list(exp_presets.keys())
     selected_label = st.selectbox("Expiration", exp_labels, index=0)
-    target_date = exp_presets[selected_label]
-    target_str = target_date.strftime("%Y-%m-%d")
-
-    # If target date not in available expiries, find nearest available
-    exp_str = target_str
-    if available_expiries and target_str not in available_expiries:
-        # Find nearest future date
-        nearest = None
-        for d in available_expiries:
-            if d >= target_str:
-                nearest = d
-                break
-        if nearest:
-            exp_str = nearest
-            st.caption(f"📅 {target_str} not available → using {exp_str}")
-        else:
-            st.caption(f"📅 {target_str} (may not have data)")
-    else:
-        st.caption(f"📅 {exp_str}")
+    selected_date = exp_presets[selected_label]
+    exp_str = selected_date.strftime("%Y-%m-%d")
+    st.caption(f"📅 {exp_str}")
 
     st.divider()
 
@@ -118,17 +98,6 @@ with st.sidebar:
     et_now = get_ny_datetime()
     st.markdown(f"**{'🟢 MARKET OPEN' if is_market_hours() else '🔴 MARKET CLOSED'}**")
     st.markdown(f"**ET:** {et_now.strftime('%H:%M:%S')}")
-
-    # Available expiries diagnostic
-    with st.expander("📅 Available Expiries", expanded=False):
-        if available_expiries:
-            for d in available_expiries[:15]:
-                marker = " ✅" if d == exp_str else ""
-                st.text(f"  {d}{marker}")
-            if len(available_expiries) > 15:
-                st.text(f"  … +{len(available_expiries) - 15} more")
-        else:
-            st.text("  None found")
 
 # ---------------------------------------------------------------------------
 # Auto-refresh
@@ -168,21 +137,15 @@ with st.spinner("Fetching…"):
 spot = quote.get("lastPrice", 0)
 
 if display_chain.empty:
-    st.error("❌ Could not fetch options chain.")
-    st.markdown("""
+    st.error(f"❌ No chain data for {exp_str}")
+    st.markdown(f"""
 **Troubleshooting:**
-1. **Market closed / weekend?** — 0DTE chain is empty after hours. Select Tomorrow.
-2. **Rate-limited?** — Wait 60s and click Refresh.
-3. **Check logs** — Manage app → Logs.
+1. **0DTE after hours?** — Today's chain expires at close. Select **Tomorrow**.
+2. **Weekend?** — Select next trading day.
+3. **Rate-limited?** — Wait 60s and Refresh.
     """)
-    with st.expander("🔍 Debug Info"):
-        st.json({
-            "expiration_requested": exp_str,
-            "target_date": target_str,
-            "spot_price": spot,
-            "quote": quote,
-            "available_expiries": available_expiries[:10] if available_expiries else [],
-        })
+    with st.expander("🔍 Debug"):
+        st.json({"expiration": exp_str, "spot": spot, "quote": quote})
     st.stop()
 
 # ---------------------------------------------------------------------------
@@ -209,8 +172,16 @@ net_chg = quote.get("netChange", 0)
 
 col1, col2, col3, col4, col5 = st.columns(5)
 with col1:
-    delta_str = f"{net_chg:+.2f} ({pct_chg:+.2f}%)" if net_chg != 0 else f"({pct_chg:+.2f}%)"
-    st.metric("SPX", f"{spot:,.2f}", delta_str, delta_color="normal" if pct_chg >= 0 else "inverse")
+    # If netChange is 0 but percentChange exists, compute netChange from pct
+    if net_chg == 0 and pct_chg != 0:
+        pc = quote.get("previousClose", 0)
+        if pc > 0:
+            net_chg = spot - pc
+        else:
+            net_chg = spot * pct_chg / 100
+    delta_str = f"{net_chg:+.2f} ({pct_chg:+.2f}%)"
+    st.metric("SPX", f"{spot:,.2f}", delta_str,
+              delta_color="normal" if pct_chg >= 0 else "inverse")
 with col2:
     st.metric("ATM Strike", f"{levels.get('centered_spot', 0):,}")
 with col3:
@@ -221,6 +192,9 @@ with col4:
     st.metric("High / Low", f"{hi:,.2f} / {lo:,.2f}")
 with col5:
     pc = quote.get("previousClose", 0)
+    # Compute prev close from spot and pct change if not provided
+    if pc == 0 and pct_chg != 0:
+        pc = spot / (1 + pct_chg / 100)
     st.metric("Prev Close", f"{pc:,.2f}" if pc > 0 else "—")
 
 # ---------------------------------------------------------------------------
