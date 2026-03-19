@@ -3,11 +3,12 @@ app.py — SPX Gamma Exposure Dashboard
 Replicates SPX_Gamma_Dashboard_v1_3b.xlsm with Barchart data.
 
 Sections:
-  1. SPX Price Summary (spot, change, OHLC)
+  1. SPX Price Summary
   2. Key Levels (Call Wall, Put Wall, COI, GEX levels, transitions)
-  3. Options Chain Table (GEX, DEX, OI, volume, buying pressure)
-  4. GEX Profile Chart (S²-normalized exposure by strike)
-  5. Aggregated Metrics (PCR, totals, gamma dominance)
+  3. Buying Pressure Gauges (from Excel AQ/AR — Call/Put needle gauges)
+  4. Aggregated Metrics (PCR, totals, gamma dominance)
+  5. GEX Profile Charts
+  6. Options Chain Table
 """
 
 import streamlit as st
@@ -17,7 +18,6 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import logging
-import io
 
 from data_fetcher import get_spx_quote, get_options_chain, get_active_source
 from calculations import compute_chain_metrics, compute_dashboard_levels, filter_chain_for_display
@@ -68,14 +68,11 @@ if not check_password():
     st.stop()
 
 # ---------------------------------------------------------------------------
-# Session state
-# ---------------------------------------------------------------------------
 # Sidebar controls
 # ---------------------------------------------------------------------------
 with st.sidebar:
     st.markdown("## ⚙️ Controls")
 
-    # Expiration selector
     exp_presets = get_upcoming_expirations()
     exp_labels = list(exp_presets.keys())
     selected_label = st.selectbox("Expiration", exp_labels, index=0)
@@ -85,13 +82,11 @@ with st.sidebar:
 
     st.divider()
 
-    # Strike range
     num_strikes_above = st.slider("Strikes above ATM", 5, 40, 20, 5)
     num_strikes_below = st.slider("Strikes below ATM", 5, 40, 20, 5)
 
     st.divider()
 
-    # Display filters
     show_calls = st.checkbox("Show Calls", value=True)
     show_puts = st.checkbox("Show Puts", value=True)
     show_greeks = st.checkbox("Show Greeks", value=True)
@@ -99,7 +94,6 @@ with st.sidebar:
 
     st.divider()
 
-    # Refresh
     auto_refresh = st.checkbox("Auto-refresh (60s)", value=True)
     if st.button("🔄 Refresh Now", use_container_width=True):
         st.cache_data.clear()
@@ -110,21 +104,19 @@ with st.sidebar:
     st.caption("Market " + ("🟢 OPEN" if is_market_hours() else "🔴 CLOSED"))
 
 # ---------------------------------------------------------------------------
-# Auto-refresh via st.fragment
+# Auto-refresh
 # ---------------------------------------------------------------------------
 if auto_refresh:
-    # Use Streamlit's native auto-rerun (runs every 60s without flicker)
     @st.fragment(run_every=60)
     def _auto_refresh_trigger():
         pass
     _auto_refresh_trigger()
 
 # ---------------------------------------------------------------------------
-# Data loading (cached 55s to allow refresh at 60s)
+# Data loading
 # ---------------------------------------------------------------------------
 @st.cache_data(ttl=55, show_spinner=False)
 def load_data(exp_date: str, _n_above: int = 20, _n_below: int = 20, _ts: int = 0):
-    """Fetch and compute all data. _ts is a cache-busting timestamp."""
     quote = get_spx_quote()
     spot = quote.get("lastPrice", 0)
 
@@ -132,17 +124,13 @@ def load_data(exp_date: str, _n_above: int = 20, _n_below: int = 20, _ts: int = 
     if chain is None or chain.empty:
         return quote, pd.DataFrame(), {}, pd.DataFrame(), get_active_source()
 
-    # Compute derived metrics (replicating Excel formulas)
     chain = compute_chain_metrics(chain, spot)
     levels = compute_dashboard_levels(chain, spot)
-
-    # Filter for display
     display = filter_chain_for_display(chain, spot, _n_above, _n_below)
 
     return quote, chain, levels, display, get_active_source()
 
 
-# Timestamp for cache busting on manual refresh
 ts = int(datetime.now().timestamp() // 55)
 
 with st.spinner("Fetching SPX options data…"):
@@ -153,15 +141,13 @@ with st.spinner("Fetching SPX options data…"):
 spot = quote.get("lastPrice", 0)
 
 if display_chain.empty:
-    st.error("❌ Could not fetch options chain from Barchart or CBOE.")
+    st.error("❌ Could not fetch options chain.")
     st.markdown("""
 **Troubleshooting:**
-1. **Weekend/holiday?** — There's no 0DTE on weekends. Try selecting "Friday" or "OPEX" in the sidebar.
-2. **Barchart rate-limited?** — Wait 60 seconds and click Refresh. Barchart limits cloud-hosted requests.
-3. **CBOE fallback also failed?** — Check the Streamlit Cloud logs (Manage app → Logs) for detailed error messages.
-4. **Expiration doesn't exist?** — Not every date has SPX options. Try a different expiration.
+1. **Market closed / weekend?** — 0DTE doesn't exist outside market hours. Try "Tomorrow" or "Friday".
+2. **Barchart rate-limited?** — Wait 60s and click Refresh.
+3. **Check logs** — Manage app → Logs for detailed errors.
     """)
-    # Show raw debug info
     with st.expander("🔍 Debug Info"):
         st.json({
             "expiration_requested": exp_str,
@@ -172,8 +158,7 @@ if display_chain.empty:
         })
     st.stop()
 
-# Data source indicator
-source_label = "🟢 Barchart" if data_source == "barchart" else "🟡 CBOE (delayed)" if data_source == "cboe" else "⚪ Unknown"
+source_label = "🟢 Barchart" if data_source == "barchart" else "⚪ Unknown"
 
 # ---------------------------------------------------------------------------
 # 1. SPX PRICE SUMMARY
@@ -205,7 +190,6 @@ with col6:
 # ---------------------------------------------------------------------------
 st.markdown("---")
 
-# Gamma dominance banner
 dom = levels.get("gamma_dominant", "N/A")
 cls = "gamma-call" if dom == "CALL" else "gamma-put"
 st.markdown(f"""
@@ -215,7 +199,6 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# Key levels in 4 columns
 lcol1, lcol2, lcol3, lcol4 = st.columns(4)
 
 def _level_card(label, value, css_class):
@@ -239,7 +222,74 @@ with lcol4:
     st.markdown(_level_card("🔶 −Transition (Below)", levels.get("ntrans"), "level-trans"), unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
-# 3. AGGREGATE METRICS
+# 3. BUYING PRESSURE GAUGES (Excel AQ/AR — Call/Put Needle)
+# ---------------------------------------------------------------------------
+# Excel gauge bands: Red(0-10), Gray(10-25), Green(25-75), Gray(75-90), Red(90-100)
+# Needle = avg buying pressure % near ATM (AO51, AP51)
+st.markdown("---")
+
+def create_bp_gauge(value, title):
+    """
+    Replicate Excel buying pressure gauge.
+    Bands: Red(0-10) Gray(10-25) Green(25-75) Gray(75-90) Red(90-100)
+    0% = all selling, 100% = all buying, 50% = neutral
+    """
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=value,
+        number={"suffix": "%", "font": {"size": 28, "color": "#e0e0e0"}},
+        title={"text": title, "font": {"size": 14, "color": "#a0a0a0"}},
+        gauge={
+            "axis": {"range": [0, 100], "tickwidth": 1, "tickcolor": "#555",
+                     "dtick": 10, "tickfont": {"size": 9, "color": "#777"}},
+            "bar": {"color": "#ffd600", "thickness": 0.25},
+            "bgcolor": "#0e1117",
+            "borderwidth": 1,
+            "bordercolor": "#333",
+            "steps": [
+                {"range": [0, 10], "color": "rgba(255,23,68,0.5)"},      # Red — heavy selling
+                {"range": [10, 25], "color": "rgba(150,150,150,0.3)"},    # Gray
+                {"range": [25, 75], "color": "rgba(0,200,83,0.35)"},      # Green — balanced
+                {"range": [75, 90], "color": "rgba(150,150,150,0.3)"},    # Gray
+                {"range": [90, 100], "color": "rgba(255,23,68,0.5)"},     # Red — heavy buying
+            ],
+            "threshold": {
+                "line": {"color": "#ffd600", "width": 3},
+                "thickness": 0.8,
+                "value": value,
+            },
+        },
+    ))
+    fig.update_layout(
+        paper_bgcolor="#0e1117",
+        plot_bgcolor="#0e1117",
+        font={"color": "#e0e0e0"},
+        height=220,
+        margin=dict(t=40, b=10, l=30, r=30),
+    )
+    return fig
+
+
+gcol1, gcol2, gcol3 = st.columns([1, 1, 1])
+
+with gcol1:
+    call_bp = levels.get("avg_bp_call", 50)
+    st.plotly_chart(create_bp_gauge(call_bp, "Call Buying Pressure (ATM)"),
+                    use_container_width=True)
+
+with gcol2:
+    put_bp = levels.get("avg_bp_put", 50)
+    st.plotly_chart(create_bp_gauge(put_bp, "Put Buying Pressure (ATM)"),
+                    use_container_width=True)
+
+with gcol3:
+    # Combined gauge: average of call + put BP
+    combo = (call_bp + put_bp) / 2 if (call_bp + put_bp) > 0 else 50
+    st.plotly_chart(create_bp_gauge(combo, "Combined Buying Pressure"),
+                    use_container_width=True)
+
+# ---------------------------------------------------------------------------
+# 4. AGGREGATE METRICS
 # ---------------------------------------------------------------------------
 st.markdown("---")
 mcol1, mcol2, mcol3, mcol4, mcol5, mcol6 = st.columns(6)
@@ -252,12 +302,12 @@ with mcol3:
 with mcol4:
     st.metric("Total Put Vol", f"{levels.get('total_put_volume', 0):,}")
 with mcol5:
-    st.metric("Avg BP% Call (ATM)", f"{levels.get('avg_bp_call', 0):.0f}%")
+    st.metric("Total Call OI", f"{levels.get('total_call_oi', 0):,}")
 with mcol6:
-    st.metric("Avg BP% Put (ATM)", f"{levels.get('avg_bp_put', 0):.0f}%")
+    st.metric("Total Put OI", f"{levels.get('total_put_oi', 0):,}")
 
 # ---------------------------------------------------------------------------
-# 4. GEX PROFILE CHART
+# 5. GEX PROFILE CHARTS
 # ---------------------------------------------------------------------------
 st.markdown("---")
 st.markdown("### 📊 Gamma Exposure Profile")
@@ -270,7 +320,6 @@ fig = make_subplots(
     horizontal_spacing=0.08,
 )
 
-# --- Left: Net GEX bar chart ---
 colors = ["#00c853" if v >= 0 else "#ff1744" for v in chart_df["net_gex"]]
 fig.add_trace(go.Bar(
     x=chart_df["strike"], y=chart_df["net_gex"],
@@ -278,11 +327,9 @@ fig.add_trace(go.Bar(
     hovertemplate="Strike: %{x}<br>Net GEX: %{y:,}<extra></extra>",
 ), row=1, col=1)
 
-# Add spot line
 fig.add_vline(x=spot, line_dash="dash", line_color="#ffd600", line_width=1.5,
               annotation_text=f"SPX {spot:.0f}", row=1, col=1)
 
-# --- Right: S²-normalized GEX profile (positive/negative areas) ---
 fig.add_trace(go.Bar(
     x=chart_df["strike"], y=chart_df["raw_pos"],
     marker_color="rgba(0,200,83,0.6)", name="+GEX",
@@ -311,29 +358,67 @@ fig.update_yaxes(title_text="GEX ($B notional)", row=1, col=2)
 
 st.plotly_chart(fig, use_container_width=True)
 
-# ---------------------------------------------------------------------------
-# 5. OI Profile Chart
-# ---------------------------------------------------------------------------
-oi_fig = go.Figure()
-oi_fig.add_trace(go.Bar(
-    x=chart_df["strike"], y=chart_df["c_oi"],
-    name="Call OI", marker_color="rgba(0,200,83,0.5)",
-))
-oi_fig.add_trace(go.Bar(
-    x=chart_df["strike"], y=chart_df["p_oi"],
-    name="Put OI", marker_color="rgba(255,23,68,0.5)",
-))
-oi_fig.add_vline(x=spot, line_dash="dash", line_color="#ffd600", line_width=1.5,
-                 annotation_text=f"SPX {spot:.0f}")
-oi_fig.update_layout(
-    title="Open Interest by Strike",
-    barmode="group", height=350,
-    template="plotly_dark", paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
-    margin=dict(t=40, b=40, l=50, r=20), font=dict(size=11),
-)
-
+# OI Profile
 with st.expander("📈 Open Interest Profile", expanded=False):
+    oi_fig = go.Figure()
+    oi_fig.add_trace(go.Bar(
+        x=chart_df["strike"], y=chart_df["c_oi"],
+        name="Call OI", marker_color="rgba(0,200,83,0.5)",
+    ))
+    oi_fig.add_trace(go.Bar(
+        x=chart_df["strike"], y=chart_df["p_oi"],
+        name="Put OI", marker_color="rgba(255,23,68,0.5)",
+    ))
+    oi_fig.add_vline(x=spot, line_dash="dash", line_color="#ffd600", line_width=1.5,
+                     annotation_text=f"SPX {spot:.0f}")
+    oi_fig.update_layout(
+        title="Open Interest by Strike",
+        barmode="group", height=350,
+        template="plotly_dark", paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
+        margin=dict(t=40, b=40, l=50, r=20), font=dict(size=11),
+    )
     st.plotly_chart(oi_fig, use_container_width=True)
+
+# Delta-adjusted GEX
+with st.expander("📊 Delta-Adjusted GEX Profile", expanded=False):
+    dadj_fig = go.Figure()
+    dadj_fig.add_trace(go.Bar(
+        x=chart_df["strike"], y=chart_df["dadj_pos"],
+        name="+DAdj GEX", marker_color="rgba(0,200,83,0.6)",
+    ))
+    dadj_fig.add_trace(go.Bar(
+        x=chart_df["strike"], y=chart_df["dadj_neg"],
+        name="−DAdj GEX", marker_color="rgba(255,23,68,0.6)",
+    ))
+    dadj_fig.add_vline(x=spot, line_dash="dash", line_color="#ffd600", line_width=1.5,
+                       annotation_text=f"SPX {spot:.0f}")
+    dadj_fig.update_layout(
+        title="Delta-Adjusted GEX by Strike (S²-Normalized × Delta)",
+        barmode="relative", height=380,
+        template="plotly_dark", paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
+        margin=dict(t=40, b=40, l=50, r=20), font=dict(size=11),
+    )
+    st.plotly_chart(dadj_fig, use_container_width=True)
+
+# Volume Profile
+with st.expander("📊 Volume Profile", expanded=False):
+    vol_fig = go.Figure()
+    vol_fig.add_trace(go.Bar(
+        x=chart_df["strike"], y=chart_df["c_volume"],
+        name="Call Volume", marker_color="rgba(0,200,83,0.5)",
+    ))
+    vol_fig.add_trace(go.Bar(
+        x=chart_df["strike"], y=chart_df["p_volume"],
+        name="Put Volume", marker_color="rgba(255,23,68,0.5)",
+    ))
+    vol_fig.add_vline(x=spot, line_dash="dash", line_color="#ffd600", line_width=1.5)
+    vol_fig.update_layout(
+        title="Volume by Strike",
+        barmode="group", height=350,
+        template="plotly_dark", paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
+        margin=dict(t=40, b=40, l=50, r=20), font=dict(size=11),
+    )
+    st.plotly_chart(vol_fig, use_container_width=True)
 
 # ---------------------------------------------------------------------------
 # 6. OPTIONS CHAIN TABLE
@@ -341,7 +426,6 @@ with st.expander("📈 Open Interest Profile", expanded=False):
 st.markdown("---")
 st.markdown("### 📋 Options Chain")
 
-# Build display columns
 display_cols = ["strike"]
 
 if show_calls:
@@ -360,11 +444,9 @@ if show_puts:
 
 display_cols += ["net_gex", "net_dex", "call_gex", "put_gex", "total_oi", "net_oi", "pct_from_spot"]
 
-# Filter to available columns
 display_cols = [c for c in display_cols if c in display_chain.columns]
 table_df = display_chain[display_cols].copy()
 
-# Rename for display
 col_rename = {
     "strike": "Strike", "c_volume": "C Vol", "c_oi": "C OI", "c_mark": "C Mark",
     "c_bid": "C Bid", "c_ask": "C Ask", "c_voi": "C V/OI",
@@ -381,7 +463,6 @@ col_rename = {
 }
 table_df = table_df.rename(columns=col_rename)
 
-# Format
 fmt_map = {}
 for col in table_df.columns:
     if col in ("Strike", "C Vol", "P Vol", "C OI", "P OI", "Net GEX", "Net DEX",
@@ -400,7 +481,6 @@ for col in table_df.columns:
     elif col == "% Spot":
         fmt_map[col] = "{:.2%}"
 
-# Highlight ATM row
 atm_strike = levels.get("centered_spot", 0)
 
 def highlight_atm(row):
@@ -426,121 +506,27 @@ styled = (
 st.dataframe(styled, use_container_width=True, height=600)
 
 # ---------------------------------------------------------------------------
-# 7. EXPORT
+# 7. CSV EXPORT
 # ---------------------------------------------------------------------------
 st.markdown("---")
-st.markdown("### 📥 Exports")
-
-from thinkscript_export import generate_thinkscript, generate_tradingview_pine, generate_levels_summary
-
-ecol1, ecol2, ecol3, ecol4 = st.columns(4)
-
+ecol1, ecol2 = st.columns(2)
 with ecol1:
     csv = display_chain.to_csv(index=False)
-    st.download_button(
-        "📥 Chain (CSV)",
-        csv,
-        f"spx_gamma_{exp_str}.csv",
-        "text/csv",
-        use_container_width=True,
-    )
-
+    st.download_button("📥 Export Chain (CSV)", csv,
+                       f"spx_gamma_{exp_str}.csv", "text/csv",
+                       use_container_width=True)
 with ecol2:
     levels_df = pd.DataFrame([levels])
-    levels_csv = levels_df.to_csv(index=False)
-    st.download_button(
-        "📥 Levels (CSV)",
-        levels_csv,
-        f"spx_levels_{exp_str}.csv",
-        "text/csv",
-        use_container_width=True,
-    )
-
-with ecol3:
-    ts_code = generate_thinkscript(levels, spot, exp_str)
-    st.download_button(
-        "📥 ThinkScript",
-        ts_code,
-        f"spx_gamma_levels_{exp_str}.ts",
-        "text/plain",
-        use_container_width=True,
-    )
-
-with ecol4:
-    pine_code = generate_tradingview_pine(levels, spot, exp_str)
-    st.download_button(
-        "📥 Pine Script",
-        pine_code,
-        f"spx_gamma_levels_{exp_str}.pine",
-        "text/plain",
-        use_container_width=True,
-    )
-
-# Levels summary (Telegram/Discord format)
-with st.expander("📋 Levels Summary (copy for Telegram/Discord)", expanded=False):
-    summary = generate_levels_summary(levels, spot, exp_str)
-    st.code(summary, language=None)
-
-# ---------------------------------------------------------------------------
-# 8. DELTA-ADJUSTED GEX CHART
-# ---------------------------------------------------------------------------
-with st.expander("📊 Delta-Adjusted GEX Profile", expanded=False):
-    dadj_fig = go.Figure()
-    dadj_fig.add_trace(go.Bar(
-        x=chart_df["strike"], y=chart_df["dadj_pos"],
-        name="+DAdj GEX", marker_color="rgba(0,200,83,0.6)",
-        hovertemplate="Strike: %{x}<br>+DAdj GEX: %{y:.6f}<extra></extra>",
-    ))
-    dadj_fig.add_trace(go.Bar(
-        x=chart_df["strike"], y=chart_df["dadj_neg"],
-        name="−DAdj GEX", marker_color="rgba(255,23,68,0.6)",
-        hovertemplate="Strike: %{x}<br>−DAdj GEX: %{y:.6f}<extra></extra>",
-    ))
-    dadj_fig.add_vline(x=spot, line_dash="dash", line_color="#ffd600", line_width=1.5,
-                       annotation_text=f"SPX {spot:.0f}")
-    dadj_fig.update_layout(
-        title="Delta-Adjusted GEX by Strike (S²-Normalized × Delta)",
-        barmode="relative", height=380,
-        template="plotly_dark", paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
-        margin=dict(t=40, b=40, l=50, r=20), font=dict(size=11),
-    )
-    st.plotly_chart(dadj_fig, use_container_width=True)
-
-# ---------------------------------------------------------------------------
-# 9. VOLUME PROFILE CHART
-# ---------------------------------------------------------------------------
-with st.expander("📊 Volume Profile", expanded=False):
-    vol_fig = go.Figure()
-    vol_fig.add_trace(go.Bar(
-        x=chart_df["strike"], y=chart_df["c_volume"],
-        name="Call Volume", marker_color="rgba(0,200,83,0.5)",
-    ))
-    vol_fig.add_trace(go.Bar(
-        x=chart_df["strike"], y=chart_df["p_volume"],
-        name="Put Volume", marker_color="rgba(255,23,68,0.5)",
-    ))
-    vol_fig.add_vline(x=spot, line_dash="dash", line_color="#ffd600", line_width=1.5)
-    vol_fig.update_layout(
-        title="Volume by Strike",
-        barmode="group", height=350,
-        template="plotly_dark", paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
-        margin=dict(t=40, b=40, l=50, r=20), font=dict(size=11),
-    )
-    st.plotly_chart(vol_fig, use_container_width=True)
-
-# ---------------------------------------------------------------------------
-# 10. ThinkScript Code Viewer
-# ---------------------------------------------------------------------------
-with st.expander("📝 ThinkScript Study Code", expanded=False):
-    st.code(ts_code, language="java")
-    st.caption("Copy this into TOS → Studies → Edit → ThinkScript tab")
+    st.download_button("📥 Export Levels (CSV)", levels_df.to_csv(index=False),
+                       f"spx_levels_{exp_str}.csv", "text/csv",
+                       use_container_width=True)
 
 # ---------------------------------------------------------------------------
 # Footer
 # ---------------------------------------------------------------------------
 st.markdown("---")
 st.caption(
-    f"SPX Gamma Dashboard v2.0 — Barchart data (CBOE fallback) — "
+    f"SPX Gamma Dashboard v2.0 — Barchart data — "
     f"Last refresh: {get_ny_time()} — "
     f"Replicates SPX_Gamma_Dashboard_v1_3b.xlsm logic"
 )
