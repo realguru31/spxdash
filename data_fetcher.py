@@ -1,6 +1,8 @@
 """
-data_fetcher.py — Barchart SPX options chain fetcher.
-Mirrors GEXdon gex_utils.py session/chain logic.
+data_fetcher.py — SPX data fetcher.
+  tvDatafeed  → spot price, OHLC, previous close (primary)
+  Barchart    → options chain (primary)
+Mirrors GEXdon gex_utils.py logic.
 """
 
 import re
@@ -25,10 +27,13 @@ PAGE_TYPE = "indices"
 OPTIONS_API = "https://www.barchart.com/proxies/core-api/v1/options/get"
 QUOTE_API = "https://www.barchart.com/proxies/core-api/v1/quotes/get"
 
+# tvDatafeed config for SPX (same pattern as GEXdon config.py)
+TV_SYMBOL = "SPX"
+TV_EXCHANGES = ["CBOE", "SP", "FOREXCOM", "OANDA"]
+
 _session = None
 _api_headers = None
 _page_html = None
-_parsed_expiries = []
 
 
 def _clean(v):
@@ -40,8 +45,85 @@ def _clean(v):
         return 0.0
 
 
+# ═══════════════════════════════════════
+# tvDatafeed — spot price + OHLC + prev close
+# ═══════════════════════════════════════
+def _get_tv_quote() -> dict:
+    """
+    Fetch SPX spot + OHLC from tvDatafeed.
+    Uses daily bar for previousClose, 1-min bar for current spot.
+    """
+    defaults = {
+        "lastPrice": 0, "previousClose": 0, "netChange": 0,
+        "percentChange": 0, "highPrice": 0, "lowPrice": 0, "openPrice": 0,
+    }
+    try:
+        from tvDatafeed import TvDatafeed, Interval
+        tv = TvDatafeed()
+
+        # Try each exchange
+        for ex in TV_EXCHANGES:
+            try:
+                # Daily bars for prev close + today OHLC
+                daily = tv.get_hist(symbol=TV_SYMBOL, exchange=ex,
+                                    interval=Interval.in_daily, n_bars=3)
+                if daily is not None and len(daily) >= 2:
+                    today_bar = daily.iloc[-1]
+                    prev_bar = daily.iloc[-2]
+
+                    spot = float(today_bar["close"])
+                    prev_close = float(prev_bar["close"])
+                    net_chg = spot - prev_close
+                    pct_chg = (net_chg / prev_close * 100) if prev_close > 0 else 0
+
+                    result = {
+                        "lastPrice": spot,
+                        "previousClose": prev_close,
+                        "netChange": round(net_chg, 2),
+                        "percentChange": round(pct_chg, 2),
+                        "highPrice": float(today_bar["high"]),
+                        "lowPrice": float(today_bar["low"]),
+                        "openPrice": float(today_bar["open"]),
+                    }
+                    logger.info("tvDatafeed quote OK via %s: SPX=%.2f prevClose=%.2f chg=%.2f (%.2f%%)",
+                               ex, spot, prev_close, net_chg, pct_chg)
+                    return result
+
+            except Exception as e:
+                logger.debug("tvDatafeed %s/%s failed: %s", TV_SYMBOL, ex, e)
+                continue
+
+    except ImportError:
+        logger.warning("tvDatafeed not installed — falling back to Barchart for quote")
+    except Exception as e:
+        logger.warning("tvDatafeed failed: %s", e)
+
+    return defaults
+
+
+def _get_tv_spot() -> Optional[float]:
+    """Quick spot price from tvDatafeed 1-min bar."""
+    try:
+        from tvDatafeed import TvDatafeed, Interval
+        tv = TvDatafeed()
+        for ex in TV_EXCHANGES:
+            try:
+                df = tv.get_hist(symbol=TV_SYMBOL, exchange=ex,
+                                 interval=Interval.in_1_minute, n_bars=1)
+                if df is not None and not df.empty:
+                    return float(df["close"].iloc[-1])
+            except Exception:
+                continue
+    except ImportError:
+        pass
+    return None
+
+
+# ═══════════════════════════════════════
+# Barchart Session
+# ═══════════════════════════════════════
 def _create_session():
-    global _session, _api_headers, _page_html, _parsed_expiries
+    global _session, _api_headers, _page_html
 
     page_url = f"https://www.barchart.com/{PAGE_TYPE}/quotes/{BASE_SYM}/volatility-greeks"
 
@@ -74,16 +156,11 @@ def _create_session():
             "x-xsrf-token": xsrf,
         }
         _session = sess
-
-        # Parse available expiry dates from HTML
-        _parsed_expiries = _parse_expiry_dates_from_html(_page_html)
-        logger.info("Session OK. XSRF: %s… | %d expiries available", xsrf[:20], len(_parsed_expiries))
-        if _parsed_expiries:
-            logger.info("Available expiries: %s", ", ".join(_parsed_expiries[:10]))
+        logger.info("Barchart session OK. XSRF: %s…", xsrf[:20])
         return True
 
     except Exception as e:
-        logger.error("Session failed: %s", e)
+        logger.error("Barchart session failed: %s", e)
         return False
 
 
@@ -94,9 +171,19 @@ def _ensure_session():
 
 
 # ═══════════════════════════════════════
-# SPX Quote
+# SPX Quote — tvDatafeed primary, Barchart fallback
 # ═══════════════════════════════════════
 def get_spx_quote() -> dict:
+    """tvDatafeed first (reliable OHLC + prevClose), Barchart fallback."""
+
+    # Try tvDatafeed first
+    result = _get_tv_quote()
+    if result.get("lastPrice", 0) > 0:
+        return result
+
+    logger.info("tvDatafeed failed → Barchart fallback for quote")
+
+    # Barchart fallback
     defaults = {
         "lastPrice": 0, "previousClose": 0, "netChange": 0,
         "percentChange": 0, "highPrice": 0, "lowPrice": 0, "openPrice": 0,
@@ -118,53 +205,50 @@ def get_spx_quote() -> dict:
                 raw = item.get("raw", item)
                 lp = raw.get("lastPrice")
                 if lp is not None:
+                    spot = _clean(lp)
+                    pct = _clean(raw.get("percentChange", 0))
+                    # Compute prev close from pct if not provided
+                    pc = _clean(raw.get("previousClose", 0))
+                    if pc == 0 and pct != 0 and spot > 0:
+                        pc = round(spot / (1 + pct / 100), 2)
+                    nc = _clean(raw.get("netChange", 0))
+                    if nc == 0 and pc > 0:
+                        nc = round(spot - pc, 2)
                     return {
-                        "lastPrice": _clean(lp),
-                        "previousClose": _clean(raw.get("previousClose", 0)),
-                        "netChange": _clean(raw.get("netChange", 0)),
-                        "percentChange": _clean(raw.get("percentChange", 0)),
+                        "lastPrice": spot,
+                        "previousClose": pc,
+                        "netChange": nc,
+                        "percentChange": pct,
                         "highPrice": _clean(raw.get("highPrice", 0)),
                         "lowPrice": _clean(raw.get("lowPrice", 0)),
                         "openPrice": _clean(raw.get("openPrice", 0)),
                     }
-        logger.warning("Quote returned no data")
     except Exception as e:
-        logger.error("Quote failed: %s", e)
+        logger.error("Barchart quote failed: %s", e)
 
-    # Fallback: parse from HTML
-    if _page_html:
-        spot = _parse_spot_from_html(_page_html)
-        if spot:
-            defaults["lastPrice"] = spot
     return defaults
 
 
-def _parse_spot_from_html(html):
-    for pat in [r'"lastPrice"\s*:\s*"?([\d,.]+)"?', r'"last"\s*:\s*"?([\d,.]+)"?']:
-        m = re.search(pat, html)
-        if m:
-            try:
-                return float(m.group(1).replace(",", ""))
-            except ValueError:
-                continue
-    return None
-
-
 def get_spx_price() -> Optional[float]:
+    # Try tvDatafeed spot first (fastest)
+    spot = _get_tv_spot()
+    if spot and spot > 0:
+        return spot
     q = get_spx_quote()
     p = q.get("lastPrice", 0)
     return p if p > 0 else None
 
 
 # ═══════════════════════════════════════
-# Expiry Dates — parsed from Barchart HTML
+# Expiry Dates
 # ═══════════════════════════════════════
 def get_expirations() -> List[str]:
-    """Return actual available expiry dates from Barchart."""
     if not _ensure_session():
         return _calculate_expiry_dates()
-    if _parsed_expiries:
-        return _parsed_expiries
+    if _page_html:
+        dates = _parse_expiry_dates_from_html(_page_html)
+        if dates:
+            return dates
     return _calculate_expiry_dates()
 
 
@@ -179,7 +263,6 @@ def _parse_expiry_dates_from_html(html) -> List[str]:
     all_dates = re.findall(r'20\d{2}-\d{2}-\d{2}', html)
     valid = sorted(set(d for d in all_dates if d >= today_str))
 
-    # SPX has daily 0DTE — inject today if weekday
     try:
         import pytz
         et_now = datetime.now(pytz.timezone("US/Eastern"))
@@ -205,7 +288,7 @@ def _calculate_expiry_dates(n=30) -> List[str]:
 
 
 # ═══════════════════════════════════════
-# Options Chain
+# Options Chain (Barchart)
 # ═══════════════════════════════════════
 def _fetch_single_chain(expiry: str) -> Optional[pd.DataFrame]:
     if not _ensure_session():
