@@ -1,7 +1,7 @@
 """
 data_fetcher.py — Barchart SPX options chain fetcher.
 Mirrors the working GEXdon gex_utils.py logic exactly:
-  - Session: /volatility-greeks?page=all
+  - Session: /indices/quotes/$SPX/volatility-greeks?page=all
   - XSRF: unquote() decoded
   - Chain: /proxies/core-api/v1/options/get with baseSymbol + groupBy
   - Quote: /proxies/core-api/v1/quotes/get with symbols (plural)
@@ -24,7 +24,6 @@ _UA = (
     "Chrome/120.0.0.0 Safari/537.36"
 )
 
-# SPX-specific config (matching GEXdon's config.py)
 BASE_SYM = "$SPX"
 PAGE_TYPE = "indices"
 OPTIONS_API = "https://www.barchart.com/proxies/core-api/v1/options/get"
@@ -32,19 +31,24 @@ QUOTE_API = "https://www.barchart.com/proxies/core-api/v1/quotes/get"
 
 
 # ═══════════════════════════════════════
-# Barchart Session (mirrors _create_barchart_session)
+# Barchart Session
 # ═══════════════════════════════════════
 _session = None
 _api_headers = None
 _page_html = None
 
 
+def _clean(v):
+    """Safely convert Barchart raw values to float. Strips commas, %, +."""
+    if v is None:
+        return 0.0
+    try:
+        return float(str(v).replace(",", "").replace("%", "").replace("+", ""))
+    except (ValueError, TypeError):
+        return 0.0
+
+
 def _create_session():
-    """
-    Create Barchart session with XSRF token.
-    Visits /indices/quotes/$SPX/volatility-greeks?page=all
-    exactly as GEXdon does.
-    """
     global _session, _api_headers, _page_html
 
     page_url = f"https://www.barchart.com/{PAGE_TYPE}/quotes/{BASE_SYM}/volatility-greeks"
@@ -64,7 +68,7 @@ def _create_session():
 
         cookies = sess.cookies.get_dict()
         if "XSRF-TOKEN" not in cookies:
-            logger.error("No XSRF-TOKEN cookie. Got cookies: %s", list(cookies.keys()))
+            logger.error("No XSRF-TOKEN cookie. Got: %s", list(cookies.keys()))
             return False
 
         xsrf = unquote(cookies["XSRF-TOKEN"])
@@ -87,17 +91,15 @@ def _create_session():
 
 
 def _ensure_session():
-    """Lazy-init session."""
     if _session is None or _api_headers is None:
         return _create_session()
     return True
 
 
 # ═══════════════════════════════════════
-# SPX Spot Price (mirrors _get_barchart_spot)
+# SPX Quote
 # ═══════════════════════════════════════
 def get_spx_quote() -> dict:
-    """Fetch SPX quote. Uses 'symbols' param (plural) like GEXdon."""
     defaults = {
         "lastPrice": 0, "previousClose": 0, "netChange": 0,
         "percentChange": 0, "highPrice": 0, "lowPrice": 0, "openPrice": 0,
@@ -120,13 +122,13 @@ def get_spx_quote() -> dict:
                 lp = raw.get("lastPrice")
                 if lp is not None:
                     return {
-                        "lastPrice": float(str(lp).replace(",", "")),
-                        "previousClose": float(str(raw.get("previousClose", 0)).replace(",", "")),
-                        "netChange": float(str(raw.get("netChange", 0)).replace(",", "")),
-                        "percentChange": float(str(raw.get("percentChange", 0)).replace(",", "")),
-                        "highPrice": float(str(raw.get("highPrice", 0)).replace(",", "")),
-                        "lowPrice": float(str(raw.get("lowPrice", 0)).replace(",", "")),
-                        "openPrice": float(str(raw.get("openPrice", 0)).replace(",", "")),
+                        "lastPrice": _clean(lp),
+                        "previousClose": _clean(raw.get("previousClose", 0)),
+                        "netChange": _clean(raw.get("netChange", 0)),
+                        "percentChange": _clean(raw.get("percentChange", 0)),
+                        "highPrice": _clean(raw.get("highPrice", 0)),
+                        "lowPrice": _clean(raw.get("lowPrice", 0)),
+                        "openPrice": _clean(raw.get("openPrice", 0)),
                     }
         logger.warning("Quote returned no data")
     except Exception as e:
@@ -158,18 +160,15 @@ def get_spx_price() -> Optional[float]:
 
 
 # ═══════════════════════════════════════
-# Expiry Dates (mirrors _parse_expiry_dates_from_html)
+# Expiry Dates
 # ═══════════════════════════════════════
 def get_expirations() -> List[str]:
-    """Parse available expiration dates from Barchart page HTML."""
     if not _ensure_session():
         return _calculate_expiry_dates()
-
     if _page_html:
         dates = _parse_expiry_dates_from_html(_page_html)
         if dates:
             return dates
-
     return _calculate_expiry_dates()
 
 
@@ -210,14 +209,13 @@ def _calculate_expiry_dates(n=30) -> List[str]:
 
 
 # ═══════════════════════════════════════
-# Options Chain (mirrors _fetch_single_chain exactly)
+# Options Chain
 # ═══════════════════════════════════════
 def _fetch_single_chain(expiry: str) -> Optional[pd.DataFrame]:
     """
     Fetch one expiry's chain from Barchart.
     Uses /proxies/core-api/v1/options/get with:
       baseSymbol, groupBy=optionType, orderBy=strikePrice, orderDir=asc
-    Returns DataFrame with optionType column, or None.
     """
     if not _ensure_session():
         return None
@@ -265,7 +263,6 @@ def _fetch_single_chain(expiry: str) -> Optional[pd.DataFrame]:
 
         df = pd.DataFrame(rows)
 
-        # Numeric coercion
         for col in ["strikePrice", "lastPrice", "volatility", "delta",
                      "gamma", "theta", "vega", "volume", "openInterest",
                      "highPrice", "lowPrice", "openPrice", "ask", "bid"]:
@@ -315,7 +312,6 @@ def get_options_chain(expiration: str, num_strikes: int = 50) -> Optional[pd.Dat
     if calls.empty and puts.empty:
         return None
 
-    # Build merged format expected by calculations.py
     def _build_side(side_df, prefix):
         out = pd.DataFrame()
         out["strike"] = side_df["strikePrice"].values
@@ -325,7 +321,7 @@ def get_options_chain(expiration: str, num_strikes: int = 50) -> Optional[pd.Dat
         out[f"{prefix}_high"] = side_df["highPrice"].values if "highPrice" in side_df.columns else 0
         out[f"{prefix}_low"] = side_df["lowPrice"].values if "lowPrice" in side_df.columns else 0
         out[f"{prefix}_open"] = side_df["openPrice"].values if "openPrice" in side_df.columns else 0
-        out[f"{prefix}_mark"] = side_df["lastPrice"].values  # Barchart doesn't have mark; use last
+        out[f"{prefix}_mark"] = side_df["lastPrice"].values
         out[f"{prefix}_delta"] = side_df["delta"].values
         out[f"{prefix}_gamma"] = side_df["gamma"].values
         out[f"{prefix}_vega"] = side_df["vega"].values if "vega" in side_df.columns else 0
@@ -347,7 +343,6 @@ def get_options_chain(expiration: str, num_strikes: int = 50) -> Optional[pd.Dat
 
     merged = merged.sort_values("strike", ascending=False).reset_index(drop=True)
 
-    # Fill NaN numerics
     for col in merged.select_dtypes(include=[np.number]).columns:
         merged[col] = merged[col].fillna(0)
 
