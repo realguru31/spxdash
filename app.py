@@ -19,7 +19,7 @@ from datetime import datetime, timedelta
 import logging
 import io
 
-from data_fetcher import BarchartFetcher
+from data_fetcher import get_spx_quote, get_options_chain, get_active_source
 from calculations import compute_chain_metrics, compute_dashboard_levels, filter_chain_for_display
 from utils import check_password, get_ny_time, get_ny_datetime, is_market_hours, get_upcoming_expirations
 
@@ -69,12 +69,6 @@ if not check_password():
 
 # ---------------------------------------------------------------------------
 # Session state
-# ---------------------------------------------------------------------------
-if "fetcher" not in st.session_state:
-    st.session_state.fetcher = BarchartFetcher()
-
-fetcher = st.session_state.fetcher
-
 # ---------------------------------------------------------------------------
 # Sidebar controls
 # ---------------------------------------------------------------------------
@@ -129,37 +123,57 @@ if auto_refresh:
 # Data loading (cached 55s to allow refresh at 60s)
 # ---------------------------------------------------------------------------
 @st.cache_data(ttl=55, show_spinner=False)
-def load_data(exp_date: str, _ts: int = 0):
+def load_data(exp_date: str, _n_above: int = 20, _n_below: int = 20, _ts: int = 0):
     """Fetch and compute all data. _ts is a cache-busting timestamp."""
-    quote = fetcher.get_spx_quote()
+    quote = get_spx_quote()
     spot = quote.get("lastPrice", 0)
 
-    chain = fetcher.get_options_chain(exp_date)
+    chain = get_options_chain(exp_date)
     if chain is None or chain.empty:
-        return quote, pd.DataFrame(), {}, pd.DataFrame()
+        return quote, pd.DataFrame(), {}, pd.DataFrame(), get_active_source()
 
     # Compute derived metrics (replicating Excel formulas)
     chain = compute_chain_metrics(chain, spot)
     levels = compute_dashboard_levels(chain, spot)
 
     # Filter for display
-    display = filter_chain_for_display(chain, spot, num_strikes_above, num_strikes_below)
+    display = filter_chain_for_display(chain, spot, _n_above, _n_below)
 
-    return quote, chain, levels, display
+    return quote, chain, levels, display, get_active_source()
 
 
 # Timestamp for cache busting on manual refresh
 ts = int(datetime.now().timestamp() // 55)
 
-with st.spinner("Fetching SPX options data from Barchart…"):
-    quote, full_chain, levels, display_chain = load_data(exp_str, ts)
+with st.spinner("Fetching SPX options data…"):
+    quote, full_chain, levels, display_chain, data_source = load_data(
+        exp_str, num_strikes_above, num_strikes_below, ts
+    )
 
 spot = quote.get("lastPrice", 0)
 
 if display_chain.empty:
-    st.error("❌ Could not fetch options chain. Barchart may be rate-limiting. Try again in 30 seconds.")
-    st.info("💡 If this persists, check your network or try a different expiration.")
+    st.error("❌ Could not fetch options chain from Barchart or CBOE.")
+    st.markdown("""
+**Troubleshooting:**
+1. **Weekend/holiday?** — There's no 0DTE on weekends. Try selecting "Friday" or "OPEX" in the sidebar.
+2. **Barchart rate-limited?** — Wait 60 seconds and click Refresh. Barchart limits cloud-hosted requests.
+3. **CBOE fallback also failed?** — Check the Streamlit Cloud logs (Manage app → Logs) for detailed error messages.
+4. **Expiration doesn't exist?** — Not every date has SPX options. Try a different expiration.
+    """)
+    # Show raw debug info
+    with st.expander("🔍 Debug Info"):
+        st.json({
+            "expiration_requested": exp_str,
+            "spot_price": spot,
+            "data_source": data_source,
+            "quote": quote,
+            "timestamp": datetime.now().isoformat(),
+        })
     st.stop()
+
+# Data source indicator
+source_label = "🟢 Barchart" if data_source == "barchart" else "🟡 CBOE (delayed)" if data_source == "cboe" else "⚪ Unknown"
 
 # ---------------------------------------------------------------------------
 # 1. SPX PRICE SUMMARY
@@ -167,7 +181,7 @@ if display_chain.empty:
 st.markdown(f"""
 <div class="status-bar">
     <span class="status-text">SPX Gamma Dashboard — {selected_label} ({exp_str})</span>
-    <span class="status-text">Last update: {get_ny_time()}</span>
+    <span class="status-text">{source_label} &nbsp;•&nbsp; Last update: {get_ny_time()}</span>
 </div>
 """, unsafe_allow_html=True)
 
@@ -415,12 +429,16 @@ st.dataframe(styled, use_container_width=True, height=600)
 # 7. EXPORT
 # ---------------------------------------------------------------------------
 st.markdown("---")
-ecol1, ecol2 = st.columns(2)
+st.markdown("### 📥 Exports")
+
+from thinkscript_export import generate_thinkscript, generate_tradingview_pine, generate_levels_summary
+
+ecol1, ecol2, ecol3, ecol4 = st.columns(4)
 
 with ecol1:
     csv = display_chain.to_csv(index=False)
     st.download_button(
-        "📥 Export Chain (CSV)",
+        "📥 Chain (CSV)",
         csv,
         f"spx_gamma_{exp_str}.csv",
         "text/csv",
@@ -428,23 +446,101 @@ with ecol1:
     )
 
 with ecol2:
-    # Export levels as CSV
     levels_df = pd.DataFrame([levels])
     levels_csv = levels_df.to_csv(index=False)
     st.download_button(
-        "📥 Export Levels (CSV)",
+        "📥 Levels (CSV)",
         levels_csv,
         f"spx_levels_{exp_str}.csv",
         "text/csv",
         use_container_width=True,
     )
 
+with ecol3:
+    ts_code = generate_thinkscript(levels, spot, exp_str)
+    st.download_button(
+        "📥 ThinkScript",
+        ts_code,
+        f"spx_gamma_levels_{exp_str}.ts",
+        "text/plain",
+        use_container_width=True,
+    )
+
+with ecol4:
+    pine_code = generate_tradingview_pine(levels, spot, exp_str)
+    st.download_button(
+        "📥 Pine Script",
+        pine_code,
+        f"spx_gamma_levels_{exp_str}.pine",
+        "text/plain",
+        use_container_width=True,
+    )
+
+# Levels summary (Telegram/Discord format)
+with st.expander("📋 Levels Summary (copy for Telegram/Discord)", expanded=False):
+    summary = generate_levels_summary(levels, spot, exp_str)
+    st.code(summary, language=None)
+
+# ---------------------------------------------------------------------------
+# 8. DELTA-ADJUSTED GEX CHART
+# ---------------------------------------------------------------------------
+with st.expander("📊 Delta-Adjusted GEX Profile", expanded=False):
+    dadj_fig = go.Figure()
+    dadj_fig.add_trace(go.Bar(
+        x=chart_df["strike"], y=chart_df["dadj_pos"],
+        name="+DAdj GEX", marker_color="rgba(0,200,83,0.6)",
+        hovertemplate="Strike: %{x}<br>+DAdj GEX: %{y:.6f}<extra></extra>",
+    ))
+    dadj_fig.add_trace(go.Bar(
+        x=chart_df["strike"], y=chart_df["dadj_neg"],
+        name="−DAdj GEX", marker_color="rgba(255,23,68,0.6)",
+        hovertemplate="Strike: %{x}<br>−DAdj GEX: %{y:.6f}<extra></extra>",
+    ))
+    dadj_fig.add_vline(x=spot, line_dash="dash", line_color="#ffd600", line_width=1.5,
+                       annotation_text=f"SPX {spot:.0f}")
+    dadj_fig.update_layout(
+        title="Delta-Adjusted GEX by Strike (S²-Normalized × Delta)",
+        barmode="relative", height=380,
+        template="plotly_dark", paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
+        margin=dict(t=40, b=40, l=50, r=20), font=dict(size=11),
+    )
+    st.plotly_chart(dadj_fig, use_container_width=True)
+
+# ---------------------------------------------------------------------------
+# 9. VOLUME PROFILE CHART
+# ---------------------------------------------------------------------------
+with st.expander("📊 Volume Profile", expanded=False):
+    vol_fig = go.Figure()
+    vol_fig.add_trace(go.Bar(
+        x=chart_df["strike"], y=chart_df["c_volume"],
+        name="Call Volume", marker_color="rgba(0,200,83,0.5)",
+    ))
+    vol_fig.add_trace(go.Bar(
+        x=chart_df["strike"], y=chart_df["p_volume"],
+        name="Put Volume", marker_color="rgba(255,23,68,0.5)",
+    ))
+    vol_fig.add_vline(x=spot, line_dash="dash", line_color="#ffd600", line_width=1.5)
+    vol_fig.update_layout(
+        title="Volume by Strike",
+        barmode="group", height=350,
+        template="plotly_dark", paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
+        margin=dict(t=40, b=40, l=50, r=20), font=dict(size=11),
+    )
+    st.plotly_chart(vol_fig, use_container_width=True)
+
+# ---------------------------------------------------------------------------
+# 10. ThinkScript Code Viewer
+# ---------------------------------------------------------------------------
+with st.expander("📝 ThinkScript Study Code", expanded=False):
+    st.code(ts_code, language="java")
+    st.caption("Copy this into TOS → Studies → Edit → ThinkScript tab")
+
 # ---------------------------------------------------------------------------
 # Footer
 # ---------------------------------------------------------------------------
 st.markdown("---")
 st.caption(
-    f"SPX Gamma Dashboard v2.0 — Barchart data — "
+    f"SPX Gamma Dashboard v2.0 — Barchart data (CBOE fallback) — "
     f"Last refresh: {get_ny_time()} — "
     f"Replicates SPX_Gamma_Dashboard_v1_3b.xlsm logic"
 )
