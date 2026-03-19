@@ -1,10 +1,6 @@
 """
 data_fetcher.py — Barchart SPX options chain fetcher.
-Mirrors the working GEXdon gex_utils.py logic exactly:
-  - Session: /indices/quotes/$SPX/volatility-greeks?page=all
-  - XSRF: unquote() decoded
-  - Chain: /proxies/core-api/v1/options/get with baseSymbol + groupBy
-  - Quote: /proxies/core-api/v1/quotes/get with symbols (plural)
+Mirrors GEXdon gex_utils.py session/chain logic.
 """
 
 import re
@@ -29,27 +25,23 @@ PAGE_TYPE = "indices"
 OPTIONS_API = "https://www.barchart.com/proxies/core-api/v1/options/get"
 QUOTE_API = "https://www.barchart.com/proxies/core-api/v1/quotes/get"
 
-
-# ═══════════════════════════════════════
-# Barchart Session
-# ═══════════════════════════════════════
 _session = None
 _api_headers = None
 _page_html = None
+_parsed_expiries = []
 
 
 def _clean(v):
-    """Safely convert Barchart raw values to float. Strips commas, %, +."""
     if v is None:
         return 0.0
     try:
-        return float(str(v).replace(",", "").replace("%", "").replace("+", ""))
+        return float(str(v).replace(",", "").replace("%", "").replace("+", "").strip())
     except (ValueError, TypeError):
         return 0.0
 
 
 def _create_session():
-    global _session, _api_headers, _page_html
+    global _session, _api_headers, _page_html, _parsed_expiries
 
     page_url = f"https://www.barchart.com/{PAGE_TYPE}/quotes/{BASE_SYM}/volatility-greeks"
 
@@ -82,11 +74,16 @@ def _create_session():
             "x-xsrf-token": xsrf,
         }
         _session = sess
-        logger.info("Barchart session OK. XSRF: %s…", xsrf[:20])
+
+        # Parse available expiry dates from HTML
+        _parsed_expiries = _parse_expiry_dates_from_html(_page_html)
+        logger.info("Session OK. XSRF: %s… | %d expiries available", xsrf[:20], len(_parsed_expiries))
+        if _parsed_expiries:
+            logger.info("Available expiries: %s", ", ".join(_parsed_expiries[:10]))
         return True
 
     except Exception as e:
-        logger.error("Barchart session failed: %s", e)
+        logger.error("Session failed: %s", e)
         return False
 
 
@@ -143,7 +140,7 @@ def get_spx_quote() -> dict:
 
 
 def _parse_spot_from_html(html):
-    for pat in [r'"lastPrice"\s*:\s*"?([\d.]+)"?', r'"last"\s*:\s*"?([\d.]+)"?']:
+    for pat in [r'"lastPrice"\s*:\s*"?([\d,.]+)"?', r'"last"\s*:\s*"?([\d,.]+)"?']:
         m = re.search(pat, html)
         if m:
             try:
@@ -160,15 +157,14 @@ def get_spx_price() -> Optional[float]:
 
 
 # ═══════════════════════════════════════
-# Expiry Dates
+# Expiry Dates — parsed from Barchart HTML
 # ═══════════════════════════════════════
 def get_expirations() -> List[str]:
+    """Return actual available expiry dates from Barchart."""
     if not _ensure_session():
         return _calculate_expiry_dates()
-    if _page_html:
-        dates = _parse_expiry_dates_from_html(_page_html)
-        if dates:
-            return dates
+    if _parsed_expiries:
+        return _parsed_expiries
     return _calculate_expiry_dates()
 
 
@@ -212,11 +208,6 @@ def _calculate_expiry_dates(n=30) -> List[str]:
 # Options Chain
 # ═══════════════════════════════════════
 def _fetch_single_chain(expiry: str) -> Optional[pd.DataFrame]:
-    """
-    Fetch one expiry's chain from Barchart.
-    Uses /proxies/core-api/v1/options/get with:
-      baseSymbol, groupBy=optionType, orderBy=strikePrice, orderDir=asc
-    """
     if not _ensure_session():
         return None
 
@@ -241,7 +232,6 @@ def _fetch_single_chain(expiry: str) -> Optional[pd.DataFrame]:
         rows = []
         raw_data = data.get("data", {})
 
-        # GEXdon format: {"Call": [...], "Put": [...]} dict
         if isinstance(raw_data, dict):
             for opt_type, options in raw_data.items():
                 if not isinstance(options, list):
@@ -272,7 +262,6 @@ def _fetch_single_chain(expiry: str) -> Optional[pd.DataFrame]:
         df["openInterest"] = df["openInterest"].astype(int)
         df["volume"] = df["volume"].astype(int) if "volume" in df.columns else 0
 
-        # IV: auto-detect decimal vs percentage (GEXdon logic)
         if "volatility" in df.columns:
             vol_nonzero = df["volatility"][df["volatility"] > 0]
             if len(vol_nonzero) > 0:
@@ -298,10 +287,6 @@ def _fetch_single_chain(expiry: str) -> Optional[pd.DataFrame]:
 
 
 def get_options_chain(expiration: str, num_strikes: int = 50) -> Optional[pd.DataFrame]:
-    """
-    Fetch SPX options chain for a given expiration.
-    Returns merged call/put DataFrame matching the gamma dashboard column format.
-    """
     df = _fetch_single_chain(expiration)
     if df is None or df.empty:
         return None
@@ -350,8 +335,5 @@ def get_options_chain(expiration: str, num_strikes: int = 50) -> Optional[pd.Dat
     return merged
 
 
-# ═══════════════════════════════════════
-# Data source tracking
-# ═══════════════════════════════════════
 def get_active_source() -> str:
     return "barchart" if _session is not None else "none"
