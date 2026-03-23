@@ -21,8 +21,8 @@ BASE_SYM = "$SPX"
 PAGE_TYPE = "indices"
 OPTIONS_API = "https://www.barchart.com/proxies/core-api/v1/options/get"
 QUOTE_API = "https://www.barchart.com/proxies/core-api/v1/quotes/get"
-TV_SYMBOL = "SPX500USD"   # OANDA uses SPX500USD, not SPX
-TV_EXCHANGES = ["OANDA"]  # restrict to only OANDA
+TV_SYMBOL = "SPX"
+TV_EXCHANGES = ["SPCFD", "FOREXCOM", "SP"]
 
 _session = None
 _api_headers = None
