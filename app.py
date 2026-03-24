@@ -23,8 +23,8 @@ st.markdown("""<style>
 #MainMenu,header,footer,[data-testid="stHeader"],[data-testid="stToolbar"]{display:none!important;visibility:hidden!important;}
 .block-container{padding-top:0.5rem;}
 .gamma-banner{text-align:center;padding:8px;border-radius:6px;font-weight:700;font-size:1.1em;margin:4px 0;}
-.gamma-call{background:rgba(0,200,83,0.15);color:#00c853;border:1px solid #00c853;}
-.gamma-put{background:rgba(255,23,68,0.15);color:#ff1744;border:1px solid #ff1744;}
+.gamma-call{background:rgba(30,144,255,0.15);color:#1e90ff;border:1px solid #1e90ff;}
+.gamma-put{background:rgba(255,0,255,0.15);color:#ff00ff;border:1px solid #ff00ff;}
 .status-bar{display:flex;justify-content:space-between;align-items:center;padding:4px 12px;background:#16213e;border-radius:6px;margin-bottom:8px;}
 .status-text{font-size:0.82em;color:#a0a0a0;}
 </style>""", unsafe_allow_html=True)
@@ -156,7 +156,7 @@ with col_ladder:
         # Row background — level zones or ATM
         bg = ""
         if k == atm:
-            bg = "background:rgba(0,200,83,0.25);"
+            bg = "background:rgba(30,144,255,0.25);"
         elif k in strike_levels:
             # Use first level's color at 15% opacity
             first_key = strike_levels[k][0]
@@ -172,23 +172,23 @@ with col_ladder:
         label_html = " ".join(label_parts)
 
         # Bars
-        cv_bar = _bar(r["c_volume"], mx_cv, "#00c853")
-        pv_bar = _bar(r["p_volume"], mx_pv, "#ff4757")
-        gv = r["net_gex"]; gc = "#00c853" if gv>=0 else "#ff1744"
+        cv_bar = _bar(r["c_volume"], mx_cv, "#1e90ff")
+        pv_bar = _bar(r["p_volume"], mx_pv, "#ff00ff")
+        gv = r["net_gex"]; gc = "#1e90ff" if gv>=0 else "#ff00ff"
         gex_bar = _bar(abs(gv), mx_gex, gc)
         gex_str = f'<span style="color:{gc}">{gv:,.0f}</span>'
 
         # Heatmap backgrounds for OI cells
-        coi_bg = _heat(r["c_oi"], mx_coi, "0,200,83")
-        poi_bg = _heat(r["p_oi"], mx_poi, "255,23,68")
+        coi_bg = _heat(r["c_oi"], mx_coi, "30,144,255")
+        poi_bg = _heat(r["p_oi"], mx_poi, "255,0,255")
         toi_bg = _heat(r["total_oi"], mx_toi, "100,100,255")
-        cv_bg = _heat(r["c_volume"], mx_cv, "0,200,83")
-        pv_bg = _heat(r["p_volume"], mx_pv, "255,71,87")
+        cv_bg = _heat(r["c_volume"], mx_cv, "30,144,255")
+        pv_bg = _heat(r["p_volume"], mx_pv, "255,0,255")
 
         # DEX color
-        dex = r["net_dex"]; dc = "#00c853" if dex>=0 else "#ff1744"
+        dex = r["net_dex"]; dc = "#1e90ff" if dex>=0 else "#ff00ff"
         # Net OI color
-        noi = r["net_oi"]; nc = "#00c853" if noi>=0 else "#ff1744"
+        noi = r["net_oi"]; nc = "#1e90ff" if noi>=0 else "#ff00ff"
 
         strike_color = "#ffd600" if k==atm else "#e0e0e0"
         spot_dot = " •" if k==atm else ""
@@ -227,11 +227,11 @@ with col_charts:
     def _prof(y_pos, y_neg, title, split=False, tfmt=","):
         fig = go.Figure()
         if split:
-            fig.add_trace(go.Bar(x=cdf["strike"],y=y_pos,marker_color="rgba(0,200,83,0.7)",name="+"))
-            fig.add_trace(go.Bar(x=cdf["strike"],y=y_neg,marker_color="rgba(255,23,68,0.7)",name="−"))
+            fig.add_trace(go.Bar(x=cdf["strike"],y=y_pos,marker_color="rgba(30,144,255,0.7)",name="+"))
+            fig.add_trace(go.Bar(x=cdf["strike"],y=y_neg,marker_color="rgba(255,0,255,0.7)",name="−"))
         else:
             net = y_pos+y_neg if y_neg is not None else y_pos
-            colors = ["#00c853" if v>=0 else "#ff1744" for v in net]
+            colors = ["#1e90ff" if v>=0 else "#ff00ff" for v in net]
             fig.add_trace(go.Bar(x=cdf["strike"],y=net,marker_color=colors))
         fig.add_vline(x=spot,line_dash="dash",line_color="#ffd600",line_width=1)
         fig.update_layout(title=dict(text=title,font=dict(size=11,color="#a0a0a0")),
@@ -263,11 +263,11 @@ def _gauge(value, title):
                         "tickfont":{"size":8,"color":"#777"}},
                "bar":{"color":"#ffd600","thickness":0.3},
                "bgcolor":"#0e1117","borderwidth":0,
-               "steps":[{"range":[0,10],"color":"rgba(255,23,68,0.5)"},
+               "steps":[{"range":[0,10],"color":"rgba(255,0,255,0.5)"},
                         {"range":[10,25],"color":"rgba(150,150,150,0.3)"},
-                        {"range":[25,75],"color":"rgba(0,200,83,0.35)"},
+                        {"range":[25,75],"color":"rgba(30,144,255,0.35)"},
                         {"range":[75,90],"color":"rgba(150,150,150,0.3)"},
-                        {"range":[90,100],"color":"rgba(255,23,68,0.5)"}],
+                        {"range":[90,100],"color":"rgba(255,0,255,0.5)"}],
                "threshold":{"line":{"color":"#ffd600","width":3},"thickness":0.8,"value":value}},
     ))
     fig.update_layout(paper_bgcolor="#0e1117",plot_bgcolor="#0e1117",
