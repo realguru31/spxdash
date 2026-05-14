@@ -412,73 +412,68 @@ else:
         )
         return fig
 
-    # ── Panel 1: Volume Delta ──
-    with st.expander(f"📊 Panel 1 — Volume Delta from Open  ({bl_caption})", expanded=False):
-        c_delta = [max(0, int(r["c_volume"]) - _get_bl(r["strike"], "c_volume")) for _, r in ldf_s.iterrows()]
-        p_delta = [max(0, int(r["p_volume"]) - _get_bl(r["strike"], "p_volume")) for _, r in ldf_s.iterrows()]
-        fig1 = _delta_chart(strikes_list, c_delta, p_delta, "Volume Delta")
+    # ── Single expander, 2x2 grid + full-width Panel 5 ──
+    with st.expander(f"📊 Delta Analysis  ({bl_caption})", expanded=False):
 
-        # Add straddle lines if available
-        sd = straddle_info
-        if sd.get("upper") and sd.get("lower") and sd.get("price"):
-            bl_spot = sd.get("upper", spot) - sd.get("price", 0)
-            for y_val, label in [(sd["upper"], f"↑ +{sd['price']:.1f} ({sd['upper']:.0f})"),
-                                  (sd["lower"], f"↓ −{sd['price']:.1f} ({sd['lower']:.0f})")]:
-                fig1.add_hline(
-                    y=y_val, line_dash="dot", line_color="#ffd600",
-                    line_width=1.5,
-                    annotation_text=label,
-                    annotation_font_color="#ffd600",
-                    annotation_font_size=9,
-                    annotation_position="left",
-                )
-            fig1.update_layout(title=dict(
-                text=f"Volume Delta &nbsp;<span style='font-size:10px;color:#888'>Straddle @ open: {sd['price']:.2f} pts</span>",
-                font=dict(size=12, color="#a0a0a0")))
+        # Row 1: Panel 1 + Panel 2
+        r1c1, r1c2 = st.columns(2)
 
-        st.plotly_chart(fig1, use_container_width=True, key="dp1")
-        st.caption("Bars = volume added since baseline. Zero-change strikes show no bar.")
+        with r1c1:
+            st.markdown("**Volume Delta from Open**")
+            c_delta = [max(0, int(r["c_volume"]) - _get_bl(r["strike"], "c_volume")) for _, r in ldf_s.iterrows()]
+            p_delta = [max(0, int(r["p_volume"]) - _get_bl(r["strike"], "p_volume")) for _, r in ldf_s.iterrows()]
+            fig1 = _delta_chart(strikes_list, c_delta, p_delta, "Volume Delta")
+            sd = straddle_info
+            if sd.get("upper") and sd.get("lower") and sd.get("price"):
+                for y_val, label in [(sd["upper"], f"↑ +{sd['price']:.1f} ({sd['upper']:.0f})"),
+                                      (sd["lower"], f"↓ −{sd['price']:.1f} ({sd['lower']:.0f})")]:
+                    fig1.add_hline(y=y_val, line_dash="dot", line_color="#ffd600",
+                                   line_width=1.5, annotation_text=label,
+                                   annotation_font_color="#ffd600", annotation_font_size=9,
+                                   annotation_position="left")
+                fig1.update_layout(title=dict(
+                    text=f"Volume Delta &nbsp;<span style='font-size:9px;color:#888'>Straddle @ open: {sd['price']:.2f} pts</span>",
+                    font=dict(size=11, color="#a0a0a0")))
+            st.plotly_chart(fig1, use_container_width=True, key="dp1")
 
-    # ── Panel 2: GEX Delta ──
-    with st.expander(f"📊 Panel 2 — GEX Delta from Open  ({bl_caption})", expanded=False):
-        c_gex_d = [float(r["call_gex"]) - _get_bl(r["strike"], "call_gex") for _, r in ldf_s.iterrows()]
-        p_gex_d = [abs(float(r["put_gex"])) - abs(_get_bl(r["strike"], "put_gex")) for _, r in ldf_s.iterrows()]
-        fig2 = _delta_chart(strikes_list, c_gex_d, p_gex_d, "GEX Delta")
-        fig2.update_layout(xaxis_title="← Put GEX Δ     Call GEX Δ →")
-        st.plotly_chart(fig2, use_container_width=True, key="dp2")
-        st.caption("Change in gamma exposure since baseline. Positive = more gamma created at that strike.")
+        with r1c2:
+            st.markdown("**GEX Delta from Open**")
+            c_gex_d = [float(r["call_gex"]) - _get_bl(r["strike"], "call_gex") for _, r in ldf_s.iterrows()]
+            p_gex_d = [abs(float(r["put_gex"])) - abs(_get_bl(r["strike"], "put_gex")) for _, r in ldf_s.iterrows()]
+            fig2 = _delta_chart(strikes_list, c_gex_d, p_gex_d, "GEX Delta")
+            fig2.update_layout(xaxis_title="← Put GEX Δ     Call GEX Δ →")
+            st.plotly_chart(fig2, use_container_width=True, key="dp2")
 
-    # ── Panel 3: Volume-GEX ──
-    with st.expander(f"📊 Panel 3 — Volume-GEX Intraday  ({bl_caption})", expanded=False):
-        c_vgex = [float(r["c_volume"]) * float(r["c_gamma"]) * 100 for _, r in ldf_s.iterrows()]
-        p_vgex = [float(r["p_volume"]) * float(r["p_gamma"]) * 100 for _, r in ldf_s.iterrows()]
-        fig3 = _delta_chart(strikes_list, c_vgex, p_vgex, "Volume-GEX", fmt=".1f")
-        fig3.update_layout(xaxis_title="← Put Vol-GEX     Call Vol-GEX →")
-        st.plotly_chart(fig3, use_container_width=True, key="dp3")
-        st.caption("GEX using today's volume instead of OI. Shows intraday gamma being created.")
+        # Row 2: Panel 3 + Panel 4
+        r2c1, r2c2 = st.columns(2)
 
-    # ── Panel 4: V/OI Ratio ──
-    with st.expander(f"📊 Panel 4 — V/OI Ratio  ({bl_caption})", expanded=False):
-        c_voi = [float(r["c_voi"]) for _, r in ldf_s.iterrows()]
-        p_voi = [float(r["p_voi"]) for _, r in ldf_s.iterrows()]
-        fig4 = _delta_chart(strikes_list, c_voi, p_voi, "V/OI", fmt=".2f")
-        fig4.update_layout(xaxis_title="← Put V/OI     Call V/OI →")
-        st.plotly_chart(fig4, use_container_width=True, key="dp4")
-        st.caption("Ratio > 1 = more volume than prior OI — new positions being opened aggressively.")
+        with r2c1:
+            st.markdown("**Volume-GEX (Intraday Gamma)**")
+            c_vgex = [float(r["c_volume"]) * float(r["c_gamma"]) * 100 for _, r in ldf_s.iterrows()]
+            p_vgex = [float(r["p_volume"]) * float(r["p_gamma"]) * 100 for _, r in ldf_s.iterrows()]
+            fig3 = _delta_chart(strikes_list, c_vgex, p_vgex, "Volume-GEX", fmt=".1f")
+            fig3.update_layout(xaxis_title="← Put Vol-GEX     Call Vol-GEX →")
+            st.plotly_chart(fig3, use_container_width=True, key="dp3")
 
-    # ── Panel 5: Spot + Straddle time series ──
-    with st.expander(f"📊 Panel 5 — Spot & Straddle Through the Day", expanded=False):
-        # Get intraday spot from tvDatafeed
+        with r2c2:
+            st.markdown("**V/OI Ratio**")
+            c_voi = [float(r["c_voi"]) for _, r in ldf_s.iterrows()]
+            p_voi = [float(r["p_voi"]) for _, r in ldf_s.iterrows()]
+            fig4 = _delta_chart(strikes_list, c_voi, p_voi, "V/OI", fmt=".2f")
+            fig4.update_layout(xaxis_title="← Put V/OI     Call V/OI →")
+            st.plotly_chart(fig4, use_container_width=True, key="dp4")
+
+        # Row 3: Panel 5 full width
+        st.markdown("**Spot & Straddle Through the Day**")
         spot_df = pd.DataFrame()
         try:
             from tvDatafeed import TvDatafeed, Interval
             tv = TvDatafeed()
-            for ex in ["CBOE", "SP", "FOREXCOM", "OANDA"]:
+            for ex in ["CBOE", "SP", "FOREXCOM", "OANDA", "TVC"]:
                 try:
                     df_tv = tv.get_hist(symbol="SPX", exchange=ex,
                                         interval=Interval.in_1_minute, n_bars=400)
                     if df_tv is not None and not df_tv.empty:
-                        # Filter to today RTH
                         import pytz as _pytz
                         _nyt = _pytz.timezone("US/Eastern")
                         if df_tv.index.tz is None:
@@ -501,53 +496,46 @@ else:
         straddle_ts = st.session_state.get("straddle_ts", [])
 
         if spot_df.empty and not straddle_ts:
-            st.info("No data yet — available during RTH.")
+            st.caption("Spot & straddle chart available during RTH.")
         else:
             fig5 = go.Figure()
 
-            # Spot line (left axis) — use actual datetime index
             if not spot_df.empty:
                 fig5.add_trace(go.Scatter(
                     x=spot_df.index.to_pydatetime(),
                     y=spot_df["close"].tolist(),
-                    name="Spot Price",
-                    line=dict(color="#ff00ff", width=1.5),
+                    name="Spot", line=dict(color="#ff00ff", width=1.5),
                     yaxis="y1",
                 ))
 
-            # Straddle line (right axis) — convert HH:MM strings to datetime
             if straddle_ts:
                 import pytz as _pytz2
                 _et2 = _pytz2.timezone("US/Eastern")
-                s_datetimes = []
+                s_dts, s_vals, s_colors = [], [], []
                 for p in straddle_ts:
                     t_str = p["time"].replace(" ET", "")
                     try:
                         hh, mm = int(t_str[:2]), int(t_str[3:5])
                         dt = _et2.localize(datetime(today_et.year, today_et.month, today_et.day, hh, mm))
-                        s_datetimes.append(dt)
+                        s_dts.append(dt)
+                        s_vals.append(p["straddle"])
+                        s_colors.append("#ffd600" if p["source"] == "baseline" else "#00c853")
                     except:
-                        s_datetimes.append(None)
+                        continue
 
-                s_datetimes = [d for d in s_datetimes if d is not None]
-                s_vals = [p["straddle"] for i, p in enumerate(straddle_ts) if s_datetimes]
-                marker_colors = ["#ffd600" if p["source"] == "baseline" else "#00c853"
-                                  for p in straddle_ts]
-
-                fig5.add_trace(go.Scatter(
-                    x=s_datetimes,
-                    y=[p["straddle"] for p in straddle_ts],
-                    name="Straddle Price",
-                    line=dict(color="#00c853", width=1.5),
-                    mode="lines+markers",
-                    marker=dict(color=marker_colors, size=6),
-                    yaxis="y2",
-                ))
+                if s_dts:
+                    fig5.add_trace(go.Scatter(
+                        x=s_dts, y=s_vals,
+                        name="Straddle", line=dict(color="#00c853", width=1.5),
+                        mode="lines+markers",
+                        marker=dict(color=s_colors, size=6),
+                        yaxis="y2",
+                    ))
 
             fig5.update_layout(
-                height=420, template="plotly_dark",
+                height=380, template="plotly_dark",
                 paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
-                margin=dict(t=30, b=40, l=60, r=60),
+                margin=dict(t=20, b=40, l=60, r=60),
                 font=dict(size=9, color="#a0a0a0"),
                 legend=dict(orientation="h", yanchor="bottom", y=1.01,
                             xanchor="center", x=0.5, font=dict(size=10)),
@@ -557,14 +545,13 @@ else:
                 yaxis=dict(gridcolor="#1a2a4a",
                            title=dict(text="Spot", font=dict(color="#ff00ff")),
                            tickfont=dict(color="#ff00ff")),
-                yaxis2=dict(title=dict(text="Straddle Price", font=dict(color="#00c853")),
+                yaxis2=dict(title=dict(text="Straddle", font=dict(color="#00c853")),
                             tickfont=dict(color="#00c853"),
                             overlaying="y", side="right",
                             gridcolor="rgba(0,200,83,0.1)"),
             )
             st.plotly_chart(fig5, use_container_width=True, key="dp5")
-            st.caption(f"Spot: tvDatafeed 1-min bars. Straddle: {len(straddle_ts)} data points "
-                       f"(🟡 = baseline, 🟢 = live). Updates every 3 min during RTH.")
+            st.caption(f"Spot: tvDatafeed 1-min. Straddle: {len(straddle_ts)} pts (🟡=baseline 🟢=live). Refreshes every 3 min.")
 
 # ══════════════════════════════════════
 # LEVELS + METRICS
