@@ -351,7 +351,7 @@ def _gauge(value, title):
     fig = go.Figure(go.Indicator(
         mode="gauge+number", value=value,
         number={"suffix": "%", "font": {"size": 24, "color": "#e0e0e0"}},
-        title={"text": title, "font": {"size": 11, "color": "#a0a0a0"}},
+        title={"text": title, "font": {"size": 16, "color": "#a0a0a0"}},
         gauge={"axis": {"range": [0, 100], "dtick": 10,
                         "tickfont": {"size": 8, "color": "#777"}},
                "bar": {"color": "#ffd600", "thickness": 0.3},
