@@ -505,27 +505,42 @@ else:
         else:
             fig5 = go.Figure()
 
-            # Spot line (left axis)
+            # Spot line (left axis) — use actual datetime index
             if not spot_df.empty:
-                times = [t.strftime("%H:%M") for t in spot_df.index]
                 fig5.add_trace(go.Scatter(
-                    x=times, y=spot_df["close"].tolist(),
-                    name="Spot Price", line=dict(color="#ff00ff", width=1.5),
+                    x=spot_df.index.to_pydatetime(),
+                    y=spot_df["close"].tolist(),
+                    name="Spot Price",
+                    line=dict(color="#ff00ff", width=1.5),
                     yaxis="y1",
                 ))
 
-            # Straddle line (right axis)
+            # Straddle line (right axis) — convert HH:MM strings to datetime
             if straddle_ts:
-                s_times = [p["time"].replace(" ET", "") for p in straddle_ts]
-                s_vals = [p["straddle"] for p in straddle_ts]
-                # Mark baseline point differently
+                import pytz as _pytz2
+                _et2 = _pytz2.timezone("US/Eastern")
+                s_datetimes = []
+                for p in straddle_ts:
+                    t_str = p["time"].replace(" ET", "")
+                    try:
+                        hh, mm = int(t_str[:2]), int(t_str[3:5])
+                        dt = _et2.localize(datetime(today_et.year, today_et.month, today_et.day, hh, mm))
+                        s_datetimes.append(dt)
+                    except:
+                        s_datetimes.append(None)
+
+                s_datetimes = [d for d in s_datetimes if d is not None]
+                s_vals = [p["straddle"] for i, p in enumerate(straddle_ts) if s_datetimes]
                 marker_colors = ["#ffd600" if p["source"] == "baseline" else "#00c853"
                                   for p in straddle_ts]
+
                 fig5.add_trace(go.Scatter(
-                    x=s_times, y=s_vals,
-                    name="Straddle Price", line=dict(color="#00c853", width=1.5),
+                    x=s_datetimes,
+                    y=[p["straddle"] for p in straddle_ts],
+                    name="Straddle Price",
+                    line=dict(color="#00c853", width=1.5),
                     mode="lines+markers",
-                    marker=dict(color=marker_colors, size=5),
+                    marker=dict(color=marker_colors, size=6),
                     yaxis="y2",
                 ))
 
