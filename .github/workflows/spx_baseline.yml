@@ -1,0 +1,41 @@
+name: SPX Baseline Snapshot
+on:
+  schedule:
+    # 9:31 ET = 14:31 UTC, weekdays only
+    - cron: '31 14 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -q requests pandas numpy pytz
+          pip install -q git+https://github.com/rongardF/tvdatafeed.git
+
+      - name: Run baseline snapshot
+        run: python snapshot_worker.py
+
+      - name: Commit and push baseline
+        run: |
+          git config user.name "SPX Baseline Bot"
+          git config user.email "spx-bot@users.noreply.github.com"
+          git add data/baseline/
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M UTC")
+            git commit -m "📸 Baseline: ${TIMESTAMP}"
+            git push
+          fi
