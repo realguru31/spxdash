@@ -230,7 +230,8 @@ if "straddle_ts" not in st.session_state or st.session_state.get("straddle_ts_da
 # Append current straddle on each refresh (avoid duplicates within same minute)
 # Use fixed baseline ATM strike so we track same contract pair all day
 fixed_atm = straddle_info.get("atm_strike") if straddle_info else None
-current_straddle = _get_current_straddle(full_chain, spot, fixed_strike=fixed_atm)
+# Live straddle always tracks current ATM — fixed_atm only used for Panel 1 reference lines
+current_straddle = _get_current_straddle(full_chain, spot, fixed_strike=None)
 if current_straddle and is_market_hours():
     now_str = et_now.strftime("%H:%M ET")
     ts = st.session_state["straddle_ts"]
