@@ -172,14 +172,19 @@ with st.sidebar:
 
 # ── Straddle time series ──
 # Seed from baseline on first load, append current straddle each refresh
-def _get_current_straddle(chain_df, current_spot):
-    """Get current ATM straddle from live chain."""
+def _get_current_straddle(chain_df, current_spot, fixed_strike=None):
+    """
+    Get current straddle price.
+    Uses fixed_strike (baseline ATM) if provided so we track the same
+    contract pair decaying through the day, not a rolling ATM.
+    """
     if chain_df.empty or current_spot <= 0:
         return None
-    atm = round(current_spot / 5) * 5
-    near = chain_df[(chain_df["strike"] >= atm - 5) & (chain_df["strike"] <= atm + 5)]
+    # Use fixed baseline strike if available, else current ATM
+    target = fixed_strike if fixed_strike else round(current_spot / 5) * 5
+    near = chain_df[(chain_df["strike"] >= target - 5) & (chain_df["strike"] <= target + 5)]
     if near.empty:
-        near = chain_df.iloc[(chain_df["strike"] - current_spot).abs().argsort()[:1]]
+        near = chain_df.iloc[(chain_df["strike"] - target).abs().argsort()[:1]]
     if near.empty:
         return None
     row = near.iloc[0]
@@ -202,7 +207,9 @@ if "straddle_ts" not in st.session_state or st.session_state.get("straddle_ts_da
     st.session_state["straddle_ts_date"] = today_str
 
 # Append current straddle on each refresh (avoid duplicates within same minute)
-current_straddle = _get_current_straddle(full_chain, spot)
+# Use fixed baseline ATM strike so we track same contract pair all day
+fixed_atm = straddle_info.get("atm_strike") if straddle_info else None
+current_straddle = _get_current_straddle(full_chain, spot, fixed_strike=fixed_atm)
 if current_straddle and is_market_hours():
     now_str = et_now.strftime("%H:%M ET")
     ts = st.session_state["straddle_ts"]
