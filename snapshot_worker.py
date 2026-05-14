@@ -1,7 +1,7 @@
 """
 snapshot_worker.py — Runs via GitHub Actions at 9:31 ET.
 Fetches SPX options chain and saves as today's baseline.
-Saves only what's needed for delta panels: strike, volumes, OI, GEX.
+Saves: strike volumes, OI, GEX, and ATM straddle price.
 """
 
 import os
@@ -9,26 +9,26 @@ import json
 import requests
 import pandas as pd
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timedelta
 from urllib.parse import unquote
 import pytz
 
-# ── Config ──
 BASE_SYM = "$SPX"
 PAGE_TYPE = "indices"
 OPTIONS_API = "https://www.barchart.com/proxies/core-api/v1/options/get"
+QUOTE_API = "https://www.barchart.com/proxies/core-api/v1/quotes/get"
 _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/120.0.0.0 Safari/537.36"
 )
 
-# ── Output path ──
 os.makedirs("data/baseline", exist_ok=True)
 
+
 def get_today_et():
-    et = pytz.timezone("US/Eastern")
-    return datetime.now(et)
+    return datetime.now(pytz.timezone("US/Eastern"))
+
 
 def create_session():
     page_url = f"https://www.barchart.com/{PAGE_TYPE}/quotes/{BASE_SYM}/volatility-greeks"
@@ -40,8 +40,7 @@ def create_session():
         "user-agent": _UA,
     }, timeout=15)
     r.raise_for_status()
-    cookies = sess.cookies.get_dict()
-    xsrf = unquote(cookies["XSRF-TOKEN"])
+    xsrf = unquote(sess.cookies.get_dict()["XSRF-TOKEN"])
     headers = {
         "accept": "application/json",
         "accept-encoding": "gzip, deflate, br",
@@ -53,6 +52,40 @@ def create_session():
     print(f"Session OK. XSRF: {xsrf[:20]}...")
     return sess, headers
 
+
+def get_spot(sess, headers):
+    """Get SPX spot price."""
+    try:
+        r = sess.get(QUOTE_API, params={
+            "symbols": BASE_SYM,
+            "fields": "lastPrice",
+        }, headers=headers, timeout=10)
+        r.raise_for_status()
+        items = r.json().get("data", [])
+        if items:
+            raw = (items[0] if isinstance(items, list) else items).get("raw", {})
+            lp = raw.get("lastPrice")
+            if lp:
+                return float(str(lp).replace(",", ""))
+    except Exception as e:
+        print(f"Spot fetch failed: {e}")
+
+    # tvDatafeed fallback
+    try:
+        from tvDatafeed import TvDatafeed, Interval
+        tv = TvDatafeed()
+        for ex in ["CBOE", "SP", "FOREXCOM"]:
+            try:
+                df = tv.get_hist(symbol="SPX", exchange=ex, interval=Interval.in_1_minute, n_bars=1)
+                if df is not None and not df.empty:
+                    return float(df["close"].iloc[-1])
+            except:
+                continue
+    except:
+        pass
+    return None
+
+
 def fetch_chain(sess, headers, expiry):
     r = sess.get(OPTIONS_API, params={
         "baseSymbol": BASE_SYM,
@@ -61,7 +94,7 @@ def fetch_chain(sess, headers, expiry):
         "orderBy": "strikePrice",
         "orderDir": "desc",
         "raw": "1",
-        "fields": "strikePrice,volume,openInterest,gamma,optionType",
+        "fields": "strikePrice,lastPrice,volume,openInterest,gamma,optionType",
     }, headers=headers, timeout=15)
     r.raise_for_status()
     data = r.json().get("data", {})
@@ -77,15 +110,44 @@ def fetch_chain(sess, headers, expiry):
     if not rows:
         return None
     df = pd.DataFrame(rows)
-    for col in ["strikePrice", "volume", "openInterest", "gamma"]:
+    for col in ["strikePrice", "lastPrice", "volume", "openInterest", "gamma"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
     df["openInterest"] = df["openInterest"].astype(int)
     df["volume"] = df["volume"].astype(int)
     return df
 
+
+def compute_straddle(df, spot):
+    """
+    ATM straddle = ATM call last + ATM put last.
+    ATM = strike closest to spot, rounded to nearest 5.
+    Returns (straddle_price, atm_strike, call_price, put_price).
+    """
+    if spot is None or spot <= 0:
+        return None, None, None, None
+
+    atm = round(spot / 5) * 5
+    calls = df[df["optionType"] == "Call"]
+    puts = df[df["optionType"] == "Put"]
+
+    # Find closest strike to ATM in each side
+    def _get_price(side_df, target):
+        if side_df.empty:
+            return 0.0, target
+        idx = (side_df["strikePrice"] - target).abs().idxmin()
+        row = side_df.loc[idx]
+        return float(row["lastPrice"]), int(row["strikePrice"])
+
+    c_price, c_strike = _get_price(calls, atm)
+    p_price, p_strike = _get_price(puts, atm)
+
+    straddle = round(c_price + p_price, 2)
+    print(f"  ATM: {atm}, Call({c_strike})={c_price}, Put({p_strike})={p_price}, Straddle={straddle}")
+    return straddle, atm, c_price, p_price
+
+
 def build_baseline(df):
-    """Aggregate by strike, compute GEX, return dict keyed by strike."""
     calls = df[df["optionType"] == "Call"].groupby("strikePrice").agg(
         c_volume=("volume", "sum"),
         c_oi=("openInterest", "sum"),
@@ -100,7 +162,6 @@ def build_baseline(df):
     merged["call_gex"] = np.round(merged["c_oi"] * merged["c_gamma"] * 100, 0)
     merged["put_gex"] = -np.round(merged["p_gamma"] * merged["p_oi"] * 100, 0)
     merged["net_gex"] = merged["call_gex"] + merged["put_gex"]
-
     result = {}
     for _, row in merged.iterrows():
         result[int(row["strikePrice"])] = {
@@ -114,24 +175,30 @@ def build_baseline(df):
         }
     return result
 
+
 def main():
     now_et = get_today_et()
     today_str = now_et.strftime("%Y-%m-%d")
-    expiry = today_str  # 0DTE baseline
-    print(f"Running baseline snapshot for {expiry} at {now_et.strftime('%H:%M ET')}")
+    expiry = today_str
+    print(f"Baseline snapshot: {expiry} at {now_et.strftime('%H:%M ET')}")
 
     sess, headers = create_session()
-    df = fetch_chain(sess, headers, expiry)
 
+    spot = get_spot(sess, headers)
+    print(f"Spot: {spot}")
+
+    df = fetch_chain(sess, headers, expiry)
     if df is None or df.empty:
-        print(f"No chain data for {expiry} — trying tomorrow")
-        from datetime import timedelta
+        print(f"No chain for {expiry} — trying tomorrow")
         tomorrow = (now_et.date() + timedelta(days=1)).strftime("%Y-%m-%d")
         df = fetch_chain(sess, headers, tomorrow)
         if df is None or df.empty:
-            print("Failed to fetch any chain. Exiting.")
+            print("Failed. Exiting.")
             return
         expiry = tomorrow
+
+    # Straddle
+    straddle, atm_strike, c_price, p_price = compute_straddle(df, spot)
 
     baseline = build_baseline(df)
     output = {
@@ -139,14 +206,24 @@ def main():
         "expiry": expiry,
         "timestamp_et": now_et.strftime("%Y-%m-%d %H:%M ET"),
         "source": "github_actions",
+        "spot_at_baseline": spot,
+        "straddle": {
+            "price": straddle,
+            "atm_strike": atm_strike,
+            "call_price": c_price,
+            "put_price": p_price,
+            "upper": round(spot + straddle, 2) if spot and straddle else None,
+            "lower": round(spot - straddle, 2) if spot and straddle else None,
+        },
         "strikes": baseline,
     }
 
     out_path = f"data/baseline/{today_str}.json"
     with open(out_path, "w") as f:
         json.dump(output, f)
+    print(f"Saved {len(baseline)} strikes → {out_path}")
+    print(f"Straddle: {straddle} (upper={output['straddle']['upper']}, lower={output['straddle']['lower']})")
 
-    print(f"Saved {len(baseline)} strikes to {out_path}")
 
 if __name__ == "__main__":
     main()
