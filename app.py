@@ -47,6 +47,19 @@ with st.sidebar:
     if st.button("🔄 Refresh Now", use_container_width=True):
         st.cache_data.clear(); st.rerun()
     st.divider()
+    if st.button("🗑️ Clear Baseline", use_container_width=True):
+        # Delete today's baseline file if it exists
+        import os as _os
+        bl_path = f"data/baseline/{datetime.now().strftime('%Y-%m-%d')}.json"
+        if _os.path.exists(bl_path):
+            _os.remove(bl_path)
+        # Clear session state baseline and straddle ts
+        for key in ["baseline", "baseline_date", "straddle_ts", "straddle_ts_date"]:
+            if key in st.session_state:
+                del st.session_state[key]
+        st.cache_data.clear()
+        st.rerun()
+    st.divider()
     et_now = get_ny_datetime()
     st.markdown(f"**{'🟢 MARKET OPEN' if is_market_hours() else '🔴 MARKET CLOSED'}**")
     st.markdown(f"**ET:** {et_now.strftime('%H:%M:%S')}")
@@ -359,20 +372,25 @@ def _gauge(value, title):
     fig = go.Figure(go.Indicator(
         mode="gauge+number", value=value,
         number={"suffix": "%", "font": {"size": 24, "color": "#e0e0e0"}},
-        title={"text": title, "font": {"size": 11, "color": "#a0a0a0"}},
-        gauge={"axis": {"range": [0, 100], "dtick": 10,
-                        "tickfont": {"size": 8, "color": "#777"}},
-               "bar": {"color": "#ffd600", "thickness": 0.3},
-               "bgcolor": "#0e1117", "borderwidth": 0,
-               "steps": [{"range": [0, 10], "color": "rgba(255,0,255,0.5)"},
-                         {"range": [10, 25], "color": "rgba(150,150,150,0.3)"},
-                         {"range": [25, 75], "color": "rgba(30,144,255,0.35)"},
-                         {"range": [75, 90], "color": "rgba(150,150,150,0.3)"},
-                         {"range": [90, 100], "color": "rgba(255,0,255,0.5)"}],
-               "threshold": {"line": {"color": "#ffd600", "width": 3}, "thickness": 0.8, "value": value}},
+        title={"text": title, "font": {"size": 14, "color": "#e0e0e0"}},
+        gauge={
+            "axis": {"range": [0, 100], "dtick": 10,
+                     "tickfont": {"size": 8, "color": "#777"}},
+            "bar": {"color": "#ffd600", "thickness": 0.3},
+            "bgcolor": "#0e1117", "borderwidth": 0,
+            "steps": [{"range": [0, 10], "color": "rgba(255,0,255,0.5)"},
+                      {"range": [10, 25], "color": "rgba(150,150,150,0.3)"},
+                      {"range": [25, 75], "color": "rgba(30,144,255,0.35)"},
+                      {"range": [75, 90], "color": "rgba(150,150,150,0.3)"},
+                      {"range": [90, 100], "color": "rgba(255,0,255,0.5)"}],
+            "threshold": {"line": {"color": "#ffd600", "width": 3},
+                          "thickness": 0.8, "value": value}},
     ))
-    fig.update_layout(paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
-                      font={"color": "#e0e0e0"}, height=180, margin=dict(t=30, b=0, l=20, r=20))
+    fig.update_layout(
+        paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
+        font={"color": "#e0e0e0"}, height=220,
+        margin=dict(t=60, b=10, l=20, r=20)
+    )
     return fig
 
 cbp = levels.get("avg_bp_call", 50); pbp = levels.get("avg_bp_put", 50)
