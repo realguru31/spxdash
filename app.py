@@ -197,9 +197,17 @@ if "straddle_ts" not in st.session_state or st.session_state.get("straddle_ts_da
     ts_data = []
     # Seed from baseline if available
     if straddle_info.get("price") and straddle_info.get("price") > 0:
-        bl_time = baseline_time or "09:31 ET"
+        bl_time_raw = baseline_time or "09:31 ET"
+        # Handle both "HH:MM ET" and full "YYYY-MM-DD HH:MM ET" formats
+        try:
+            parts = bl_time_raw.replace(" ET", "").strip().split(" ")
+            # If it has a date part, take the time part (last element)
+            time_part = parts[-1]  # "HH:MM"
+            bl_time_hhmm = time_part + " ET"
+        except:
+            bl_time_hhmm = bl_time_raw
         ts_data.append({
-            "time": bl_time,
+            "time": bl_time_hhmm,
             "straddle": straddle_info["price"],
             "source": "baseline"
         })
@@ -351,7 +359,7 @@ def _gauge(value, title):
     fig = go.Figure(go.Indicator(
         mode="gauge+number", value=value,
         number={"suffix": "%", "font": {"size": 24, "color": "#e0e0e0"}},
-        title={"text": title, "font": {"size": 16, "color": "#a0a0a0"}},
+        title={"text": title, "font": {"size": 11, "color": "#a0a0a0"}},
         gauge={"axis": {"range": [0, 100], "dtick": 10,
                         "tickfont": {"size": 8, "color": "#777"}},
                "bar": {"color": "#ffd600", "thickness": 0.3},
