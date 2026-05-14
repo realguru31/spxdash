@@ -1,7 +1,7 @@
 """
 app.py — SPX Gamma Exposure Dashboard
 Excel-matching ladder with heatmap, inline bars, color-coded level rows.
-Delta panels: Volume, GEX, Volume-GEX, V/OI — all vs opening baseline.
+Delta panels as collapsible expanders — all can be open simultaneously.
 """
 
 import streamlit as st
@@ -13,7 +13,7 @@ import os
 from datetime import datetime
 import logging
 
-from data_fetcher import get_spx_quote, get_options_chain, get_active_source
+from data_fetcher import get_spx_quote, get_options_chain
 from calculations import compute_chain_metrics, compute_dashboard_levels, filter_chain_for_display
 from utils import get_ny_time, get_ny_datetime, is_market_hours, get_upcoming_expirations
 
@@ -22,7 +22,6 @@ st.set_page_config(page_title="SPX Gamma Dashboard", page_icon="📊",
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ── CSS ──
 st.markdown("""<style>
 #MainMenu,header,footer,[data-testid="stHeader"],[data-testid="stToolbar"]{display:none!important;visibility:hidden!important;}
 .block-container{padding-top:0.5rem;}
@@ -76,21 +75,37 @@ spot = quote.get("lastPrice", 0)
 if display_chain.empty:
     st.error(f"❌ No data for {exp_str}. Try another expiration."); st.stop()
 
-# ══════════════════════════════════════
-# BASELINE LOADING
-# Priority: 1) GitHub Actions JSON  2) Session state (first load)
-# ══════════════════════════════════════
+# ── ET date ──
 try:
     import pytz
     today_et = datetime.now(pytz.timezone("US/Eastern")).date()
 except:
     today_et = datetime.now().date()
-
 today_str = today_et.strftime("%Y-%m-%d")
+
+# ══════════════════════════════════════
+# BASELINE LOADING
+# ══════════════════════════════════════
 baseline_path = f"data/baseline/{today_str}.json"
 
-def _chain_to_baseline(chain_df, source, timestamp):
-    """Convert current chain to baseline dict."""
+def _compute_straddle(chain_df, current_spot):
+    """Compute ATM straddle from current chain."""
+    if chain_df.empty or current_spot <= 0:
+        return None, None, None, None
+    atm = round(current_spot / 5) * 5
+    # Find ATM call and put
+    near = chain_df[(chain_df["strike"] >= atm - 5) & (chain_df["strike"] <= atm + 5)]
+    if near.empty:
+        near = chain_df.iloc[(chain_df["strike"] - atm).abs().argsort()[:1]]
+    if near.empty:
+        return None, None, None, None
+    row = near.iloc[0]
+    c_price = float(row.get("c_mark", row.get("c_last", 0)))
+    p_price = float(row.get("p_mark", row.get("p_last", 0)))
+    straddle = round(c_price + p_price, 2)
+    return straddle, int(row["strike"]), c_price, p_price
+
+def _chain_to_baseline(chain_df, source, timestamp, current_spot):
     bl = {}
     for _, row in chain_df.iterrows():
         k = int(row["strike"])
@@ -103,13 +118,24 @@ def _chain_to_baseline(chain_df, source, timestamp):
             "put_gex": float(row.get("put_gex", 0)),
             "net_gex": float(row.get("net_gex", 0)),
         }
-    return {"strikes": bl, "source": source, "timestamp_et": timestamp, "date": today_str}
+    straddle, atm_k, c_p, p_p = _compute_straddle(chain_df, current_spot)
+    return {
+        "strikes": bl, "source": source, "timestamp_et": timestamp,
+        "date": today_str, "spot_at_baseline": current_spot,
+        "straddle": {
+            "price": straddle, "atm_strike": atm_k,
+            "call_price": c_p, "put_price": p_p,
+            "upper": round(current_spot + straddle, 2) if straddle else None,
+            "lower": round(current_spot - straddle, 2) if straddle else None,
+        }
+    }
 
-# Try GitHub Actions file first
 baseline = None
 baseline_source = None
 baseline_time = None
+straddle_info = {}
 
+# Priority 1: GitHub Actions file
 if os.path.exists(baseline_path):
     try:
         with open(baseline_path) as f:
@@ -118,38 +144,74 @@ if os.path.exists(baseline_path):
             baseline = {int(k): v for k, v in bl_data["strikes"].items()}
             baseline_source = "📸 GitHub Actions"
             baseline_time = bl_data.get("timestamp_et", "09:31 ET")
-            logger.info("Loaded baseline from GitHub Actions: %s", baseline_path)
+            straddle_info = bl_data.get("straddle", {})
     except Exception as e:
-        logger.warning("Failed to load baseline file: %s", e)
+        logger.warning("Baseline file load failed: %s", e)
 
-# Fallback: session state
+# Priority 2: Session state
 if baseline is None:
     if "baseline" not in st.session_state or st.session_state.get("baseline_date") != today_str:
-        # First load today — save current chain as baseline
         if not full_chain.empty:
-            now_et_str = et_now.strftime("%H:%M ET")
-            bl_data = _chain_to_baseline(full_chain, "first_load", now_et_str)
+            now_str = et_now.strftime("%H:%M ET")
+            bl_data = _chain_to_baseline(full_chain, "first_load", now_str, spot)
             st.session_state["baseline"] = bl_data
             st.session_state["baseline_date"] = today_str
-            logger.info("Baseline set from first load at %s", now_et_str)
     if "baseline" in st.session_state:
         bl_data = st.session_state["baseline"]
         baseline = {int(k): v for k, v in bl_data["strikes"].items()}
         baseline_source = "⏱ First load"
         baseline_time = bl_data.get("timestamp_et", "unknown")
+        straddle_info = bl_data.get("straddle", {})
 
-# Show baseline info in sidebar
 with st.sidebar:
     st.divider()
-    if baseline:
-        st.caption(f"Baseline: {baseline_source}")
-        st.caption(f"Captured: {baseline_time}")
-    else:
-        st.caption("⚠️ No baseline yet")
+    st.caption(f"Baseline: {baseline_source or '—'}")
+    st.caption(f"Time: {baseline_time or '—'}")
+    if straddle_info.get("price"):
+        st.caption(f"Straddle: {straddle_info['price']:.2f} pts")
+
+# ── Straddle time series ──
+# Seed from baseline on first load, append current straddle each refresh
+def _get_current_straddle(chain_df, current_spot):
+    """Get current ATM straddle from live chain."""
+    if chain_df.empty or current_spot <= 0:
+        return None
+    atm = round(current_spot / 5) * 5
+    near = chain_df[(chain_df["strike"] >= atm - 5) & (chain_df["strike"] <= atm + 5)]
+    if near.empty:
+        near = chain_df.iloc[(chain_df["strike"] - current_spot).abs().argsort()[:1]]
+    if near.empty:
+        return None
+    row = near.iloc[0]
+    c_p = float(row.get("c_mark", row.get("c_last", 0)))
+    p_p = float(row.get("p_mark", row.get("p_last", 0)))
+    return round(c_p + p_p, 2) if (c_p + p_p) > 0 else None
+
+# Init time series in session state
+if "straddle_ts" not in st.session_state or st.session_state.get("straddle_ts_date") != today_str:
+    ts_data = []
+    # Seed from baseline if available
+    if straddle_info.get("price") and straddle_info.get("price") > 0:
+        bl_time = baseline_time or "09:31 ET"
+        ts_data.append({
+            "time": bl_time,
+            "straddle": straddle_info["price"],
+            "source": "baseline"
+        })
+    st.session_state["straddle_ts"] = ts_data
+    st.session_state["straddle_ts_date"] = today_str
+
+# Append current straddle on each refresh (avoid duplicates within same minute)
+current_straddle = _get_current_straddle(full_chain, spot)
+if current_straddle and is_market_hours():
+    now_str = et_now.strftime("%H:%M ET")
+    ts = st.session_state["straddle_ts"]
+    if not ts or ts[-1]["time"] != now_str:
+        ts.append({"time": now_str, "straddle": current_straddle, "source": "live"})
+        st.session_state["straddle_ts"] = ts
 
 # ── DTE ──
 try:
-    import pytz
     dte = (datetime.strptime(exp_str, "%Y-%m-%d").date() - today_et).days
     dte_label = "0DTE" if dte == 0 else f"{dte}DTE"
 except: dte_label = selected_label
@@ -170,16 +232,11 @@ st.markdown(f"""<div class="gamma-banner {cls}">
 Gamma is {dom} dominant &nbsp;•&nbsp; GEX Ratio: {levels.get('gex_ratio',0):.2f} &nbsp;•&nbsp; Net GEX: {levels.get('total_net_gex',0):,}
 </div>""", unsafe_allow_html=True)
 
-# ── Level colors ──
 LEVEL_COLORS = {
-    "call_wall": "rgb(233,113,50)",
-    "put_wall":  "rgb(204,153,0)",
-    "coi":       "rgb(97,203,243)",
-    "poi":       "rgb(216,109,205)",
-    "pgex":      "rgb(148,220,248)",
-    "ngex":      "rgb(228,158,221)",
-    "ptrans":    "rgb(202,237,251)",
-    "ntrans":    "rgb(242,206,239)",
+    "call_wall": "rgb(233,113,50)", "put_wall": "rgb(204,153,0)",
+    "coi": "rgb(97,203,243)", "poi": "rgb(216,109,205)",
+    "pgex": "rgb(148,220,248)", "ngex": "rgb(228,158,221)",
+    "ptrans": "rgb(202,237,251)", "ntrans": "rgb(242,206,239)",
 }
 LEVEL_LABELS = {
     "call_wall":"Call Wall","put_wall":"Put Wall","coi":"COI","poi":"POI",
@@ -187,97 +244,68 @@ LEVEL_LABELS = {
 }
 
 # ══════════════════════════════════════
-# MAIN: Ladder (55%) + Charts (45%)
+# MAIN: Ladder + Charts
 # ══════════════════════════════════════
 col_ladder, col_charts = st.columns([0.55, 0.45])
 
 with col_ladder:
     ldf = display_chain.sort_values("strike", ascending=False).copy()
     atm = levels.get("centered_spot", 0)
-
     strike_levels = {}
     for key in LEVEL_COLORS:
         v = levels.get(key)
         if v is not None:
             strike_levels.setdefault(int(v), []).append(key)
 
-    mx_cv = max(ldf["c_volume"].max(), 1)
-    mx_pv = max(ldf["p_volume"].max(), 1)
+    mx_cv = max(ldf["c_volume"].max(), 1); mx_pv = max(ldf["p_volume"].max(), 1)
     mx_gex = max(abs(ldf["net_gex"].max()), abs(ldf["net_gex"].min()), 1)
-    mx_coi = max(ldf["c_oi"].max(), 1)
-    mx_poi = max(ldf["p_oi"].max(), 1)
+    mx_coi = max(ldf["c_oi"].max(), 1); mx_poi = max(ldf["p_oi"].max(), 1)
     mx_toi = max(ldf["total_oi"].max(), 1)
 
     def _bar(val, mx, color, w=70):
         if mx <= 0 or val <= 0: return ""
-        pct = min(val / mx * w, w)
-        return f'<div style="background:{color};height:11px;width:{pct:.0f}%;border-radius:2px;display:inline-block;"></div>'
+        return f'<div style="background:{color};height:11px;width:{min(val/mx*w,w):.0f}%;border-radius:2px;display:inline-block;"></div>'
 
     def _heat(val, mx, base_color):
         if mx <= 0 or val <= 0: return ""
-        intensity = min(val / mx, 1.0) * 0.5
-        return f"background:rgba({base_color},{intensity:.2f});"
+        return f"background:rgba({base_color},{min(val/mx,1.0)*0.5:.2f});"
 
     rows_html = []
     for _, r in ldf.iterrows():
         k = int(r["strike"])
-        bg = ""
-        if k == atm:
-            bg = "background:rgba(30,144,255,0.25);"
-        elif k in strike_levels:
-            first_key = strike_levels[k][0]
-            rgb = LEVEL_COLORS[first_key]
-            bg = f"background:{rgb.replace('rgb','rgba').replace(')',',0.15)')};"
-
-        label_parts = []
-        if k in strike_levels:
-            for lk in strike_levels[k]:
-                c = LEVEL_COLORS[lk]
-                label_parts.append(f'<span style="color:{c};font-weight:bold;font-size:9px;">{LEVEL_LABELS[lk]}</span>')
-        label_html = " ".join(label_parts)
-
-        cv_bar = _bar(r["c_volume"], mx_cv, "#1e90ff")
-        pv_bar = _bar(r["p_volume"], mx_pv, "#ff00ff")
+        bg = "background:rgba(30,144,255,0.25);" if k == atm else (
+            f"background:{LEVEL_COLORS[strike_levels[k][0]].replace('rgb','rgba').replace(')',',0.15)')};"
+            if k in strike_levels else "")
+        labels = " ".join(f'<span style="color:{LEVEL_COLORS[lk]};font-weight:bold;font-size:9px;">{LEVEL_LABELS[lk]}</span>'
+                          for lk in strike_levels.get(k, []))
         gv = r["net_gex"]; gc = "#1e90ff" if gv >= 0 else "#ff00ff"
-        gex_bar = _bar(abs(gv), mx_gex, gc)
-        gex_str = f'<span style="color:{gc}">{gv:,.0f}</span>'
-
-        coi_bg = _heat(r["c_oi"], mx_coi, "30,144,255")
-        poi_bg = _heat(r["p_oi"], mx_poi, "255,0,255")
-        toi_bg = _heat(r["total_oi"], mx_toi, "100,100,255")
-        cv_bg = _heat(r["c_volume"], mx_cv, "30,144,255")
-        pv_bg = _heat(r["p_volume"], mx_pv, "255,0,255")
-
         dex = r["net_dex"]; dc = "#1e90ff" if dex >= 0 else "#ff00ff"
         noi = r["net_oi"]; nc = "#1e90ff" if noi >= 0 else "#ff00ff"
-        strike_color = "#ffd600" if k == atm else "#e0e0e0"
-        spot_dot = " •" if k == atm else ""
-
+        sc = "#ffd600" if k == atm else "#e0e0e0"
         rows_html.append(f"""<tr style="{bg}">
-<td style="text-align:right;font-size:10px;{cv_bg}">{int(r['c_volume']):,}</td>
-<td style="width:50px;">{cv_bar}</td>
-<td style="text-align:center;font-weight:bold;font-size:11px;color:{strike_color}">{k}{spot_dot}</td>
-<td style="width:50px;">{pv_bar}</td>
-<td style="text-align:left;font-size:10px;{pv_bg}">{int(r['p_volume']):,}</td>
-<td style="text-align:right;font-size:10px;">{gex_str}</td>
-<td style="width:45px;">{gex_bar}</td>
+<td style="text-align:right;font-size:10px;{_heat(r['c_volume'],mx_cv,'30,144,255')}">{int(r['c_volume']):,}</td>
+<td style="width:50px;">{_bar(r['c_volume'],mx_cv,'#1e90ff')}</td>
+<td style="text-align:center;font-weight:bold;font-size:11px;color:{sc}">{k}{' •' if k==atm else ''}</td>
+<td style="width:50px;">{_bar(r['p_volume'],mx_pv,'#ff00ff')}</td>
+<td style="text-align:left;font-size:10px;{_heat(r['p_volume'],mx_pv,'255,0,255')}">{int(r['p_volume']):,}</td>
+<td style="text-align:right;font-size:10px;"><span style="color:{gc}">{gv:,.0f}</span></td>
+<td style="width:45px;">{_bar(abs(gv),mx_gex,gc)}</td>
 <td style="text-align:right;font-size:10px;color:{dc}">{int(dex):,}</td>
-<td style="text-align:right;font-size:10px;{coi_bg}">{int(r['c_oi']):,}</td>
-<td style="text-align:right;font-size:10px;{poi_bg}">{int(r['p_oi']):,}</td>
-<td style="text-align:right;font-size:10px;{toi_bg}">{int(r['total_oi']):,}</td>
+<td style="text-align:right;font-size:10px;{_heat(r['c_oi'],mx_coi,'30,144,255')}">{int(r['c_oi']):,}</td>
+<td style="text-align:right;font-size:10px;{_heat(r['p_oi'],mx_poi,'255,0,255')}">{int(r['p_oi']):,}</td>
+<td style="text-align:right;font-size:10px;{_heat(r['total_oi'],mx_toi,'100,100,255')}">{int(r['total_oi']):,}</td>
 <td style="text-align:right;font-size:10px;color:{nc}">{int(noi):,}</td>
 <td style="text-align:right;font-size:10px;">{r['pct_from_spot']:.2%}</td>
-<td style="font-size:9px;padding-left:3px;">{label_html}</td>
+<td style="font-size:9px;padding-left:3px;">{labels}</td>
 </tr>""")
 
-    table_html = f"""<div style="max-height:850px;overflow-y:auto;border:1px solid #262730;border-radius:6px;">
+    st.markdown(f"""<div style="max-height:850px;overflow-y:auto;border:1px solid #262730;border-radius:6px;">
 <table style="width:100%;border-collapse:collapse;font-family:monospace;font-size:10px;">
 <thead style="position:sticky;top:0;background:#16213e;z-index:1;">
 <tr style="color:#a0a0a0;font-size:9px;">
 <th>C Vol</th><th></th><th>Strike</th><th></th><th>P Vol</th>
 <th>GEX</th><th></th><th>DEX</th><th>C OI</th><th>P OI</th><th>Tot OI</th><th>Net OI</th><th>%Spot</th><th>Level</th>
-</tr></thead><tbody>{''.join(rows_html)}</tbody></table></div>"""
-    st.markdown(table_html, unsafe_allow_html=True)
+</tr></thead><tbody>{''.join(rows_html)}</tbody></table></div>""", unsafe_allow_html=True)
 
 with col_charts:
     cdf = display_chain.sort_values("strike").copy()
@@ -289,13 +317,11 @@ with col_charts:
             fig.add_trace(go.Bar(x=cdf["strike"], y=y_neg, marker_color="rgba(255,0,255,0.7)", name="−"))
         else:
             net = y_pos + y_neg if y_neg is not None else y_pos
-            colors = ["#1e90ff" if v >= 0 else "#ff00ff" for v in net]
-            fig.add_trace(go.Bar(x=cdf["strike"], y=net, marker_color=colors))
+            fig.add_trace(go.Bar(x=cdf["strike"], y=net,
+                                  marker_color=["#1e90ff" if v >= 0 else "#ff00ff" for v in net]))
         fig.add_vline(x=spot, line_dash="dash", line_color="#ffd600", line_width=1)
-        fig.update_layout(
-            title=dict(text=title, font=dict(size=11, color="#a0a0a0")),
-            height=205, template="plotly_dark",
-            paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
+        fig.update_layout(title=dict(text=title, font=dict(size=11, color="#a0a0a0")),
+            height=205, template="plotly_dark", paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
             showlegend=False, margin=dict(t=28, b=18, l=40, r=10), font=dict(size=9),
             xaxis=dict(showticklabels=False, gridcolor="#1a2a4a"),
             yaxis=dict(gridcolor="#1a2a4a", tickformat=tfmt))
@@ -319,28 +345,22 @@ def _gauge(value, title):
         mode="gauge+number", value=value,
         number={"suffix": "%", "font": {"size": 24, "color": "#e0e0e0"}},
         title={"text": title, "font": {"size": 11, "color": "#a0a0a0"}},
-        gauge={
-            "axis": {"range": [0, 100], "tickwidth": 1, "tickcolor": "#555",
-                     "dtick": 10, "tickfont": {"size": 8, "color": "#777"}},
-            "bar": {"color": "#ffd600", "thickness": 0.3},
-            "bgcolor": "#0e1117", "borderwidth": 0,
-            "steps": [
-                {"range": [0, 10], "color": "rgba(255,0,255,0.5)"},
-                {"range": [10, 25], "color": "rgba(150,150,150,0.3)"},
-                {"range": [25, 75], "color": "rgba(30,144,255,0.35)"},
-                {"range": [75, 90], "color": "rgba(150,150,150,0.3)"},
-                {"range": [90, 100], "color": "rgba(255,0,255,0.5)"},
-            ],
-            "threshold": {"line": {"color": "#ffd600", "width": 3}, "thickness": 0.8, "value": value},
-        },
+        gauge={"axis": {"range": [0, 100], "dtick": 10,
+                        "tickfont": {"size": 8, "color": "#777"}},
+               "bar": {"color": "#ffd600", "thickness": 0.3},
+               "bgcolor": "#0e1117", "borderwidth": 0,
+               "steps": [{"range": [0, 10], "color": "rgba(255,0,255,0.5)"},
+                         {"range": [10, 25], "color": "rgba(150,150,150,0.3)"},
+                         {"range": [25, 75], "color": "rgba(30,144,255,0.35)"},
+                         {"range": [75, 90], "color": "rgba(150,150,150,0.3)"},
+                         {"range": [90, 100], "color": "rgba(255,0,255,0.5)"}],
+               "threshold": {"line": {"color": "#ffd600", "width": 3}, "thickness": 0.8, "value": value}},
     ))
     fig.update_layout(paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
-                      font={"color": "#e0e0e0"}, height=180,
-                      margin=dict(t=30, b=0, l=20, r=20))
+                      font={"color": "#e0e0e0"}, height=180, margin=dict(t=30, b=0, l=20, r=20))
     return fig
 
-cbp = levels.get("avg_bp_call", 50)
-pbp = levels.get("avg_bp_put", 50)
+cbp = levels.get("avg_bp_call", 50); pbp = levels.get("avg_bp_put", 50)
 combo = (cbp + pbp) / 2 if (cbp + pbp) > 0 else 50
 g1, g2, g3 = st.columns(3)
 with g1: st.plotly_chart(_gauge(cbp, "Call BP%"), use_container_width=True, key="g1")
@@ -349,112 +369,187 @@ with g3: st.plotly_chart(_gauge(combo, "Combined BP%"), use_container_width=True
 if not is_market_hours(): st.caption("⚠️ BP% gauges need RTH data.")
 
 # ══════════════════════════════════════
-# DELTA PANELS — dropdown
+# DELTA PANELS — collapsible expanders
 # ══════════════════════════════════════
 st.markdown("---")
 
-if baseline:
-    bl_label = f"{baseline_source} @ {baseline_time}"
-    panel = st.selectbox(
-        f"📊 Delta Panels (vs baseline: {bl_label})",
-        ["— Select Panel —",
-         "1. Volume Delta from Open",
-         "2. GEX Delta from Open",
-         "3. Volume-GEX (intraday gamma)",
-         "4. V/OI Ratio"],
-        index=0,
-    )
+if not baseline:
+    st.info("⏳ Baseline not yet available.")
+else:
+    bl_caption = f"vs baseline ({baseline_source} @ {baseline_time})"
 
-    # Build per-strike delta arrays aligned to display_chain
+    ldf_s = display_chain.sort_values("strike").copy()
+    strikes_list = ldf_s["strike"].tolist()
+
     def _get_bl(k, field, default=0):
         return baseline.get(int(k), {}).get(field, default)
 
-    def _delta_chart(strikes, calls_vals, puts_vals, title, baseline_label, fmt=","):
-        """
-        Vertical layout: strikes on Y-axis, calls extend RIGHT (blue),
-        puts extend LEFT (magenta). Spot line horizontal.
-        """
+    def _delta_chart(strikes, calls_vals, puts_vals, title, fmt=","):
+        """Vertical chart: strikes on Y, calls right (blue), puts left (magenta)."""
         fig = go.Figure()
-
-        # Puts go left (negative x)
         fig.add_trace(go.Bar(
-            y=strikes, x=[-v for v in puts_vals],
-            orientation="h",
-            marker_color="rgba(255,0,255,0.7)",
-            name="Puts",
+            y=strikes, x=[-abs(v) for v in puts_vals],
+            orientation="h", marker_color="rgba(255,0,255,0.7)", name="Puts",
         ))
-        # Calls go right (positive x)
         fig.add_trace(go.Bar(
-            y=strikes, x=calls_vals,
-            orientation="h",
-            marker_color="rgba(30,144,255,0.7)",
-            name="Calls",
+            y=strikes, x=[abs(v) for v in calls_vals],
+            orientation="h", marker_color="rgba(30,144,255,0.7)", name="Calls",
         ))
-
-        # Spot horizontal line
-        fig.add_hline(y=spot, line_dash="dash", line_color="#ffd600",
-                      line_width=1.5, annotation_text=f"Spot {spot:.0f}",
-                      annotation_font_color="#ffd600", annotation_font_size=9)
-
+        fig.add_hline(y=spot, line_dash="dash", line_color="#ffd600", line_width=1.5,
+                      annotation_text=f"Spot {spot:.0f}",
+                      annotation_font_color="#ffd600", annotation_font_size=9,
+                      annotation_position="right")
         fig.update_layout(
-            title=dict(
-                text=f"{title} &nbsp;<span style='font-size:10px;color:#666'>vs {baseline_label}</span>",
-                font=dict(size=12, color="#a0a0a0")
-            ),
-            height=600, template="plotly_dark",
+            height=620, template="plotly_dark",
             paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
-            barmode="overlay",
-            showlegend=True,
-            legend=dict(orientation="h", yanchor="bottom", y=1.02,
+            barmode="overlay", showlegend=True,
+            legend=dict(orientation="h", yanchor="bottom", y=1.01,
                         xanchor="center", x=0.5, font=dict(size=9)),
-            margin=dict(t=50, b=30, l=70, r=30),
-            font=dict(size=9),
-            xaxis=dict(gridcolor="#1a2a4a", zeroline=True,
-                       zerolinecolor="#444", tickformat=fmt,
-                       title="← Puts &nbsp;&nbsp;&nbsp; Calls →"),
-            yaxis=dict(gridcolor="#1a2a4a", tickformat=".0f",
-                       title="Strike", dtick=5),
+            margin=dict(t=20, b=30, l=70, r=30), font=dict(size=9),
+            xaxis=dict(gridcolor="#1a2a4a", zeroline=True, zerolinecolor="#444",
+                       tickformat=fmt, title="← Puts     Calls →"),
+            yaxis=dict(gridcolor="#1a2a4a", tickformat=".0f", title="Strike", dtick=5),
         )
         return fig
 
-    ldf_sorted = display_chain.sort_values("strike").copy()
-    strikes_list = ldf_sorted["strike"].tolist()
+    # ── Panel 1: Volume Delta ──
+    with st.expander(f"📊 Panel 1 — Volume Delta from Open  ({bl_caption})", expanded=False):
+        c_delta = [max(0, int(r["c_volume"]) - _get_bl(r["strike"], "c_volume")) for _, r in ldf_s.iterrows()]
+        p_delta = [max(0, int(r["p_volume"]) - _get_bl(r["strike"], "p_volume")) for _, r in ldf_s.iterrows()]
+        fig1 = _delta_chart(strikes_list, c_delta, p_delta, "Volume Delta")
 
-    if panel == "1. Volume Delta from Open":
-        c_delta = [max(0, int(r["c_volume"]) - _get_bl(r["strike"], "c_volume")) for _, r in ldf_sorted.iterrows()]
-        p_delta = [max(0, int(r["p_volume"]) - _get_bl(r["strike"], "p_volume")) for _, r in ldf_sorted.iterrows()]
-        fig = _delta_chart(strikes_list, c_delta, p_delta,
-                           "Volume Delta from Open", baseline_time, fmt=",")
-        st.plotly_chart(fig, use_container_width=True, key="dp1")
-        st.caption("Bars show volume added since baseline. Zero-delta strikes show no bar.")
+        # Add straddle lines if available
+        sd = straddle_info
+        if sd.get("upper") and sd.get("lower") and sd.get("price"):
+            bl_spot = sd.get("upper", spot) - sd.get("price", 0)
+            for y_val, label in [(sd["upper"], f"↑ +{sd['price']:.1f} ({sd['upper']:.0f})"),
+                                  (sd["lower"], f"↓ −{sd['price']:.1f} ({sd['lower']:.0f})")]:
+                fig1.add_hline(
+                    y=y_val, line_dash="dot", line_color="#ffd600",
+                    line_width=1.5,
+                    annotation_text=label,
+                    annotation_font_color="#ffd600",
+                    annotation_font_size=9,
+                    annotation_position="left",
+                )
+            fig1.update_layout(title=dict(
+                text=f"Volume Delta &nbsp;<span style='font-size:10px;color:#888'>Straddle @ open: {sd['price']:.2f} pts</span>",
+                font=dict(size=12, color="#a0a0a0")))
 
-    elif panel == "2. GEX Delta from Open":
-        c_gex_delta = [float(r["call_gex"]) - _get_bl(r["strike"], "call_gex") for _, r in ldf_sorted.iterrows()]
-        p_gex_delta = [abs(float(r["put_gex"])) - abs(_get_bl(r["strike"], "put_gex")) for _, r in ldf_sorted.iterrows()]
-        fig = _delta_chart(strikes_list, c_gex_delta, p_gex_delta,
-                           "GEX Delta from Open", baseline_time, fmt=",")
-        st.plotly_chart(fig, use_container_width=True, key="dp2")
-        st.caption("Change in gamma exposure since baseline. Positive = more gamma created.")
+        st.plotly_chart(fig1, use_container_width=True, key="dp1")
+        st.caption("Bars = volume added since baseline. Zero-change strikes show no bar.")
 
-    elif panel == "3. Volume-GEX (intraday gamma)":
-        # Replace OI with today's volume in GEX formula
-        c_vgex = [float(r["c_volume"]) * float(r["c_gamma"]) * 100 for _, r in ldf_sorted.iterrows()]
-        p_vgex = [float(r["p_volume"]) * float(r["p_gamma"]) * 100 for _, r in ldf_sorted.iterrows()]
-        fig = _delta_chart(strikes_list, c_vgex, p_vgex,
-                           "Volume-GEX (Volume × Gamma × 100)", baseline_time, fmt=".1f")
-        st.plotly_chart(fig, use_container_width=True, key="dp3")
+    # ── Panel 2: GEX Delta ──
+    with st.expander(f"📊 Panel 2 — GEX Delta from Open  ({bl_caption})", expanded=False):
+        c_gex_d = [float(r["call_gex"]) - _get_bl(r["strike"], "call_gex") for _, r in ldf_s.iterrows()]
+        p_gex_d = [abs(float(r["put_gex"])) - abs(_get_bl(r["strike"], "put_gex")) for _, r in ldf_s.iterrows()]
+        fig2 = _delta_chart(strikes_list, c_gex_d, p_gex_d, "GEX Delta")
+        fig2.update_layout(xaxis_title="← Put GEX Δ     Call GEX Δ →")
+        st.plotly_chart(fig2, use_container_width=True, key="dp2")
+        st.caption("Change in gamma exposure since baseline. Positive = more gamma created at that strike.")
+
+    # ── Panel 3: Volume-GEX ──
+    with st.expander(f"📊 Panel 3 — Volume-GEX Intraday  ({bl_caption})", expanded=False):
+        c_vgex = [float(r["c_volume"]) * float(r["c_gamma"]) * 100 for _, r in ldf_s.iterrows()]
+        p_vgex = [float(r["p_volume"]) * float(r["p_gamma"]) * 100 for _, r in ldf_s.iterrows()]
+        fig3 = _delta_chart(strikes_list, c_vgex, p_vgex, "Volume-GEX", fmt=".1f")
+        fig3.update_layout(xaxis_title="← Put Vol-GEX     Call Vol-GEX →")
+        st.plotly_chart(fig3, use_container_width=True, key="dp3")
         st.caption("GEX using today's volume instead of OI. Shows intraday gamma being created.")
 
-    elif panel == "4. V/OI Ratio":
-        c_voi = [float(r["c_voi"]) for _, r in ldf_sorted.iterrows()]
-        p_voi = [float(r["p_voi"]) for _, r in ldf_sorted.iterrows()]
-        fig = _delta_chart(strikes_list, c_voi, p_voi,
-                           "V/OI Ratio (Volume ÷ Open Interest)", baseline_time, fmt=".2f")
-        st.plotly_chart(fig, use_container_width=True, key="dp4")
-        st.caption("Ratio > 1 means more volume than prior OI — new positions being opened aggressively.")
+    # ── Panel 4: V/OI Ratio ──
+    with st.expander(f"📊 Panel 4 — V/OI Ratio  ({bl_caption})", expanded=False):
+        c_voi = [float(r["c_voi"]) for _, r in ldf_s.iterrows()]
+        p_voi = [float(r["p_voi"]) for _, r in ldf_s.iterrows()]
+        fig4 = _delta_chart(strikes_list, c_voi, p_voi, "V/OI", fmt=".2f")
+        fig4.update_layout(xaxis_title="← Put V/OI     Call V/OI →")
+        st.plotly_chart(fig4, use_container_width=True, key="dp4")
+        st.caption("Ratio > 1 = more volume than prior OI — new positions being opened aggressively.")
 
-else:
-    st.info("⏳ Baseline not yet available. Will be set on first chain load.")
+    # ── Panel 5: Spot + Straddle time series ──
+    with st.expander(f"📊 Panel 5 — Spot & Straddle Through the Day", expanded=False):
+        # Get intraday spot from tvDatafeed
+        spot_df = pd.DataFrame()
+        try:
+            from tvDatafeed import TvDatafeed, Interval
+            tv = TvDatafeed()
+            for ex in ["CBOE", "SP", "FOREXCOM", "OANDA"]:
+                try:
+                    df_tv = tv.get_hist(symbol="SPX", exchange=ex,
+                                        interval=Interval.in_1_minute, n_bars=400)
+                    if df_tv is not None and not df_tv.empty:
+                        # Filter to today RTH
+                        import pytz as _pytz
+                        _nyt = _pytz.timezone("US/Eastern")
+                        if df_tv.index.tz is None:
+                            df_tv.index = df_tv.index.tz_localize("UTC")
+                        df_tv.index = df_tv.index.tz_convert(_nyt)
+                        from datetime import time as dtime
+                        df_tv = df_tv[
+                            (df_tv.index.date == today_et) &
+                            (df_tv.index.time >= dtime(9, 30)) &
+                            (df_tv.index.time <= dtime(16, 0))
+                        ]
+                        if not df_tv.empty:
+                            spot_df = df_tv
+                            break
+                except:
+                    continue
+        except ImportError:
+            pass
+
+        straddle_ts = st.session_state.get("straddle_ts", [])
+
+        if spot_df.empty and not straddle_ts:
+            st.info("No data yet — available during RTH.")
+        else:
+            fig5 = go.Figure()
+
+            # Spot line (left axis)
+            if not spot_df.empty:
+                times = [t.strftime("%H:%M") for t in spot_df.index]
+                fig5.add_trace(go.Scatter(
+                    x=times, y=spot_df["close"].tolist(),
+                    name="Spot Price", line=dict(color="#ff00ff", width=1.5),
+                    yaxis="y1",
+                ))
+
+            # Straddle line (right axis)
+            if straddle_ts:
+                s_times = [p["time"].replace(" ET", "") for p in straddle_ts]
+                s_vals = [p["straddle"] for p in straddle_ts]
+                # Mark baseline point differently
+                marker_colors = ["#ffd600" if p["source"] == "baseline" else "#00c853"
+                                  for p in straddle_ts]
+                fig5.add_trace(go.Scatter(
+                    x=s_times, y=s_vals,
+                    name="Straddle Price", line=dict(color="#00c853", width=1.5),
+                    mode="lines+markers",
+                    marker=dict(color=marker_colors, size=5),
+                    yaxis="y2",
+                ))
+
+            fig5.update_layout(
+                height=420, template="plotly_dark",
+                paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
+                margin=dict(t=30, b=40, l=60, r=60),
+                font=dict(size=9, color="#a0a0a0"),
+                legend=dict(orientation="h", yanchor="bottom", y=1.01,
+                            xanchor="center", x=0.5, font=dict(size=10)),
+                xaxis=dict(gridcolor="#1a2a4a", title="Time (ET)",
+                           tickangle=-45, nticks=20),
+                yaxis=dict(gridcolor="#1a2a4a", title="Spot",
+                           titlefont=dict(color="#ff00ff"),
+                           tickfont=dict(color="#ff00ff")),
+                yaxis2=dict(title="Straddle Price",
+                            titlefont=dict(color="#00c853"),
+                            tickfont=dict(color="#00c853"),
+                            overlaying="y", side="right",
+                            gridcolor="rgba(0,200,83,0.1)"),
+            )
+            st.plotly_chart(fig5, use_container_width=True, key="dp5")
+            st.caption(f"Spot: tvDatafeed 1-min bars. Straddle: {len(straddle_ts)} data points "
+                       f"(🟡 = baseline, 🟢 = live). Updates every 3 min during RTH.")
 
 # ══════════════════════════════════════
 # LEVELS + METRICS
