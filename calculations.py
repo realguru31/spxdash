@@ -83,6 +83,43 @@ def compute_dashboard_levels(df: pd.DataFrame, spot: float) -> Dict[str, Any]:
     lv["ptrans"] = int(max(trans)) if trans else None
     lv["ntrans"] = int(min(trans)) if trans else None
 
+    # ── Gamma Gravity Centers (centroid of gamma pressure) ──
+    # Call Gravity: gamma-weighted centroid between GEX flip (ptrans) and Call Wall
+    # = Σ(strike × call_gex) / Σ(call_gex) for strikes in [ptrans, call_wall]
+    flip = lv["ptrans"] or lv["pgex"] or spot
+    c_wall = lv["call_wall"]
+    p_wall = lv["put_wall"]
+
+    if c_wall and flip and c_wall > flip:
+        c_channel = df[(df["strike"] >= flip) & (df["strike"] <= c_wall) & (df["call_gex"] > 0)]
+        if not c_channel.empty:
+            total_cgex = c_channel["call_gex"].sum()
+            if total_cgex > 0:
+                lv["cgrav"] = int(round((c_channel["strike"] * c_channel["call_gex"]).sum() / total_cgex / 5) * 5)
+            else:
+                lv["cgrav"] = None
+        else:
+            lv["cgrav"] = None
+    else:
+        lv["cgrav"] = None
+
+    # Put Gravity: gamma-weighted centroid between Put Wall and GEX flip
+    # = Σ(strike × abs(put_gex)) / Σ(abs(put_gex)) for strikes in [put_wall, ptrans]
+    p_flip = lv["ntrans"] or lv["ngex"] or spot
+    if p_wall and p_flip and p_wall < p_flip:
+        p_channel = df[(df["strike"] >= p_wall) & (df["strike"] <= p_flip) & (df["put_gex"] < 0)]
+        if not p_channel.empty:
+            abs_pgex = p_channel["put_gex"].abs()
+            total_pgex = abs_pgex.sum()
+            if total_pgex > 0:
+                lv["pgrav"] = int(round((p_channel["strike"] * abs_pgex).sum() / total_pgex / 5) * 5)
+            else:
+                lv["pgrav"] = None
+        else:
+            lv["pgrav"] = None
+    else:
+        lv["pgrav"] = None
+
     # Gamma dominance
     tcg = df["call_gex"].sum(); tpg = abs(df["put_gex"].sum())
     gr = tcg/tpg if tpg>0 else 999.0
@@ -130,6 +167,7 @@ def _bp(high,low,opn,mark,volume):
 def _empty():
     return {"call_wall":None,"put_wall":None,"coi":None,"poi":None,
             "pgex":None,"ngex":None,"ptrans":None,"ntrans":None,
+            "cgrav":None,"pgrav":None,
             "gex_ratio":0,"gamma_dominant":"N/A","centered_spot":0,"spot":0,
             "total_call_volume":0,"total_put_volume":0,"total_call_oi":0,"total_put_oi":0,
             "pcr_volume":0,"pcr_oi":0,"total_net_gex":0,"total_net_dex":0,
