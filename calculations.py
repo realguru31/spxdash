@@ -84,39 +84,39 @@ def compute_dashboard_levels(df: pd.DataFrame, spot: float) -> Dict[str, Any]:
     lv["ntrans"] = int(min(trans)) if trans else None
 
     # ── Gamma Gravity Centers (centroid of gamma pressure) ──
-    # Call Gravity: gamma-weighted centroid between GEX flip (ptrans) and Call Wall
-    # = Σ(strike × call_gex) / Σ(call_gex) for strikes in [ptrans, call_wall]
     flip = lv["ptrans"] or lv["pgex"] or spot
     c_wall = lv["call_wall"]
     p_wall = lv["put_wall"]
+    p_flip = lv["ntrans"] or lv["ngex"] or spot
 
-    if c_wall and flip and c_wall > flip:
-        c_channel = df[(df["strike"] >= flip) & (df["strike"] <= c_wall) & (df["call_gex"] > 0)]
-        if not c_channel.empty:
-            total_cgex = c_channel["call_gex"].sum()
-            if total_cgex > 0:
-                lv["cgrav"] = int(round((c_channel["strike"] * c_channel["call_gex"]).sum() / total_cgex / 5) * 5)
-            else:
-                lv["cgrav"] = None
-        else:
-            lv["cgrav"] = None
+    # Call Gravity: centroid of call_gex between flip and call_wall
+    # If no clear channel, use all strikes above spot with positive call_gex
+    c_mask = (df["call_gex"] > 0)
+    if c_wall and c_wall != flip:
+        lo, hi = (flip, c_wall) if c_wall > flip else (c_wall, flip)
+        c_mask = c_mask & (df["strike"] >= lo) & (df["strike"] <= hi)
+    else:
+        c_mask = c_mask & (df["strike"] >= spot)
+    c_channel = df[c_mask]
+    if not c_channel.empty:
+        total_cgex = c_channel["call_gex"].sum()
+        lv["cgrav"] = int(round((c_channel["strike"] * c_channel["call_gex"]).sum() / total_cgex / 5) * 5) if total_cgex > 0 else None
     else:
         lv["cgrav"] = None
 
-    # Put Gravity: gamma-weighted centroid between Put Wall and GEX flip
-    # = Σ(strike × abs(put_gex)) / Σ(abs(put_gex)) for strikes in [put_wall, ptrans]
-    p_flip = lv["ntrans"] or lv["ngex"] or spot
-    if p_wall and p_flip and p_wall < p_flip:
-        p_channel = df[(df["strike"] >= p_wall) & (df["strike"] <= p_flip) & (df["put_gex"] < 0)]
-        if not p_channel.empty:
-            abs_pgex = p_channel["put_gex"].abs()
-            total_pgex = abs_pgex.sum()
-            if total_pgex > 0:
-                lv["pgrav"] = int(round((p_channel["strike"] * abs_pgex).sum() / total_pgex / 5) * 5)
-            else:
-                lv["pgrav"] = None
-        else:
-            lv["pgrav"] = None
+    # Put Gravity: centroid of abs(put_gex) between put_wall and flip
+    # If no clear channel, use all strikes below spot with negative put_gex
+    p_mask = (df["put_gex"] < 0)
+    if p_wall and p_wall != p_flip:
+        lo, hi = (p_wall, p_flip) if p_flip > p_wall else (p_flip, p_wall)
+        p_mask = p_mask & (df["strike"] >= lo) & (df["strike"] <= hi)
+    else:
+        p_mask = p_mask & (df["strike"] <= spot)
+    p_channel = df[p_mask]
+    if not p_channel.empty:
+        abs_pgex = p_channel["put_gex"].abs()
+        total_pgex = abs_pgex.sum()
+        lv["pgrav"] = int(round((p_channel["strike"] * abs_pgex).sum() / total_pgex / 5) * 5) if total_pgex > 0 else None
     else:
         lv["pgrav"] = None
 
