@@ -230,8 +230,7 @@ if "straddle_ts" not in st.session_state or st.session_state.get("straddle_ts_da
 # Append current straddle on each refresh (avoid duplicates within same minute)
 # Use fixed baseline ATM strike so we track same contract pair all day
 fixed_atm = straddle_info.get("atm_strike") if straddle_info else None
-# Live straddle always tracks current ATM — fixed_atm only used for Panel 1 reference lines
-current_straddle = _get_current_straddle(full_chain, spot, fixed_strike=None)
+current_straddle = _get_current_straddle(full_chain, spot, fixed_strike=fixed_atm)
 if current_straddle and is_market_hours():
     now_str = et_now.strftime("%H:%M ET")
     ts = st.session_state["straddle_ts"]
@@ -266,10 +265,12 @@ LEVEL_COLORS = {
     "coi": "rgb(97,203,243)", "poi": "rgb(216,109,205)",
     "pgex": "rgb(148,220,248)", "ngex": "rgb(228,158,221)",
     "ptrans": "rgb(202,237,251)", "ntrans": "rgb(242,206,239)",
+    "cgrav": "rgb(0,255,127)", "pgrav": "rgb(255,99,71)",
 }
 LEVEL_LABELS = {
     "call_wall":"Call Wall","put_wall":"Put Wall","coi":"COI","poi":"POI",
     "pgex":"pGEX","ngex":"nGEX","ptrans":"pTrans","ntrans":"nTrans",
+    "cgrav":"C.Grav","pgrav":"P.Grav",
 }
 
 # ══════════════════════════════════════
@@ -599,7 +600,7 @@ def _lv_metric(label, key, color):
                 f'<div style="font-size:18px;font-weight:700;color:{color};">{val}</div>',
                 unsafe_allow_html=True)
 
-l1, l2, l3, l4 = st.columns(4)
+l1, l2, l3, l4, l5 = st.columns(5)
 with l1:
     _lv_metric("Call Wall", "call_wall", LEVEL_COLORS["call_wall"])
     _lv_metric("COI", "coi", LEVEL_COLORS["coi"])
@@ -612,6 +613,9 @@ with l3:
 with l4:
     _lv_metric("+Trans", "ptrans", LEVEL_COLORS["ptrans"])
     _lv_metric("−Trans", "ntrans", LEVEL_COLORS["ntrans"])
+with l5:
+    _lv_metric("C.Grav", "cgrav", LEVEL_COLORS["cgrav"])
+    _lv_metric("P.Grav", "pgrav", LEVEL_COLORS["pgrav"])
 
 st.markdown("---")
 m1, m2, m3, m4, m5, m6 = st.columns(6)
