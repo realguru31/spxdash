@@ -188,6 +188,7 @@ def build_time_surface(snaps, mode, p_min, p_max, weighting="volume", n_price=22
     base=snaps[0]["chain"]
     base_vol={(e,k,t):float(v) for e,k,t,v in zip(base["expiry"],base["strike"],base["type"],base["volume"].fillna(0))}
     Zg=np.zeros((n_price,len(snaps))); Zc=np.zeros_like(Zg); times=[]; prev_vol=None; last=None
+    cwalls=[]; pwalls=[]                       # per-snapshot call/put wall tracks
     for j,snap in enumerate(snaps):
         ch=snap["chain"].dropna(subset=["strike","iv","expiry"]).copy()
         ch["w"]=_strike_weight(ch,mode,base_vol,prev_vol,weighting)
@@ -198,12 +199,14 @@ def build_time_surface(snaps, mode, p_min, p_max, weighting="volume", n_price=22
             return (fn(S,df["strike"].values[None,:],df["T"].values[None,:],df["iv"].values[None,:])*df["w"].values[None,:]).sum(1)
         Zg[:,j]=(prof(ca,bs_gamma)-prof(pu,bs_gamma))*100*pg
         Zc[:,j]=(prof(ca,bs_charm)-prof(pu,bs_charm))*100*pg
+        cwj,pwj=compute_walls(ch,snap["spot"])   # walls as of THIS snapshot
+        cwalls.append(cwj); pwalls.append(pwj)
         times.append(snap["ts"])
         prev_vol={(e,k,t):float(v) for e,k,t,v in zip(ch["expiry"],ch["strike"],ch["type"],ch["volume"].fillna(0))}
         last=ch
     if smooth_p>0:
         Zg=gaussian_filter1d(Zg,smooth_p,axis=0); Zc=gaussian_filter1d(Zc,smooth_p,axis=0)
-    return pg,Zg,Zc,times,last,spot
+    return pg,Zg,Zc,times,last,spot,cwalls,pwalls
 
 # ════════════════════════════ shared analytics ══════════════════════════════
 def zero_crossings(pg, vals):
@@ -337,24 +340,39 @@ def fig_cone(pg,gex,chm,cfull,spot,bars,straddle):
         style_time_axis(ax,x0,x1)
     return fig
 
-def fig_surface(mode,pg,Zg,Zc,times,last,spot,bars,straddle):
+def fig_surface(mode,pg,Zg,Zc,times,last,spot,bars,straddle,cwalls=None,pwalls=None):
     p_min,p_max=pg[0],pg[-1]; x0,x1=session_window()
     tnum=np.array([mdates.date2num(t) for t in times])
-    if len(tnum)==1:
+    if len(tnum)==1:                       # single snapshot → give it a little width
         tnum=np.array([tnum[0],tnum[0]+5/1440.0]); Zg=np.repeat(Zg,2,axis=1); Zc=np.repeat(Zc,2,axis=1)
-    cw,pw=compute_walls(last,spot)
+        if cwalls is not None: cwalls=[cwalls[0],cwalls[0]]; pwalls=[pwalls[0],pwalls[0]]
+    t_left,t_now=tnum[0],tnum[-1]          # heatmap fills first snapshot → now (real history only)
     fig,(ag,ac)=plt.subplots(1,2,figsize=(16,8.6),facecolor=DARK); fig.subplots_adjust(wspace=0.0,left=0.01,right=0.945,top=0.93,bottom=0.06)
     step=max(5,round((p_max-p_min)/8/5)*5); gps=np.arange(round(p_min/step)*step,round(p_max/step)*step+step,step)
-    for ax,P,Z,Zsnap in [(ag,_panel_meta()[0],Zg,Zg[:,-1]),(ac,_panel_meta()[1],Zc,Zc[:,-1])]:
+    for ax,P,Z in [(ag,_panel_meta()[0],Zg),(ac,_panel_meta()[1],Zc)]:
         ax.set_facecolor(DARK); cap=np.percentile(np.abs(Z),99) or 1.0
-        # surface drawn at the real snapshot times (tnum), on the shared full-session x-axis
-        ax.imshow(Z,origin="lower",extent=[tnum[0],tnum[-1],p_min,p_max],aspect="auto",cmap=P["cmap"],vmin=-cap,vmax=cap,interpolation="bilinear",zorder=0)
-        try: ax.contour(np.linspace(tnum[0],tnum[-1],Z.shape[1]),pg,Z,levels=[0],colors=["white"],linewidths=[0.9],linestyles=["--"],zorder=3)
+        # positioning heatmap over REAL recorded time (first snapshot → now)
+        ax.imshow(Z,origin="lower",extent=[t_left,t_now,p_min,p_max],aspect="auto",cmap=P["cmap"],
+                  vmin=-cap,vmax=cap,interpolation="bilinear",zorder=0)
+        # migrating zero-flip contour across the recorded window
+        try: ax.contour(np.linspace(t_left,t_now,Z.shape[1]),pg,Z,levels=[0],colors=["white"],
+                        linewidths=[0.9],linestyles=["--"],zorder=3)
         except Exception: pass
+        # shade the not-yet-recorded part of the session so it's clearly "no data here"
+        if t_now<x1: ax.axvspan(t_now,x1,color="#0d1117",alpha=0.55,zorder=2)
+        ax.axvline(t_now,color="#9aa0a6",lw=0.9,ls="-",alpha=0.6,zorder=5)   # 'now'
         for gp in gps:
             if p_min<gp<p_max: ax.axhline(gp,color=GRID,lw=0.5,ls="--",alpha=0.6,zorder=1)
+        # WALL MIGRATION TRACKS (gamma panel only) — watch the walls wander vs price
+        if P["walls"] and cwalls is not None and len(tnum)==len(cwalls):
+            cwt=np.array(cwalls,float); pwt=np.array(pwalls,float)
+            ax.plot(tnum,cwt,color="#3fb950",lw=1.4,ls=":",zorder=6)
+            ax.plot(tnum,pwt,color="#f85149",lw=1.4,ls=":",zorder=6)
+            ax.scatter(tnum,cwt,s=10,color="#3fb950",zorder=6); ax.scatter(tnum,pwt,s=10,color="#f85149",zorder=6)
         draw_candles(ax,bars,x0,x1,p_min,p_max)
-        _finish(ax,P,pg,spot,p_min,p_max,Zsnap,cw,pw,f"surface·{mode}",straddle,gps)
+        # levels labelled from the LATEST recorded snapshot (current positioning)
+        cw,pw=(cwalls[-1],pwalls[-1]) if (cwalls is not None and len(cwalls)) else compute_walls(last,spot)
+        _finish(ax,P,pg,spot,p_min,p_max,Z[:,-1],cw,pw,f"surface·{mode}",straddle,gps)
         style_time_axis(ax,x0,x1)
     return fig
 
@@ -538,6 +556,6 @@ with tab_surf:
         st.markdown(f"**Surface — mode: `{m}`**")
         try:
             wt="volume"
-            pg,Zg,Zc,times,last,sp=build_time_surface(surf_snaps,m,p_min,p_max,weighting=wt)
-            fig=fig_surface(m,pg,Zg,Zc,times,last,sp,bars,straddle); st.pyplot(fig,use_container_width=True); plt.close(fig)
+            pg,Zg,Zc,times,last,sp,cwalls,pwalls=build_time_surface(surf_snaps,m,p_min,p_max,weighting=wt)
+            fig=fig_surface(m,pg,Zg,Zc,times,last,sp,bars,straddle,cwalls,pwalls); st.pyplot(fig,use_container_width=True); plt.close(fig)
         except Exception as ex: st.error(f"surface[{m}] failed: {ex}")
