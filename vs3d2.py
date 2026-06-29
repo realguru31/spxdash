@@ -1,10 +1,17 @@
 """
-vs3d2_v1.5.py — SPX 0DTE+ Gamma & Charm (Streamlit POC)
+vs3d2_v1.6.py — SPX 0DTE+ Gamma & Charm (Streamlit POC)
 =================================================
 Point your streamlit.io app at this file.
 
 CHANGELOG (newest first) — what changed and why, per version
 ─────────────────────────────────────────────────────────────────────────────
+v1.6
+  • FIX (regression from v1.5): y-axis collapsed to 0–7400 again. Cause: v1.5 window
+    math did lo=min(lo, bars['l'].min()) with NO guard, so a single feed bar with a
+    near-zero low dragged the whole axis to 0 (gradient invisible, candles flat).
+  • Y-axis is now PURELY spot ± window_pct. Bars NEVER influence the axis range, so no
+    stray feed value can collapse or inflate it. A junk bar just plots off-screen.
+    Tested with an injected low=0.01 bar: axis stays spot±2.5%, gradient spans it.
 v1.5
   • Simplified bar handling: CAPITAL.COM:SPX is clean index data, so prep_bars now
     just keeps today's RTH bars (09:30–16:00 EST) and plots them. Removed the spot-band
@@ -640,10 +647,10 @@ sel_ts=latest["ts"]
 exp_date=dt.datetime.strptime(exps[0],"%Y-%m-%d").date()
 bars,bars_msg=prep_bars(spot,exp_date)
 
-# price window: spot ± window_pct, widened to include today's RTH range.
+# Y-AXIS = spot ± window_pct, FULL STOP. Bars never influence the range, so no
+# stray feed value can ever collapse or blow out the axis. Widen the window % in
+# the sidebar if price runs off-screen.
 lo=spot*(1-window_pct); hi=spot*(1+window_pct)
-if bars is not None and len(bars):
-    lo=min(lo,float(bars["l"].min())); hi=max(hi,float(bars["h"].max()))
 pad=(hi-lo)*0.05; p_min,p_max=lo-pad,hi+pad
 
 straddle=None
