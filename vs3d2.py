@@ -3,6 +3,17 @@ vs3d.py — SPX 0DTE+ Gamma & Charm (Streamlit POC)
 =================================================
 Point your streamlit.io app at this file.
 
+VERSION LOG (newest first)
+  v0.8  Surface tab = Option A: positioning heatmap over real recorded time
+        (first snapshot→now), migrating γ-flip + call/put wall tracks; no projection.
+  v0.7  Candles switched to 1-minute bars; bars cache 90s so each 5-min refresh re-pulls.
+  v0.6  Snapshot scrubber slider (view book as of any past snapshot; surface trims to it).
+  v0.5  Unified candles + x-axis across all 3 tabs (one draw_candles, one session window).
+  v0.4  All times pinned to US Eastern (now_est/today_est); bars treated as EST.
+  v0.3  Tabbed UI (Cone | Landscape | Intraday surface); all methods shown, both greeks.
+  v0.2  Removed TradingView login (no-login CAPITALCOM:SPX works).
+  v0.1  Streamlit POC: in-memory 5-min snapshots, auto-refresh, manual snapshot/refresh.
+
 requirements.txt (put this next to vs3d.py in your GitHub repo):
     streamlit
     streamlit-autorefresh
