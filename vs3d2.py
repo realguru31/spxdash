@@ -1,9 +1,16 @@
 """
-vs3d2_v1.0.py — SPX 0DTE+ Gamma & Charm (Streamlit POC)
+vs3d2_v1.3.py — SPX 0DTE+ Gamma & Charm (Streamlit POC)
 =================================================
 Point your streamlit.io app at this file.
 
 VERSION LOG (newest first)
+  v1.3  CAPITAL.COM:SPX = index 1:1 — ALL bar rescaling removed; candles drawn exactly as TV.
+        Verified gradient imshow y-extent == axis ylim == price grid (price sits on true levels).
+  v1.2  FIX: candles no longer rescaled by the day's median (which inflated prices on a
+        trending day — e.g. true 7429 high shown at ~7450). Rescale now only on a gross
+        (>=2x) feed mismatch vs the latest bar; otherwise candles are shown exactly as TV.
+  v1.1  X-axis hard-locked to RTH 09:30–16:00 EST (autoscale off + zero margins) so
+        candle/track plots can no longer drift the window; hourly x ticks.
   v1.0  Surface projection now uses real T-DECAY (current book re-evaluated at shrinking
         T to the 0DTE close; pockets sharpen as T→0). Candles pulled fresh from tvdatafeed
         every run (no caching). Per-option expiry handled for multi-expiry.
@@ -288,9 +295,13 @@ def draw_candles(ax,bars,x0,x1,p_min,p_max):
             max(abs(r["c"]-r["o"]),(p_max-p_min)*0.0006),facecolor=body,edgecolor="#9aa0a6",lw=0.3,zorder=4))
 
 def style_time_axis(ax,x0,x1):
-    """Identical x-axis styling for every tab."""
+    """Identical x-axis styling for every tab. Hard-locked to RTH 09:30–16:00 EST —
+    autoscale off + zero margins so candle/track plots can't expand the window."""
+    ax.set_autoscalex_on(False)
+    ax.margins(x=0)
     ax.set_xlim(x0,x1); ax.xaxis_date()
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
+    ax.xaxis.set_major_locator(mdates.HourLocator())
     ax.tick_params(axis="x",colors=TXT,labelsize=8)
 
 def _panel_meta():
@@ -451,13 +462,13 @@ def fetch_bars_raw():
 def prep_bars(spot, exp_date):
     bars=fetch_bars_raw()
     if bars is None or not len(bars): return None,"feed returned no bars"
+    # CAPITAL.COM:SPX IS the SPX index — 1:1, no rescaling, ever. Bars are used
+    # exactly as TradingView reports them so price sits on the true gradient levels.
+    # Light sanity filter only drops obviously corrupt rows (zeros / absurd spikes).
     m=float(bars[["o","h","l","c"]].stack().median())
     ok=((bars[["o","h","l","c"]]>m*0.5).all(axis=1)&(bars[["o","h","l","c"]]<m*1.5).all(axis=1))
     bars=bars[ok].reset_index(drop=True)
     if bars.empty: return None,"all bars failed sanity filter"
-    med=float(bars[["o","h","l","c"]].stack().median()); ratio=spot/med
-    if not (0.7<=ratio<=1.3):
-        for col in ("o","h","l","c"): bars[col]=bars[col]*ratio
     last=bars["t"].dt.date.max()
     today=today_est()
     todays=bars[bars["t"].dt.date==today]
