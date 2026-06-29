@@ -343,9 +343,9 @@ def fig_surface(mode,pg,Zg,Zc,times,last,spot,bars,straddle):
 
 # ════════════════════════════ bars ══════════════════════════════════════════
 @st.cache_data(ttl=120, show_spinner=False)
-def fetch_bars_raw(user, pw):
+def fetch_bars_raw():
     from tvDatafeed import TvDatafeed, Interval
-    tv=(TvDatafeed(user,pw) if user and pw else TvDatafeed())
+    tv=TvDatafeed()                      # no-login works for CAPITALCOM:SPX
     for itv in (Interval.in_5_minute,Interval.in_15_minute):
         try:
             df=tv.get_hist(symbol="SPX",exchange="CAPITALCOM",interval=itv,n_bars=300)
@@ -356,8 +356,8 @@ def fetch_bars_raw(user, pw):
                 return df[["t","o","h","l","c"]].dropna().reset_index(drop=True)
         except Exception: pass
     return None
-def prep_bars(spot, exp_date, user, pw):
-    bars=fetch_bars_raw(user,pw)
+def prep_bars(spot, exp_date):
+    bars=fetch_bars_raw()
     if bars is None or not len(bars): return None
     m=float(bars[["o","h","l","c"]].stack().median())
     ok=((bars[["o","h","l","c"]]>m*0.5).all(axis=1)&(bars[["o","h","l","c"]]<m*1.5).all(axis=1))
@@ -386,9 +386,6 @@ st.sidebar.title("vs3d · SPX 0DTE")
 num_expiries=st.sidebar.slider("Expiries to aggregate",1,5,1)
 window_pct=st.sidebar.slider("Price window ±%",1.0,5.0,2.5,0.5)/100.0
 auto_on=st.sidebar.toggle("Auto-refresh (5 min)",value=True)
-st.sidebar.caption("TradingView login (optional, for CAPITALCOM:SPX candles)")
-tv_user=st.sidebar.text_input("TV username",value="")
-tv_pw=st.sidebar.text_input("TV password",value="",type="password")
 c1,c2=st.sidebar.columns(2)
 force=c1.button("📸 Snapshot now",use_container_width=True)
 if c2.button("🗑 Clear",use_container_width=True):
@@ -418,7 +415,7 @@ if not snaps:
 
 latest=snaps[-1]; spot=latest["spot"]; exps=latest["exps"]
 exp_date=dt.datetime.strptime(exps[0],"%Y-%m-%d").date()
-bars=prep_bars(spot,exp_date,tv_user,tv_pw)
+bars=prep_bars(spot,exp_date)
 
 lo=spot*(1-window_pct); hi=spot*(1+window_pct)
 if bars is not None and len(bars): lo=min(lo,float(bars["l"].min())); hi=max(hi,float(bars["h"].max()))
