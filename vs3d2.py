@@ -1,10 +1,22 @@
 """
-vs3d2_v1.12.py — SPX 0DTE+ Gamma & Charm (Streamlit POC)
+vs3d2_v1.13.py — SPX 0DTE+ Gamma & Charm (Streamlit POC)
 =================================================
 Point your streamlit.io app at this file.
 
 CHANGELOG (newest first) — what changed and why, per version
 ─────────────────────────────────────────────────────────────────────────────
+v1.13  [CONE converted to real Barchart data — surface/projection still pending]
+  • Confirmed via Colab: Barchart returns gamma+delta per strike (430/430), but NO charm/
+    vanna (only delta,gamma,theta,vega,rho). So gamma is used DIRECTLY; charm is derived
+    empirically as Δdelta/Δt from real Barchart deltas across snapshots (user's choice).
+  • CONE gamma: net GEX per price level from Barchart per-strike gamma (flat bands, vs3d
+    style). NO Black-Scholes. compute_walls also switched to Barchart gamma.
+  • CONE charm: empirical Δdelta/Δt vs the previous snapshot; BLANK on the 1st snapshot
+    (shows a placeholder), populates once a 2nd snapshot exists. Chain now stores 'delta'.
+  • New helpers _gex_profile_barchart() and _empirical_charm_profile(). Verified: gamma
+    matches Barchart, charm None on snap1 and populated on snap2.
+  • TODO: Landscape (per-strike Barchart gamma projected with T-decay shape, pinned per
+    strike + bad-strike clipping) and Intraday surface still use BS internally — next.
 v1.12
   • FIX: candles filled the chart to ~16:00 even at 11:56. Cause: tvdatafeed returns
     NAIVE UTC timestamps (verified: last bar 15:56 == UTC now, +3.99h vs EST), but the
@@ -225,7 +237,7 @@ def fetch_chain(s,h,expiry,sym="$SPX"):
                         def num(k):
                             v=raw.get(k,None); return float(v) if v not in (None,"") else np.nan
                         rows.append({"strike":num("strikePrice"),"type":ot.lower(),"iv":num("volatility"),
-                            "gamma":num("gamma"),"oi":num("openInterest"),"volume":num("volume"),
+                            "gamma":num("gamma"),"delta":num("delta"),"oi":num("openInterest"),"volume":num("volume"),
                             "bid":num("bidPrice"),"ask":num("askPrice")})
             return pd.DataFrame(rows) if rows else None
         except Exception as ex:
@@ -260,6 +272,53 @@ def weight_for(c, method):
     if method=="oi_plus_flow": return oi+vol
     raise ValueError(method)
 
+# ════════════════════════════ GEX / charm from BARCHART data ════════════════
+# Gamma is taken DIRECTLY from Barchart per strike (confirmed: every strike has it).
+# Net GEX per price level = sum over strikes of sign·gamma·weight·100·level, placed
+# at each strike and spread across the price grid by a narrow per-strike kernel so
+# the profile is continuous. NO Black-Scholes gamma anywhere.
+def _gex_profile_barchart(c, pg, mult=100):
+    """Net dealer GEX as a function of price level pg, from Barchart per-strike gamma.
+    Each strike contributes sign·gamma·w at its OWN strike price; we distribute that
+    onto the price grid with a small gaussian around the strike (visual continuity),
+    then scale by level. Calls +, puts −."""
+    if c.empty: return np.zeros_like(pg)
+    prof=np.zeros_like(pg)
+    step=(pg[-1]-pg[0])/(len(pg)-1)
+    sig_px=max(step*1.5, (pg[-1]-pg[0])*0.004)        # narrow kernel ~0.4% of window
+    sign=np.where(c["type"].values=="call",1.0,-1.0)
+    K=c["strike"].values; G=c["gamma"].fillna(0).values; W=c["w"].values
+    contrib=sign*G*W
+    for k,amt in zip(K,contrib):
+        if amt==0: continue
+        prof+=amt*np.exp(-0.5*((pg-k)/sig_px)**2)
+    return prof*mult*pg
+
+def _empirical_charm_profile(c_now, c_prev, dt_hours, pg, mult=100):
+    """Charm proxy from REAL Barchart deltas: per strike, (delta_now − delta_prev)/Δt,
+    weighted, signed (call +/put −), placed at the strike and spread on the price grid.
+    Returns None if no usable prior snapshot (so the panel can show 'blank')."""
+    if c_prev is None or c_now is None or c_now.empty or dt_hours<=0: return None
+    prev=c_prev.set_index(["expiry","strike","type"])["delta"] if len(c_prev) else None
+    if prev is None or prev.empty: return None
+    prof=np.zeros_like(pg)
+    step=(pg[-1]-pg[0])/(len(pg)-1)
+    sig_px=max(step*1.5, (pg[-1]-pg[0])*0.004)
+    any_pair=False
+    for _,r in c_now.iterrows():
+        key=(r["expiry"],r["strike"],r["type"])
+        if key not in prev.index: continue
+        dprev=prev.loc[key]
+        if isinstance(dprev,pd.Series): dprev=float(dprev.iloc[0])
+        if pd.isna(dprev) or pd.isna(r["delta"]): continue
+        ddelta=(float(r["delta"])-dprev)/dt_hours          # per hour
+        sign=1.0 if r["type"]=="call" else -1.0
+        w=float(r["w"]) if not pd.isna(r["w"]) else 0.0
+        amt=sign*ddelta*w
+        if amt==0: continue
+        prof+=amt*np.exp(-0.5*((pg-r["strike"])/sig_px)**2); any_pair=True
+    return (prof*mult*pg) if any_pair else None
+
 # ════════════════════════════ Forward projection ════════════════════════════
 def build_projection(chain, spot, method, p_min, p_max, n_time=120, n_price=220):
     c=chain.dropna(subset=["strike","iv","expiry"]).copy()
@@ -288,19 +347,25 @@ def build_projection(chain, spot, method, p_min, p_max, n_time=120, n_price=220)
     return pg,Zg,Zc,times,jnow,c
 
 # ════════════════════════════ Cone (single snapshot) ════════════════════════
-def cone_profiles(chain, spot, p_min, p_max, weighting, n_price=220, mult=100):
-    c=chain.dropna(subset=["strike","iv","expiry"]).copy()
+def cone_profiles(chain, spot, p_min, p_max, weighting, n_price=220, mult=100,
+                  prev_chain=None, dt_hours=None):
+    """Cone GEX/charm from BARCHART data. Gamma per strike → net GEX (flat-banded,
+    vs3d style). Charm = empirical Δdelta/Δt from real Barchart deltas vs the prior
+    snapshot; returns chm=None when there's no prior snapshot (Cone charm blank)."""
+    c=chain.dropna(subset=["strike","gamma"]).copy()
     c["w"]=weight_for(c, weighting)
     c=c[(c["strike"]>=p_min*0.85)&(c["strike"]<=p_max*1.15)]
-    c["T"]=c["expiry"].map(lambda e:_T_at(e,now_est()))
-    pg=np.linspace(p_min,p_max,n_price); S=pg[:,None]   # price grid == requested window, no clamp
-    def prof(df,fn):
-        if df.empty: return np.zeros_like(pg)
-        return (fn(S,df["strike"].values[None,:],df["T"].values[None,:],df["iv"].values[None,:])*df["w"].values[None,:]).sum(1)
-    ca=c[c.type=="call"]; pu=c[c.type=="put"]
-    gex=(prof(ca,bs_gamma)-prof(pu,bs_gamma))*mult*pg
-    chm=(prof(ca,bs_charm)-prof(pu,bs_charm))*mult*pg
-    return pg,gaussian_filter1d(gex,2.5),gaussian_filter1d(chm,2.5),c
+    if "expiry" not in c.columns: c["expiry"]="0"
+    pg=np.linspace(p_min,p_max,n_price)
+    gex=_gex_profile_barchart(c, pg, mult)
+    pc=None
+    if prev_chain is not None and dt_hours:
+        pc=prev_chain.dropna(subset=["strike","delta"]).copy()
+        if "expiry" not in pc.columns: pc["expiry"]="0"
+    chm=_empirical_charm_profile(c, pc, dt_hours or 0, pg, mult)
+    gex=gaussian_filter1d(gex,2.5)
+    if chm is not None: chm=gaussian_filter1d(chm,2.5)
+    return pg,gex,chm,c
 def field_from_profile(vals, n_x=360, gain=4.5, glow=True):
     scale=np.percentile(np.abs(vals),85) or 1.0
     b=0.5+0.5*np.tanh(vals/scale); b=gaussian_filter1d(b,2.0)
@@ -357,8 +422,8 @@ def zero_crossings(pg, vals):
         if y1!=y0: out.append(pg[i]-y0*(pg[i+1]-pg[i])/(y1-y0))
     return out
 def compute_walls(c, spot, mult=100):
-    T=c["expiry"].map(lambda e:_T_at(e,now_est())).values if "T" not in c else c["T"].values
-    g=bs_gamma(spot,c["strike"].values,T,c["iv"].values)
+    # walls from BARCHART per-strike gamma (same source as the gradient), not BS.
+    g=c["gamma"].fillna(0).values if "gamma" in c else np.zeros(len(c))
     sign=np.where(c["type"].values=="call",1.0,-1.0)
     per=pd.Series(g*c["w"].values*sign*mult*spot,index=c["strike"].values).groupby(level=0).sum()
     if per.empty: return None,None
@@ -487,19 +552,35 @@ def fig_projection(method,pg,Zg,Zc,times,jnow,cfull,spot,bars,straddle):
     return fig
 
 def fig_cone(pg,gex,chm,cfull,spot,bars,straddle):
-    p_min,p_max=pg[0],pg[-1]; Vg,bg=field_from_profile(gex); Vc,bc=field_from_profile(chm); n_x=Vg.shape[1]
+    p_min,p_max=pg[0],pg[-1]; Vg,bg=field_from_profile(gex)
+    charm_ok = chm is not None
+    if charm_ok: Vc,bc=field_from_profile(chm)
     x0,x1=session_window(); cw,pw=compute_walls(cfull,spot)
     fig,(ag,ac)=plt.subplots(1,2,figsize=(16,8.6),facecolor=DARK); fig.subplots_adjust(wspace=0.0,left=0.01,right=0.945,top=0.93,bottom=0.06)
     step=max(5,round((p_max-p_min)/8/5)*5); gps=np.arange(round(p_min/step)*step,round(p_max/step)*step+step,step)
-    for ax,P,V,b,prof in [(ag,_panel_meta()[0],Vg,bg,gex),(ac,_panel_meta()[1],Vc,bc,chm)]:
+    panels=[(ag,_panel_meta()[0],Vg,bg,gex,True)]
+    panels.append((ac,_panel_meta()[1],Vc,bc,chm,True) if charm_ok else (ac,_panel_meta()[1],None,None,None,False))
+    for ax,P,V,b,prof,ok in panels:
         ax.set_facecolor(DARK)
-        # cone gradient stretched across the SAME session-clock x-axis as all tabs
-        ax.imshow(V,origin="lower",extent=[x0,x1,p_min,p_max],aspect="auto",cmap=P["cmap"],vmin=-1,vmax=1,interpolation="bilinear",zorder=0)
-        ax.plot(x0+b*(x1-x0),pg,color="white",lw=1.0,ls="--",zorder=3)
-        for gp in gps:
-            if p_min<gp<p_max: ax.axhline(gp,color=GRID,lw=0.5,ls="--",alpha=0.6,zorder=1)
-        draw_candles(ax,bars,x0,x1,p_min,p_max)
-        _finish(ax,P,pg,spot,p_min,p_max,prof,cw,pw,"cone",straddle,gps)
+        if ok:
+            ax.imshow(V,origin="lower",extent=[x0,x1,p_min,p_max],aspect="auto",cmap=P["cmap"],vmin=-1,vmax=1,interpolation="bilinear",zorder=0)
+            ax.plot(x0+b*(x1-x0),pg,color="white",lw=1.0,ls="--",zorder=3)
+            for gp in gps:
+                if p_min<gp<p_max: ax.axhline(gp,color=GRID,lw=0.5,ls="--",alpha=0.6,zorder=1)
+            draw_candles(ax,bars,x0,x1,p_min,p_max)
+            _finish(ax,P,pg,spot,p_min,p_max,prof,cw,pw,"cone",straddle,gps)
+        else:
+            # charm needs a prior snapshot to difference deltas — show placeholder
+            for gp in gps:
+                if p_min<gp<p_max: ax.axhline(gp,color=GRID,lw=0.5,ls="--",alpha=0.6,zorder=1)
+            draw_candles(ax,bars,x0,x1,p_min,p_max)
+            ax.set_ylim(p_min,p_max); ax.set_xlim(x0,x1)
+            ax.text(0.5,0.5,"charm = Δdelta/Δt\nneeds a 2nd snapshot\n(take/await one more)",
+                    transform=ax.transAxes,color="#8b949e",fontsize=13,ha="center",va="center",
+                    fontfamily="monospace",zorder=8,
+                    bbox=dict(boxstyle="round,pad=0.6",facecolor="#161b22",edgecolor="#30363d"))
+            ax.text(0.012,0.985,f"SPX · {P['label']}  [cone]",transform=ax.transAxes,color=TXT,
+                    fontsize=10.5,va="top",ha="left",fontfamily="monospace",zorder=8,fontweight="bold")
         style_time_axis(ax,x0,x1)
     return fig
 
@@ -731,11 +812,16 @@ tab_cone,tab_land,tab_surf=st.tabs(["🟢 Cone (single snapshot)",
                                     "🕒 Intraday surface (snapshot history)"])
 
 with tab_cone:
-    st.caption(f"x-axis = session clock · gradient = GEX size · snapshot {sel_ts:%H:%M:%S} EST.")
+    st.caption(f"x-axis = session clock · gamma = Barchart per-strike · charm = Δdelta/Δt · snapshot {sel_ts:%H:%M:%S} EST.")
+    # previous snapshot (for empirical charm). None if viewing the first snapshot.
+    prev_snap=snaps[sel_i-1] if sel_i>0 else None
+    prev_chain=prev_snap["chain"] if prev_snap is not None else None
+    dt_hours=((sel_ts-prev_snap["ts"]).total_seconds()/3600.0) if prev_snap is not None else None
     for w in ["volume","oi","oi_plus_flow"]:
         st.markdown(f"**Cone — weight: `{w}`**")
         try:
-            pg,gex,chm,cf=cone_profiles(latest["chain"],spot,p_min,p_max,w)
+            pg,gex,chm,cf=cone_profiles(latest["chain"],spot,p_min,p_max,w,
+                                        prev_chain=prev_chain,dt_hours=dt_hours)
             fig=fig_cone(pg,gex,chm,cf,spot,bars,straddle); st.pyplot(fig,use_container_width=True); plt.close(fig)
         except Exception as ex: st.error(f"cone[{w}] failed: {ex}")
 
