@@ -1,9 +1,12 @@
 """
-vs3d2_v0.9.py — SPX 0DTE+ Gamma & Charm (Streamlit POC)
+vs3d2_v1.0.py — SPX 0DTE+ Gamma & Charm (Streamlit POC)
 =================================================
 Point your streamlit.io app at this file.
 
 VERSION LOG (newest first)
+  v1.0  Surface projection now uses real T-DECAY (current book re-evaluated at shrinking
+        T to the 0DTE close; pockets sharpen as T→0). Candles pulled fresh from tvdatafeed
+        every run (no caching). Per-option expiry handled for multi-expiry.
   v0.9  Surface projects CURRENT structure flat from now→close (dimmed levels map,
         no time-decay forecast); recorded portion still shows real migration. File now versioned.
   v0.8  Surface tab = Option A: positioning heatmap over real recorded time
@@ -353,54 +356,83 @@ def fig_cone(pg,gex,chm,cfull,spot,bars,straddle):
         style_time_axis(ax,x0,x1)
     return fig
 
+def decay_surface(last, pg, t_now_dt, t_end_dt, n_time=90, smooth_p=1.4):
+    """Project the CURRENT book forward by time-decay only: same strikes/weights/IV,
+    T shrinks from now to the 0DTE close. Per-option expiry, so multi-expiry is handled
+    (today's 0DTE sharpens hardest as T→0; later expiries stay flatter). Returns
+    (future datenums, Zg, Zc) or (None,None,None) if nothing to project."""
+    if last is None or len(last)==0 or t_now_dt>=t_end_dt: return None,None,None
+    S=pg[:,None]; YR=365*24*3600
+    ca=last[last["type"]=="call"]; pu=last[last["type"]=="put"]
+    def arrs(df):
+        es=df["expiry"].map(lambda e:dt.datetime.combine(
+            dt.datetime.strptime(e,"%Y-%m-%d").date(),dt.time(16,0)).timestamp()).values
+        return df["strike"].values,df["w"].values,df["iv"].values,es
+    Kc,Wc,Vc,Ec=arrs(ca); Kp,Wp,Vp,Ep=arrs(pu)
+    tms=[t_now_dt+k*(t_end_dt-t_now_dt)/(n_time-1) for k in range(n_time)]
+    Zg=np.zeros((len(pg),n_time)); Zc=np.zeros_like(Zg)
+    for j,t in enumerate(tms):
+        ts=t.timestamp(); Tc=np.maximum(Ec-ts,60)/YR; Tp=np.maximum(Ep-ts,60)/YR
+        Zg[:,j]=((bs_gamma(S,Kc[None,:],Tc[None,:],Vc[None,:])*Wc[None,:]).sum(1)
+                -(bs_gamma(S,Kp[None,:],Tp[None,:],Vp[None,:])*Wp[None,:]).sum(1))*100*pg
+        Zc[:,j]=((bs_charm(S,Kc[None,:],Tc[None,:],Vc[None,:])*Wc[None,:]).sum(1)
+                -(bs_charm(S,Kp[None,:],Tp[None,:],Vp[None,:])*Wp[None,:]).sum(1))*100*pg
+    if smooth_p>0:
+        Zg=gaussian_filter1d(Zg,smooth_p,axis=0); Zc=gaussian_filter1d(Zc,smooth_p,axis=0)
+    return np.array([mdates.date2num(t) for t in tms]),Zg,Zc
+
 def fig_surface(mode,pg,Zg,Zc,times,last,spot,bars,straddle,cwalls=None,pwalls=None):
     p_min,p_max=pg[0],pg[-1]; x0,x1=session_window()
     tnum=np.array([mdates.date2num(t) for t in times])
     if len(tnum)==1:                       # single snapshot → give it a little width
         tnum=np.array([tnum[0],tnum[0]+5/1440.0]); Zg=np.repeat(Zg,2,axis=1); Zc=np.repeat(Zc,2,axis=1)
         if cwalls is not None: cwalls=[cwalls[0],cwalls[0]]; pwalls=[pwalls[0],pwalls[0]]
-    t_left,t_now=tnum[0],tnum[-1]          # heatmap fills first snapshot → now (real history only)
+    t_left,t_now=tnum[0],tnum[-1]          # recorded heatmap fills first snapshot → now
+    # T-DECAY PROJECTION: current book re-evaluated at shrinking T, now → 0DTE close
+    t_now_dt=times[-1] if len(times) else now_est()
+    t_end_dt=dt.datetime.combine(today_est(),dt.time(16,0))
+    dtnum,Zg_p,Zc_p=decay_surface(last,pg,t_now_dt,t_end_dt) if (last is not None and t_now<x1) else (None,None,None)
     fig,(ag,ac)=plt.subplots(1,2,figsize=(16,8.6),facecolor=DARK); fig.subplots_adjust(wspace=0.0,left=0.01,right=0.945,top=0.93,bottom=0.06)
     step=max(5,round((p_max-p_min)/8/5)*5); gps=np.arange(round(p_min/step)*step,round(p_max/step)*step+step,step)
-    for ax,P,Z in [(ag,_panel_meta()[0],Zg),(ac,_panel_meta()[1],Zc)]:
-        ax.set_facecolor(DARK); cap=np.percentile(np.abs(Z),99) or 1.0
+    for ax,P,Z,Zp in [(ag,_panel_meta()[0],Zg,Zg_p),(ac,_panel_meta()[1],Zc,Zc_p)]:
+        ax.set_facecolor(DARK)
+        # shared color scale across recorded + projected so the seam is continuous
+        allv=np.abs(Z) if Zp is None else np.abs(np.concatenate([Z,Zp],axis=1))
+        cap=np.percentile(allv,99) or 1.0
         # 1) recorded positioning heatmap over REAL time (first snapshot → now)
         ax.imshow(Z,origin="lower",extent=[t_left,t_now,p_min,p_max],aspect="auto",cmap=P["cmap"],
                   vmin=-cap,vmax=cap,interpolation="bilinear",zorder=0)
-        # 2) PROJECTION: hold the CURRENT (latest) structure flat from now → close.
-        #    Not a forecast — just today's positioning extended as a levels map so price
-        #    can be read against it all session. Dimmed so it's visually distinct.
-        if t_now<x1:
-            proj=np.repeat(Z[:,-1:],2,axis=1)
-            ax.imshow(proj,origin="lower",extent=[t_now,x1,p_min,p_max],aspect="auto",cmap=P["cmap"],
-                      vmin=-cap,vmax=cap,interpolation="bilinear",alpha=0.6,zorder=0)
-        # migrating zero-flip contour over recorded window + flat extension forward
+        # 2) DECAY PROJECTION: current book at shrinking T, now → close (pockets sharpen as T→0)
+        if Zp is not None:
+            ax.imshow(Zp,origin="lower",extent=[t_now,x1,p_min,p_max],aspect="auto",cmap=P["cmap"],
+                      vmin=-cap,vmax=cap,interpolation="bilinear",alpha=0.92,zorder=0)
+            try: ax.contour(dtnum,pg,Zp,levels=[0],colors=["white"],linewidths=[0.8],linestyles=[(0,(2,2))],zorder=3)
+            except Exception: pass
+        # migrating zero-flip contour over recorded window
         try: ax.contour(np.linspace(t_left,t_now,Z.shape[1]),pg,Z,levels=[0],colors=["white"],
                         linewidths=[0.9],linestyles=["--"],zorder=3)
         except Exception: pass
         ax.axvline(t_now,color="#e6edf3",lw=1.0,ls="-",alpha=0.7,zorder=5)   # 'now' divider
         for gp in gps:
             if p_min<gp<p_max: ax.axhline(gp,color=GRID,lw=0.5,ls="--",alpha=0.6,zorder=1)
-        # WALL MIGRATION TRACKS (gamma) — recorded path, then held flat to the close
+        # WALL MIGRATION TRACKS (gamma): recorded path; walls are strike levels → flat forward
         if P["walls"] and cwalls is not None and len(tnum)==len(cwalls):
             cwt=np.array(cwalls,float); pwt=np.array(pwalls,float)
             ax.plot(tnum,cwt,color="#3fb950",lw=1.4,ls=":",zorder=6)
             ax.plot(tnum,pwt,color="#f85149",lw=1.4,ls=":",zorder=6)
             ax.scatter(tnum,cwt,s=10,color="#3fb950",zorder=6); ax.scatter(tnum,pwt,s=10,color="#f85149",zorder=6)
-            if t_now<x1:                       # flat projection of current walls forward
+            if t_now<x1:
                 ax.plot([t_now,x1],[cwt[-1],cwt[-1]],color="#3fb950",lw=1.0,ls=":",alpha=0.5,zorder=6)
                 ax.plot([t_now,x1],[pwt[-1],pwt[-1]],color="#f85149",lw=1.0,ls=":",alpha=0.5,zorder=6)
         draw_candles(ax,bars,x0,x1,p_min,p_max)
-        # levels labelled from the LATEST recorded snapshot (current positioning)
         cw,pw=(cwalls[-1],pwalls[-1]) if (cwalls is not None and len(cwalls)) else compute_walls(last,spot)
         _finish(ax,P,pg,spot,p_min,p_max,Z[:,-1],cw,pw,f"surface·{mode}",straddle,gps)
         style_time_axis(ax,x0,x1)
     return fig
 
 # ════════════════════════════ bars ══════════════════════════════════════════
-# 1-minute bars for tight price tracking. Cache TTL < refresh interval so every
-# 5-min app refresh re-pulls fresh bars from TradingView (no stale reuse).
-@st.cache_data(ttl=90, show_spinner=False)
+# 1-minute bars pulled FRESH from tvdatafeed on every run — no caching, no reuse.
+# (Candles must always reflect the latest 1-min TradingView data.)
 def fetch_bars_raw():
     from tvDatafeed import TvDatafeed, Interval
     tv=TvDatafeed()                      # no-login works for CAPITALCOM:SPX
