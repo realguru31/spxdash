@@ -1,10 +1,16 @@
 """
-vs3d2_v1.7.py — SPX 0DTE+ Gamma & Charm (Streamlit POC)
+vs3d2_v1.8.py — SPX 0DTE+ Gamma & Charm (Streamlit POC)
 =================================================
 Point your streamlit.io app at this file.
 
 CHANGELOG (newest first) — what changed and why, per version
 ─────────────────────────────────────────────────────────────────────────────
+v1.8
+  • Added a DIAGNOSTICS expander at the bottom of the Cone tab. Shows the bar pipeline
+    at every stage: raw feed rows/dtypes/dates/times, prep_bars result, session window
+    datenums vs bar datenums, how many bars land INSIDE the x-window (i.e. actually get
+    drawn), and price-window coverage. Purpose: stop guessing why candles don't appear —
+    read the numbers. If "bars INSIDE session window" = 0, it's a date/tz mismatch, not contrast.
 v1.7
   • FIX: candles were being DRAWN (256 of them) but invisible — the old thin 0.3px
     gray outline got swallowed by the saturated gradient. Candles now have a dark halo
@@ -696,6 +702,51 @@ with tab_cone:
             pg,gex,chm,cf=cone_profiles(latest["chain"],spot,p_min,p_max,w)
             fig=fig_cone(pg,gex,chm,cf,spot,bars,straddle); st.pyplot(fig,use_container_width=True); plt.close(fig)
         except Exception as ex: st.error(f"cone[{w}] failed: {ex}")
+
+    # ── DIAGNOSTICS ──────────────────────────────────────────────────────────
+    with st.expander("🔧 Candle / bar diagnostics", expanded=True):
+        x0,x1=session_window()
+        st.write({
+            "today_est()": str(today_est()),
+            "session window x0..x1 (datenum)": [round(x0,5),round(x1,5)],
+            "session window (clock)": [str(mdates.num2date(x0))[:19], str(mdates.num2date(x1))[:19]],
+            "prep_bars msg": bars_msg,
+            "bars is None": bars is None,
+            "bars count (post prep_bars)": (0 if bars is None else int(len(bars))),
+        })
+        # raw feed, before prep_bars filtering
+        try:
+            raw=fetch_bars_raw()
+            if raw is None or not len(raw):
+                st.warning("fetch_bars_raw() returned no rows.")
+            else:
+                st.write({
+                    "RAW feed rows": int(len(raw)),
+                    "RAW dtypes o/h/l/c": [str(raw[c].dtype) for c in ["o","h","l","c"]],
+                    "RAW date(s) present": sorted({str(d) for d in raw["t"].dt.date.unique()})[:6],
+                    "RAW time min..max": [str(raw["t"].min()), str(raw["t"].max())],
+                    "RAW close min..max": [round(float(raw["c"].min()),2), round(float(raw["c"].max()),2)],
+                })
+        except Exception as ex:
+            st.error(f"fetch_bars_raw() raised: {ex}")
+        # what draw_candles actually sees: how many bars land inside the x-window
+        if bars is not None and len(bars):
+            bn=np.array([mdates.date2num(t) for t in bars["t"]])
+            inwin=(bn>=x0)&(bn<=x1)
+            st.write({
+                "bars datenum min..max": [round(float(bn.min()),5), round(float(bn.max()),5)],
+                "bars CLOCK min..max": [str(bars["t"].min()), str(bars["t"].max())],
+                "bars INSIDE session window (drawn)": int(inwin.sum()),
+                "bars OUTSIDE window (skipped)": int((~inwin).sum()),
+                "price window p_min..p_max": [round(p_min,2), round(p_max,2)],
+                "bars high/low": [round(float(bars["h"].max()),2), round(float(bars["l"].min()),2)],
+                "bars within price window": int(((bars["l"]>=p_min)&(bars["h"]<=p_max)).sum()),
+            })
+            if inwin.sum()==0:
+                st.error("0 bars fall inside the session x-window → nothing to draw. "
+                         "Likely a date/timezone mismatch between bar timestamps and today_est().")
+        st.caption("If 'bars INSIDE session window' is 0 but RAW rows exist, it's a time-axis "
+                   "mismatch (not contrast). If bars are far outside the price window, it's a scale issue.")
 
 with tab_land:
     st.caption(f"x-axis = session clock · book at {sel_ts:%H:%M:%S} EST projected to the close "
