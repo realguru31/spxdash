@@ -1,10 +1,16 @@
 """
-vs3d2_v1.4.py — SPX 0DTE+ Gamma & Charm (Streamlit POC)
+vs3d2_v1.5.py — SPX 0DTE+ Gamma & Charm (Streamlit POC)
 =================================================
 Point your streamlit.io app at this file.
 
 CHANGELOG (newest first) — what changed and why, per version
 ─────────────────────────────────────────────────────────────────────────────
+v1.5
+  • Simplified bar handling: CAPITAL.COM:SPX is clean index data, so prep_bars now
+    just keeps today's RTH bars (09:30–16:00 EST) and plots them. Removed the spot-band
+    filter, median fallback, and numeric-coercion logic from v1.4 that was rejecting
+    ALL bars ("all bars outside ±20% of spot"). Window = spot ± window_pct, widened by
+    today's RTH range. WHY: the v1.4 safety net over-rejected; the data doesn't need it.
 v1.4
   • FIX (regression from v1.3): price y-axis collapsed to 0–7400, gradient invisible,
     candles flat at bottom. Two root causes fixed:
@@ -533,26 +539,25 @@ def fetch_bars_raw():
         except Exception: pass
     return None
 def prep_bars(spot, exp_date):
+    """CAPITAL.COM:SPX is clean index data. Keep today's RTH bars (09:30–16:00 EST)
+    and plot them. If today's bars aren't in the feed yet (pre-market), fall back to
+    the feed's most recent session so the chart isn't empty."""
     bars=fetch_bars_raw()
     if bars is None or not len(bars): return None,"feed returned no bars"
-    # CAPITAL.COM:SPX IS the SPX index — 1:1, no rescaling, ever. Bars are used
-    # exactly as TradingView reports them. Drop only rows that are clearly corrupt,
-    # judged against the KNOWN spot (from Barchart) — NOT a self-referential median,
-    # which a cluster of bad rows could drag down and let junk through.
-    cols=["o","h","l","c"]
-    ok=((bars[cols]>spot*0.80).all(axis=1)&(bars[cols]<spot*1.20).all(axis=1))
-    bars=bars[ok].reset_index(drop=True)
-    if bars.empty: return None,"all bars outside ±20% of spot (feed issue)"
-    last=bars["t"].dt.date.max()
+    bars=bars.dropna(subset=["o","h","l","c"]).reset_index(drop=True)
+    if bars.empty: return None,"feed returned no usable bars"
     today=today_est()
     todays=bars[bars["t"].dt.date==today]
     if len(todays)>0:
-        bars=todays.reset_index(drop=True); sess=today; stale=False
+        bars=todays; sess=today; stale=False
     else:
-        bars=bars[bars["t"].dt.date==last].reset_index(drop=True); sess=last; stale=True
-    if not len(bars): return None,"no bars after filter"
-    msg=(f"showing {sess} session ({len(bars)} bars)"
-         + (f" — today's EST bars not in feed yet; falling back to {sess}" if stale else ""))
+        last=bars["t"].dt.date.max(); bars=bars[bars["t"].dt.date==last]; sess=last; stale=True
+    # restrict to RTH 09:30–16:00 EST
+    rth=(bars["t"].dt.time>=dt.time(9,30))&(bars["t"].dt.time<=dt.time(16,0))
+    bars=bars[rth].reset_index(drop=True)
+    if not len(bars): return None,f"no RTH bars for {sess} yet"
+    msg=(f"showing {sess} RTH ({len(bars)} bars)"
+         + (" — today not in feed yet, prior session" if stale else ""))
     return bars,msg
 
 # ════════════════════════════ snapshot taking ═══════════════════════════════
@@ -635,17 +640,11 @@ sel_ts=latest["ts"]
 exp_date=dt.datetime.strptime(exps[0],"%Y-%m-%d").date()
 bars,bars_msg=prep_bars(spot,exp_date)
 
-# price window is ANCHORED to spot (always sane). Bars may widen it only within a
-# reasonable bound; a stray bar can never collapse the range toward zero.
+# price window: spot ± window_pct, widened to include today's RTH range.
 lo=spot*(1-window_pct); hi=spot*(1+window_pct)
 if bars is not None and len(bars):
-    bl,bh=float(bars["l"].min()),float(bars["h"].max())
-    if spot*0.85<bl<spot*1.15: lo=min(lo,bl)
-    if spot*0.85<bh<spot*1.15: hi=max(hi,bh)
+    lo=min(lo,float(bars["l"].min())); hi=max(hi,float(bars["h"].max()))
 pad=(hi-lo)*0.05; p_min,p_max=lo-pad,hi+pad
-# final safety: range must straddle spot and be a sane width, else fall back to window
-if not (p_min<spot<p_max and (p_max-p_min)<spot*0.5):
-    lo=spot*(1-window_pct); hi=spot*(1+window_pct); pad=(hi-lo)*0.05; p_min,p_max=lo-pad,hi+pad
 
 straddle=None
 try:
