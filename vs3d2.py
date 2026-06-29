@@ -1,10 +1,15 @@
 """
-vs3d2_v1.6.py — SPX 0DTE+ Gamma & Charm (Streamlit POC)
+vs3d2_v1.7.py — SPX 0DTE+ Gamma & Charm (Streamlit POC)
 =================================================
 Point your streamlit.io app at this file.
 
 CHANGELOG (newest first) — what changed and why, per version
 ─────────────────────────────────────────────────────────────────────────────
+v1.7
+  • FIX: candles were being DRAWN (256 of them) but invisible — the old thin 0.3px
+    gray outline got swallowed by the saturated gradient. Candles now have a dark halo
+    on wicks + a contrasting body outline so they read on top of any gradient color.
+    (This was a contrast bug, not a data/filter bug — bars were in-window the whole time.)
 v1.6
   • FIX (regression from v1.5): y-axis collapsed to 0–7400 again. Cause: v1.5 window
     math did lo=min(lo, bars['l'].min()) with NO guard, so a single feed bar with a
@@ -352,21 +357,27 @@ def session_window():
     return x0,x1
 
 def draw_candles(ax,bars,x0,x1,p_min,p_max):
-    """The ONE candle drawer used by every tab. Bars plotted by real EST
-    timestamp on the shared session x-axis. Identical everywhere."""
+    """The ONE candle drawer used by every tab. Bars plotted by real EST timestamp on
+    the shared session x-axis. Outlined strongly so they read on top of the gradient."""
     if bars is None or not len(bars): return
     bn=np.array([mdates.date2num(t) for t in bars["t"]]); inwin=(bn>=x0)&(bn<=x1)
     if not inwin.sum(): return
     bw=inwin.sum()
-    # width from median spacing of the visible bars (auto-adapts to 1/5/15-min)
     bvis=np.sort(bn[inwin])
     spacing=np.median(np.diff(bvis)) if bw>1 else (x1-x0)/390.0
-    cwidth=spacing*0.7
+    cwidth=spacing*0.8
+    halo=[pe.Stroke(linewidth=2.4,foreground="#000000"),pe.Normal()]   # dark outline so it pops on any color
     for x,(_,r) in zip(bn[inwin],bars[inwin].iterrows()):
         up=r["c"]>=r["o"]; body=UP if up else DOWN
-        ln,=ax.plot([x,x],[r["l"],r["h"]],color=body,lw=0.6,zorder=4); ln.set_path_effects(WICKFX)
-        ax.add_patch(plt.Rectangle((x-cwidth/2,min(r["o"],r["c"])),cwidth,
-            max(abs(r["c"]-r["o"]),(p_max-p_min)*0.0006),facecolor=body,edgecolor="#9aa0a6",lw=0.3,zorder=4))
+        # wick with dark halo
+        ln,=ax.plot([x,x],[r["l"],r["h"]],color=body,lw=1.0,zorder=5); ln.set_path_effects(halo)
+        # body: filled, with a contrasting outline (dark for up/white candle, light for down/black)
+        edge="#000000" if up else "#cbd5e1"
+        h=max(abs(r["c"]-r["o"]),(p_max-p_min)*0.0012)
+        rect=plt.Rectangle((x-cwidth/2,min(r["o"],r["c"])),cwidth,h,
+                           facecolor=body,edgecolor=edge,lw=0.6,zorder=6)
+        rect.set_path_effects([pe.withStroke(linewidth=1.4,foreground="#000000" if up else "#1f2937")])
+        ax.add_patch(rect)
 
 def style_time_axis(ax,x0,x1):
     """Identical x-axis styling for every tab. Hard-locked to RTH 09:30–16:00 EST —
