@@ -1,10 +1,21 @@
 """
-vs3d2_v1.13.py — SPX 0DTE+ Gamma & Charm (Streamlit POC)
+vs3d2_v1.14.py — SPX 0DTE+ Gamma & Charm (Streamlit POC)
 =================================================
 Point your streamlit.io app at this file.
 
 CHANGELOG (newest first) — what changed and why, per version
 ─────────────────────────────────────────────────────────────────────────────
+v1.14  [CONE: real Barchart gamma density + tunable smoothing — still no surface/proj]
+  • Cone gamma profile rebuilt as a DENSITY: net signed GEX per strike (Barchart gamma,
+    calls+/puts−) interpolated onto the price grid. Smoothing is a SIDEBAR SLIDER
+    ("Gradient smoothing", default low) — 0 = raw per-strike detail (bumpy, like vols3d
+    live), higher = smoother. Confirmed via vols3d hover tooltip that per-strike
+    granularity is desired (bumpy is NOT a bug).
+  • Learned from vols3d tooltip: the dashed line is a CONTOUR (zero-boundary of the
+    gamma field), not a single "flip" level; the field has multiple real pockets. The
+    cone x-axis carries NO time/forecast meaning — width = gamma magnitude per price,
+    candles overlaid only for price context. (Corrected my repeated misreading.)
+  • Empirical charm profile also rebuilt as interpolated density with same slider.
 v1.13  [CONE converted to real Barchart data — surface/projection still pending]
   • Confirmed via Colab: Barchart returns gamma+delta per strike (430/430), but NO charm/
     vanna (only delta,gamma,theta,vega,rho). So gamma is used DIRECTLY; charm is derived
@@ -274,36 +285,32 @@ def weight_for(c, method):
 
 # ════════════════════════════ GEX / charm from BARCHART data ════════════════
 # Gamma is taken DIRECTLY from Barchart per strike (confirmed: every strike has it).
-# Net GEX per price level = sum over strikes of sign·gamma·weight·100·level, placed
-# at each strike and spread across the price grid by a narrow per-strike kernel so
-# the profile is continuous. NO Black-Scholes gamma anywhere.
-def _gex_profile_barchart(c, pg, mult=100):
-    """Net dealer GEX as a function of price level pg, from Barchart per-strike gamma.
-    Each strike contributes sign·gamma·w at its OWN strike price; we distribute that
-    onto the price grid with a small gaussian around the strike (visual continuity),
-    then scale by level. Calls +, puts −."""
+# Net signed GEX per strike (calls +, puts −) is aggregated, then turned into a SMOOTH
+# DENSITY across price (gamma magnitude tailing off across strikes) — NOT discrete
+# per-strike bumps. NO Black-Scholes anywhere.
+def _gex_profile_barchart(c, pg, mult=100, smooth_frac=0.01):
+    """Net dealer GEX as a density vs price level pg, from Barchart per-strike gamma.
+    Net signed GEX per strike (calls +, puts −) is interpolated onto the price grid,
+    then smoothed by smooth_frac (0 = raw per-strike detail, higher = smoother)."""
     if c.empty: return np.zeros_like(pg)
-    prof=np.zeros_like(pg)
-    step=(pg[-1]-pg[0])/(len(pg)-1)
-    sig_px=max(step*1.5, (pg[-1]-pg[0])*0.004)        # narrow kernel ~0.4% of window
     sign=np.where(c["type"].values=="call",1.0,-1.0)
-    K=c["strike"].values; G=c["gamma"].fillna(0).values; W=c["w"].values
-    contrib=sign*G*W
-    for k,amt in zip(K,contrib):
-        if amt==0: continue
-        prof+=amt*np.exp(-0.5*((pg-k)/sig_px)**2)
+    per=pd.Series(sign*c["gamma"].fillna(0).values*c["w"].values,
+                  index=c["strike"].values).groupby(level=0).sum().sort_index()
+    if per.empty: return np.zeros_like(pg)
+    ks=per.index.values.astype(float); vs=per.values.astype(float)
+    prof=np.interp(pg, ks, vs, left=0.0, right=0.0)
+    sigma=len(pg)*smooth_frac
+    if sigma>0.3: prof=gaussian_filter1d(prof, sigma)
     return prof*mult*pg
 
-def _empirical_charm_profile(c_now, c_prev, dt_hours, pg, mult=100):
-    """Charm proxy from REAL Barchart deltas: per strike, (delta_now − delta_prev)/Δt,
-    weighted, signed (call +/put −), placed at the strike and spread on the price grid.
-    Returns None if no usable prior snapshot (so the panel can show 'blank')."""
+def _empirical_charm_profile(c_now, c_prev, dt_hours, pg, mult=100, smooth_frac=0.025):
+    """Charm proxy from REAL Barchart deltas: per strike (delta_now−delta_prev)/Δt,
+    weighted, signed (call +/put −), aggregated per strike then interpolated+smoothed
+    into a density across price (matching the gamma cone). None if no prior snapshot."""
     if c_prev is None or c_now is None or c_now.empty or dt_hours<=0: return None
     prev=c_prev.set_index(["expiry","strike","type"])["delta"] if len(c_prev) else None
     if prev is None or prev.empty: return None
-    prof=np.zeros_like(pg)
-    step=(pg[-1]-pg[0])/(len(pg)-1)
-    sig_px=max(step*1.5, (pg[-1]-pg[0])*0.004)
+    recs={}
     any_pair=False
     for _,r in c_now.iterrows():
         key=(r["expiry"],r["strike"],r["type"])
@@ -311,13 +318,17 @@ def _empirical_charm_profile(c_now, c_prev, dt_hours, pg, mult=100):
         dprev=prev.loc[key]
         if isinstance(dprev,pd.Series): dprev=float(dprev.iloc[0])
         if pd.isna(dprev) or pd.isna(r["delta"]): continue
-        ddelta=(float(r["delta"])-dprev)/dt_hours          # per hour
+        ddelta=(float(r["delta"])-dprev)/dt_hours
         sign=1.0 if r["type"]=="call" else -1.0
         w=float(r["w"]) if not pd.isna(r["w"]) else 0.0
         amt=sign*ddelta*w
-        if amt==0: continue
-        prof+=amt*np.exp(-0.5*((pg-r["strike"])/sig_px)**2); any_pair=True
-    return (prof*mult*pg) if any_pair else None
+        recs[r["strike"]]=recs.get(r["strike"],0.0)+amt; any_pair=True
+    if not any_pair or not recs: return None
+    ks=np.array(sorted(recs)); vs=np.array([recs[k] for k in ks])
+    prof=np.interp(pg, ks, vs, left=0.0, right=0.0)
+    sigma=len(pg)*smooth_frac
+    if sigma>0.3: prof=gaussian_filter1d(prof, sigma)
+    return prof*mult*pg
 
 # ════════════════════════════ Forward projection ════════════════════════════
 def build_projection(chain, spot, method, p_min, p_max, n_time=120, n_price=220):
@@ -348,23 +359,21 @@ def build_projection(chain, spot, method, p_min, p_max, n_time=120, n_price=220)
 
 # ════════════════════════════ Cone (single snapshot) ════════════════════════
 def cone_profiles(chain, spot, p_min, p_max, weighting, n_price=220, mult=100,
-                  prev_chain=None, dt_hours=None):
-    """Cone GEX/charm from BARCHART data. Gamma per strike → net GEX (flat-banded,
-    vs3d style). Charm = empirical Δdelta/Δt from real Barchart deltas vs the prior
-    snapshot; returns chm=None when there's no prior snapshot (Cone charm blank)."""
+                  prev_chain=None, dt_hours=None, smooth_frac=0.01):
+    """Cone GEX/charm from BARCHART data. Gamma per strike → net GEX density (smoothing
+    tunable via smooth_frac; low = per-strike detail like vols3d). Charm = empirical
+    Δdelta/Δt from real Barchart deltas vs prior snapshot; None when no prior snapshot."""
     c=chain.dropna(subset=["strike","gamma"]).copy()
     c["w"]=weight_for(c, weighting)
     c=c[(c["strike"]>=p_min*0.85)&(c["strike"]<=p_max*1.15)]
     if "expiry" not in c.columns: c["expiry"]="0"
     pg=np.linspace(p_min,p_max,n_price)
-    gex=_gex_profile_barchart(c, pg, mult)
+    gex=_gex_profile_barchart(c, pg, mult, smooth_frac)
     pc=None
     if prev_chain is not None and dt_hours:
         pc=prev_chain.dropna(subset=["strike","delta"]).copy()
         if "expiry" not in pc.columns: pc["expiry"]="0"
-    chm=_empirical_charm_profile(c, pc, dt_hours or 0, pg, mult)
-    gex=gaussian_filter1d(gex,2.5)
-    if chm is not None: chm=gaussian_filter1d(chm,2.5)
+    chm=_empirical_charm_profile(c, pc, dt_hours or 0, pg, mult, smooth_frac)
     return pg,gex,chm,c
 def field_from_profile(vals, n_x=360, gain=4.5, glow=True):
     scale=np.percentile(np.abs(vals),85) or 1.0
@@ -717,6 +726,8 @@ if "last_ts" not in st.session_state: st.session_state.last_ts=None
 st.sidebar.title("vs3d · SPX 0DTE")
 num_expiries=st.sidebar.slider("Expiries to aggregate",1,5,1)
 window_pct=st.sidebar.slider("Price window ±%",1.0,5.0,2.5,0.5)/100.0
+smooth_frac=st.sidebar.slider("Gradient smoothing",0.0,5.0,1.0,0.25,
+    help="0 = raw per-strike detail (bumpy, like vols3d), higher = smoother density")/100.0
 auto_on=st.sidebar.toggle("Auto-refresh (5 min)",value=True)
 c1,c2=st.sidebar.columns(2)
 force=c1.button("📸 Snapshot now",use_container_width=True)
@@ -821,7 +832,8 @@ with tab_cone:
         st.markdown(f"**Cone — weight: `{w}`**")
         try:
             pg,gex,chm,cf=cone_profiles(latest["chain"],spot,p_min,p_max,w,
-                                        prev_chain=prev_chain,dt_hours=dt_hours)
+                                        prev_chain=prev_chain,dt_hours=dt_hours,
+                                        smooth_frac=smooth_frac)
             fig=fig_cone(pg,gex,chm,cf,spot,bars,straddle); st.pyplot(fig,use_container_width=True); plt.close(fig)
         except Exception as ex: st.error(f"cone[{w}] failed: {ex}")
 
