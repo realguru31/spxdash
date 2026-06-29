@@ -1,10 +1,18 @@
 """
-vs3d2_v1.8.py — SPX 0DTE+ Gamma & Charm (Streamlit POC)
+vs3d2_v1.9.py — SPX 0DTE+ Gamma & Charm (Streamlit POC)
 =================================================
 Point your streamlit.io app at this file.
 
 CHANGELOG (newest first) — what changed and why, per version
 ─────────────────────────────────────────────────────────────────────────────
+v1.9
+  • ROOT CAUSE FOUND (via v1.8 diagnostics): the CAPITAL.COM:SPX feed quotes SPX on a
+    DIVIDED scale (~108×, e.g. ~68 instead of ~7400). Candles were being drawn correctly
+    but at y≈68, far below the price window, so invisible. (Not contrast, not date/tz.)
+  • FIX: prep_bars scales bars by the EXACT ratio spot/bar-level, but ONLY when it's a
+    GROSS mismatch (>3× or <1/3×). A normal/trending day (ratio≈1) is left EXACTLY as-is,
+    so the old '7429 shown at 7450' inflation cannot recur. Diagnostics shows the factor.
+  • Verified: ~108× and ~10× feeds corrected onto spot; normal ~7400 day untouched (out==raw).
 v1.8
   • Added a DIAGNOSTICS expander at the bottom of the Cone tab. Shows the bar pipeline
     at every stage: raw feed rows/dtypes/dates/times, prep_bars result, session window
@@ -563,24 +571,33 @@ def fetch_bars_raw():
         except Exception: pass
     return None
 def prep_bars(spot, exp_date):
-    """CAPITAL.COM:SPX is clean index data. Keep today's RTH bars (09:30–16:00 EST)
-    and plot them. If today's bars aren't in the feed yet (pre-market), fall back to
-    the feed's most recent session so the chart isn't empty."""
+    """CAPITAL.COM:SPX 1-min bars. Some feeds quote SPX on a divided scale (observed
+    ~108×, e.g. ~68 instead of ~7400). Correction rule: compute ratio = spot / bar level;
+    if it's a GROSS mismatch (>3× or <1/3×) scale bars by that exact ratio so their level
+    matches spot; otherwise leave bars EXACTLY as-is. A normal/trending day (ratio≈1) is
+    never touched — that was the old inflation bug. Then keep today's RTH bars."""
     bars=fetch_bars_raw()
     if bars is None or not len(bars): return None,"feed returned no bars"
     bars=bars.dropna(subset=["o","h","l","c"]).reset_index(drop=True)
     if bars.empty: return None,"feed returned no usable bars"
+    note=""
+    if spot and len(bars):
+        lvl=float(bars["c"].median())
+        if lvl>0:
+            ratio=spot/lvl
+            if ratio>3 or ratio<1/3:           # gross scale mismatch only
+                for col in ("o","h","l","c"): bars[col]=bars[col]*ratio
+                note=f" ·scale×{ratio:.3g} (feed quoted ~{lvl:.1f})"
     today=today_est()
     todays=bars[bars["t"].dt.date==today]
     if len(todays)>0:
         bars=todays; sess=today; stale=False
     else:
         last=bars["t"].dt.date.max(); bars=bars[bars["t"].dt.date==last]; sess=last; stale=True
-    # restrict to RTH 09:30–16:00 EST
     rth=(bars["t"].dt.time>=dt.time(9,30))&(bars["t"].dt.time<=dt.time(16,0))
     bars=bars[rth].reset_index(drop=True)
     if not len(bars): return None,f"no RTH bars for {sess} yet"
-    msg=(f"showing {sess} RTH ({len(bars)} bars)"
+    msg=(f"showing {sess} RTH ({len(bars)} bars)"+note
          + (" — today not in feed yet, prior session" if stale else ""))
     return bars,msg
 
