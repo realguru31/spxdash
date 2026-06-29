@@ -1,10 +1,18 @@
 """
-vs3d2_v1.11.py — SPX 0DTE+ Gamma & Charm (Streamlit POC)
+vs3d2_v1.12.py — SPX 0DTE+ Gamma & Charm (Streamlit POC)
 =================================================
 Point your streamlit.io app at this file.
 
 CHANGELOG (newest first) — what changed and why, per version
 ─────────────────────────────────────────────────────────────────────────────
+v1.12
+  • FIX: candles filled the chart to ~16:00 even at 11:56. Cause: tvdatafeed returns
+    NAIVE UTC timestamps (verified: last bar 15:56 == UTC now, +3.99h vs EST), but the
+    code assumed they were already EST — so every bar was plotted +4h to the right.
+  • fetch_bars_raw now localizes timestamps as UTC and converts to EST via zoneinfo
+    (DST-aware: −4h summer / −5h winter, never hardcoded), then drops tz.
+  • prep_bars now also cuts bars at <= now_est(), so the chart never extends past the
+    current minute. Verified with a simulated UTC feed: 13:30 UTC→09:30 EST, series ends at now.
 v1.11
   • THE ACTUAL ROOT CAUSE: the symbol was wrong. CAPITALCOM:SPX is a ~68-handle
     instrument (1–3 vol/min) — NOT the index. The real S&P 500 is CAPITALCOM:SPX500
@@ -582,38 +590,33 @@ def fetch_bars_raw():
             df=tv.get_hist(symbol="SPX500",exchange="CAPITALCOM",interval=itv,n_bars=n)
             if df is not None and len(df)>3:
                 df=df.reset_index().rename(columns={"datetime":"t","open":"o","high":"h","low":"l","close":"c"})
-                df["t"]=pd.to_datetime(df["t"]).dt.tz_localize(None)   # already EST (CAPITALCOM exchange tz)
-                last=df["t"].dt.date.max(); df=df[df["t"].dt.date==last]
+                # tvdatafeed returns NAIVE UTC timestamps (verified: last bar == UTC now).
+                # Localize as UTC and convert to EST, DST-aware, then drop tz to stay naive-EST.
+                t=pd.to_datetime(df["t"]).dt.tz_localize("UTC").dt.tz_convert(EST).dt.tz_localize(None)
+                df["t"]=t
+                # return the full pull; prep_bars selects today's session and cuts at 'now'.
                 return df[["t","o","h","l","c"]].dropna().reset_index(drop=True)
         except Exception: pass
     return None
 def prep_bars():
-    """CAPITALCOM:SPX500 1-min bars — already the real index scale (~7400), NO scaling.
-    Keep today's RTH bars (09:30–16:00 EST). Bars are plotted exactly as returned."""
+    """CAPITALCOM:SPX500 1-min bars (UTC→EST converted in fetch). Real index scale, NO
+    scaling. Keep TODAY's RTH bars from 09:30 EST up to NOW (never into the future)."""
     bars=fetch_bars_raw()
     if bars is None or not len(bars): return None,"feed returned no bars"
     bars=bars.dropna(subset=["o","h","l","c"]).reset_index(drop=True)
     if bars.empty: return None,"feed returned no usable bars"
-    today=today_est()
+    now=now_est(); today=today_est()
     todays=bars[bars["t"].dt.date==today]
     if len(todays)>0:
         bars=todays; sess=today; stale=False
     else:
         last=bars["t"].dt.date.max(); bars=bars[bars["t"].dt.date==last]; sess=last; stale=True
-    rth=(bars["t"].dt.time>=dt.time(9,30))&(bars["t"].dt.time<=dt.time(16,0))
-    bars=bars[rth].reset_index(drop=True)
+    # RTH 09:30–16:00 EST, and never past 'now' (no future-stamped bars on the chart)
+    keep=(bars["t"].dt.time>=dt.time(9,30))&(bars["t"].dt.time<=dt.time(16,0))
+    if not stale: keep&=(bars["t"]<=now)
+    bars=bars[keep].reset_index(drop=True)
     if not len(bars): return None,f"no RTH bars for {sess} yet"
-    msg=(f"showing {sess} RTH ({len(bars)} bars)"
-         + (" — today not in feed yet, prior session" if stale else ""))
-    return bars,msg
-    # gate on the slider window: ignore bars outside spot ± win_pct
-    if spot:
-        wlo,whi=spot*(1-win_pct),spot*(1+win_pct)
-        keep=(bars["l"]>=wlo)&(bars["h"]<=whi)
-        dropped=int((~keep).sum()); bars=bars[keep].reset_index(drop=True)
-        if dropped: note+=f" ·{dropped} bar(s) outside ±{win_pct*100:.1f}% ignored"
-    if not len(bars): return None,f"all bars outside ±{win_pct*100:.1f}% of spot after scaling"
-    msg=(f"showing {sess} RTH ({len(bars)} bars)"+note
+    msg=(f"showing {sess} RTH ({len(bars)} bars, to {bars['t'].max():%H:%M} EST)"
          + (" — today not in feed yet, prior session" if stale else ""))
     return bars,msg
 
