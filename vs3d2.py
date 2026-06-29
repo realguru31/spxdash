@@ -5,7 +5,9 @@ Point your streamlit.io app at this file.
 
 VERSION LOG (newest first)
   v1.3  CAPITAL.COM:SPX = index 1:1 — ALL bar rescaling removed; candles drawn exactly as TV.
-        Verified gradient imshow y-extent == axis ylim == price grid (price sits on true levels).
+        Removed every spot*0.5 price-range clamp (price grid == requested window exactly).
+        Added on-chart ALIGNMENT GUARD: if gradient y-extent ever drifts from price grid/axis,
+        a 'DO NOT TRADE OFF THIS' banner shows. Numeric regression run across all renderers/windows.
   v1.2  FIX: candles no longer rescaled by the day's median (which inflated prices on a
         trending day — e.g. true 7429 high shown at ~7450). Rescale now only on a gross
         (>=2x) feed mismatch vs the latest bar; otherwise candles are shown exactly as TV.
@@ -148,7 +150,7 @@ def build_projection(chain, spot, method, p_min, p_max, n_time=120, n_price=220)
     c["w"]=weight_for(c, method)
     c=c[(c["strike"]>=p_min*0.85)&(c["strike"]<=p_max*1.15)]
     if c.empty: raise RuntimeError("No strikes near window")
-    p_min=max(p_min, spot*0.5); pg=np.linspace(p_min,p_max,n_price); S=pg[:,None]
+    pg=np.linspace(p_min,p_max,n_price); S=pg[:,None]   # price grid == requested window, no clamp
     exp_dt={e:dt.datetime.combine(dt.datetime.strptime(e,"%Y-%m-%d").date(),dt.time(16,0)) for e in c["expiry"].unique()}
     day=min(exp_dt.values()).date()
     sess_start=dt.datetime.combine(day,dt.time(9,30)); sess_end=min(exp_dt.values())
@@ -175,7 +177,7 @@ def cone_profiles(chain, spot, p_min, p_max, weighting, n_price=220, mult=100):
     c["w"]=weight_for(c, weighting)
     c=c[(c["strike"]>=p_min*0.85)&(c["strike"]<=p_max*1.15)]
     c["T"]=c["expiry"].map(lambda e:_T_at(e,now_est()))
-    p_min=max(p_min,spot*0.5); pg=np.linspace(p_min,p_max,n_price); S=pg[:,None]
+    pg=np.linspace(p_min,p_max,n_price); S=pg[:,None]   # price grid == requested window, no clamp
     def prof(df,fn):
         if df.empty: return np.zeros_like(pg)
         return (fn(S,df["strike"].values[None,:],df["T"].values[None,:],df["iv"].values[None,:])*df["w"].values[None,:]).sum(1)
@@ -206,8 +208,8 @@ def _strike_weight(ch, mode, base_vol, prev_vol, weighting):
         return (vol-vp).clip(lower=0)
     raise ValueError(mode)
 def build_time_surface(snaps, mode, p_min, p_max, weighting="volume", n_price=220, smooth_p=1.4):
-    spot=snaps[-1]["spot"]; p_min=max(p_min,spot*0.5)
-    pg=np.linspace(p_min,p_max,n_price); S=pg[:,None]
+    spot=snaps[-1]["spot"]
+    pg=np.linspace(p_min,p_max,n_price); S=pg[:,None]   # price grid == requested window, no clamp
     base=snaps[0]["chain"]
     base_vol={(e,k,t):float(v) for e,k,t,v in zip(base["expiry"],base["strike"],base["type"],base["volume"].fillna(0))}
     Zg=np.zeros((n_price,len(snaps))); Zc=np.zeros_like(Zg); times=[]; prev_vol=None; last=None
@@ -323,6 +325,18 @@ def _finish(ax,P,pg,spot,p_min,p_max,prof_now,cw,pw,label_suffix,straddle,gps):
     ax.text(1.004,spot,f"{spot:.2f}",transform=ax.get_yaxis_transform(),color=WHITE,fontsize=9.5,
             va="center",ha="left",fontweight="bold",fontfamily="monospace")
     ax.set_ylim(p_min,p_max); ax.yaxis.set_label_position("right"); ax.yaxis.tick_right()
+    # ── ALIGNMENT GUARD: price, gradient and axis must share ONE y-scale. If any
+    #    gradient image's y-extent drifts from the price grid / ylim, scream on-chart
+    #    (a silent y-offset would corrupt every price-vs-level read).
+    bad=False
+    for im in ax.images:
+        ex=im.get_extent()
+        if abs(ex[2]-pg[0])>1e-6 or abs(ex[3]-pg[-1])>1e-6: bad=True
+    if abs(ax.get_ylim()[0]-pg[0])>1e-6 or abs(ax.get_ylim()[1]-pg[-1])>1e-6: bad=True
+    if bad:
+        ax.text(0.5,0.5,"⚠ Y-AXIS MISALIGNED — DO NOT TRADE OFF THIS",transform=ax.transAxes,
+                color="#ff4d4d",fontsize=16,fontweight="bold",ha="center",va="center",zorder=20,
+                bbox=dict(boxstyle="round,pad=0.5",facecolor="#0d1117",edgecolor="#ff4d4d",lw=2))
     ax.set_yticks(gps[(gps>p_min)&(gps<p_max)]); ax.tick_params(axis="y",colors=TXT,labelsize=9.5,length=0,pad=3)
     for sp in ax.spines.values(): sp.set_visible(False)
     ax.text(0.012,0.985,f"SPX · {P['label']}  [{label_suffix}]",transform=ax.transAxes,color=TXT,
