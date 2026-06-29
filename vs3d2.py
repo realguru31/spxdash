@@ -42,6 +42,14 @@ from scipy.ndimage import gaussian_filter1d
 from urllib.parse import unquote
 warnings.filterwarnings("ignore")
 
+# ── all times are US Eastern (CAPITALCOM:SPX trades on EST/EDT) ───────────────
+from zoneinfo import ZoneInfo
+EST = ZoneInfo("America/New_York")
+def now_est():            # current time, EST, naive (tz stripped for arithmetic)
+    return dt.datetime.now(EST).replace(tzinfo=None)
+def today_est():
+    return now_est().date()
+
 st.set_page_config(page_title="vs3d · SPX 0DTE Gamma/Charm", layout="wide")
 
 # ════════════════════════════ Barchart ══════════════════════════════════════
@@ -84,8 +92,8 @@ def fetch_chain(s,h,expiry,sym="$SPX"):
     return None
 def discover_expiries(s,h,n,sym="$SPX"):
     from datetime import date,timedelta
-    d=date.today(); found=[]; exps=[]
-    while len(found)<n and (d-date.today()).days<40:
+    d=today_est(); found=[]; exps=[]
+    while len(found)<n and (d-today_est()).days<40:
         if d.weekday()<5:
             es=d.strftime("%Y-%m-%d"); ch=fetch_chain(s,h,es,sym)
             if ch is not None and not ch.empty:
@@ -134,7 +142,7 @@ def build_projection(chain, spot, method, p_min, p_max, n_time=120, n_price=220)
         Zc[:,j]=((bs_charm(S,Kc[None,:],Tc[None,:],Vc[None,:])*Wc[None,:]).sum(1)
                 -(bs_charm(S,Kp[None,:],Tp[None,:],Vp[None,:])*Wp[None,:]).sum(1))*100*pg
     Zg=gaussian_filter1d(Zg,1.4,axis=0); Zc=gaussian_filter1d(Zc,1.4,axis=0)
-    now=dt.datetime.now()
+    now=now_est()
     jnow=int(np.clip((now-sess_start).total_seconds()/max((sess_end-sess_start).total_seconds(),1)*(n_time-1),0,n_time-1))
     return pg,Zg,Zc,times,jnow,c
 
@@ -143,7 +151,7 @@ def cone_profiles(chain, spot, p_min, p_max, weighting, n_price=220, mult=100):
     c=chain.dropna(subset=["strike","iv","expiry"]).copy()
     c["w"]=weight_for(c, weighting)
     c=c[(c["strike"]>=p_min*0.85)&(c["strike"]<=p_max*1.15)]
-    c["T"]=c["expiry"].map(lambda e:_T_at(e,dt.datetime.now()))
+    c["T"]=c["expiry"].map(lambda e:_T_at(e,now_est()))
     p_min=max(p_min,spot*0.5); pg=np.linspace(p_min,p_max,n_price); S=pg[:,None]
     def prof(df,fn):
         if df.empty: return np.zeros_like(pg)
@@ -205,7 +213,7 @@ def zero_crossings(pg, vals):
         if y1!=y0: out.append(pg[i]-y0*(pg[i+1]-pg[i])/(y1-y0))
     return out
 def compute_walls(c, spot, mult=100):
-    T=c["expiry"].map(lambda e:_T_at(e,dt.datetime.now())).values if "T" not in c else c["T"].values
+    T=c["expiry"].map(lambda e:_T_at(e,now_est())).values if "T" not in c else c["T"].values
     g=bs_gamma(spot,c["strike"].values,T,c["iv"].values)
     sign=np.where(c["type"].values=="call",1.0,-1.0)
     per=pd.Series(g*c["w"].values*sign*mult*spot,index=c["strike"].values).groupby(level=0).sum()
@@ -342,7 +350,7 @@ def fig_surface(mode,pg,Zg,Zc,times,last,spot,bars,straddle):
     return fig
 
 # ════════════════════════════ bars ══════════════════════════════════════════
-@st.cache_data(ttl=120, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)
 def fetch_bars_raw():
     from tvDatafeed import TvDatafeed, Interval
     tv=TvDatafeed()                      # no-login works for CAPITALCOM:SPX
@@ -351,29 +359,34 @@ def fetch_bars_raw():
             df=tv.get_hist(symbol="SPX",exchange="CAPITALCOM",interval=itv,n_bars=300)
             if df is not None and len(df)>3:
                 df=df.reset_index().rename(columns={"datetime":"t","open":"o","high":"h","low":"l","close":"c"})
-                df["t"]=pd.to_datetime(df["t"]).dt.tz_localize(None)
+                df["t"]=pd.to_datetime(df["t"]).dt.tz_localize(None)   # already EST (CAPITALCOM exchange tz)
                 last=df["t"].dt.date.max(); df=df[df["t"].dt.date==last]
                 return df[["t","o","h","l","c"]].dropna().reset_index(drop=True)
         except Exception: pass
     return None
 def prep_bars(spot, exp_date):
     bars=fetch_bars_raw()
-    if bars is None or not len(bars): return None
+    if bars is None or not len(bars): return None,"feed returned no bars"
     m=float(bars[["o","h","l","c"]].stack().median())
     ok=((bars[["o","h","l","c"]]>m*0.5).all(axis=1)&(bars[["o","h","l","c"]]<m*1.5).all(axis=1))
     bars=bars[ok].reset_index(drop=True)
-    if bars.empty: return None
+    if bars.empty: return None,"all bars failed sanity filter"
     med=float(bars[["o","h","l","c"]].stack().median()); ratio=spot/med
     if not (0.7<=ratio<=1.3):
         for col in ("o","h","l","c"): bars[col]=bars[col]*ratio
-    bars=bars[bars["t"].dt.date==exp_date].reset_index(drop=True)   # drop stale prior session
-    return bars if len(bars) else None
+    last=bars["t"].dt.date.max()
+    bars=bars[bars["t"].dt.date==last].reset_index(drop=True)   # most recent session in feed
+    if not len(bars): return None,"no bars after filter"
+    stale = (last!=exp_date)
+    msg=(f"showing {last} session ({len(bars)} bars)"
+         + (f" — note: feed's latest session {last} ≠ 0DTE expiry {exp_date}, likely CFD tz offset" if stale else ""))
+    return bars,msg
 
 # ════════════════════════════ snapshot taking ═══════════════════════════════
 def take_snapshot(num_expiries):
     s,h=init_session("$SPX"); spot=get_spot(s,h)
     exps,chain=discover_expiries(s,h,num_expiries)
-    ts=dt.datetime.now()
+    ts=now_est()
     st.session_state.snaps.append(dict(ts=ts,spot=spot,chain=chain,exps=exps))
     st.session_state.last_ts=ts
     return spot,exps
@@ -393,21 +406,41 @@ if c2.button("🗑 Clear",use_container_width=True):
 st.sidebar.caption("POC · snapshots in-memory (reset on app restart) · "
                    "sign = dealer calls+/puts− · volume unsigned")
 
-# auto-refresh: component rerun preserves session_state (a meta-refresh would wipe it)
+# manual data refresh (clears bars cache + forces a fresh snapshot)
+refresh=c2.button("🔄 Refresh data",use_container_width=True)
+if refresh:
+    st.cache_data.clear()
+
+# auto-refresh: component rerun preserves session_state (a meta-refresh would wipe it).
+# st.fragment(run_every=) is the dependency-free fallback if the package is absent.
+_AUTOREFRESH_OK=False
 if auto_on:
     try:
         from streamlit_autorefresh import st_autorefresh
         st_autorefresh(interval=5*60*1000, key="auto5min")
+        _AUTOREFRESH_OK=True
     except Exception:
-        st.sidebar.warning("streamlit-autorefresh missing — add it to requirements.txt.")
+        _AUTOREFRESH_OK=False
 
 def _due():
     if not st.session_state.snaps: return True
-    return (dt.datetime.now()-st.session_state.last_ts).total_seconds() >= 5*60-5
-if force or _due():
+    return (now_est()-st.session_state.last_ts).total_seconds() >= 5*60-5
+
+if force or refresh or _due():
     with st.spinner("Taking chain snapshot…"):
         try: take_snapshot(num_expiries)
         except Exception as ex: st.error(f"Snapshot failed: {ex}")
+
+if auto_on and not _AUTOREFRESH_OK:
+    st.warning("Auto-refresh package missing — add `streamlit-autorefresh` to requirements.txt. "
+               "Falling back to a 5-min timer; if the page still doesn't refresh, hit 🔄 Refresh data.",icon="⚠️")
+    try:
+        @st.fragment(run_every=300)
+        def _ticker():
+            st.caption(f"auto-tick {now_est():%H:%M:%S} EST")
+        _ticker()
+    except Exception:
+        pass
 
 snaps=st.session_state.snaps
 if not snaps:
@@ -415,7 +448,7 @@ if not snaps:
 
 latest=snaps[-1]; spot=latest["spot"]; exps=latest["exps"]
 exp_date=dt.datetime.strptime(exps[0],"%Y-%m-%d").date()
-bars=prep_bars(spot,exp_date)
+bars,bars_msg=prep_bars(spot,exp_date)
 
 lo=spot*(1-window_pct); hi=spot*(1+window_pct)
 if bars is not None and len(bars): lo=min(lo,float(bars["l"].min())); hi=max(hi,float(bars["h"].max()))
@@ -435,9 +468,11 @@ m1.metric("SPX spot",f"{spot:.2f}")
 m2.metric("Straddle",f"${straddle:.2f}" if straddle else "—")
 m3.metric("Expiry",exps[0]+(f" +{len(exps)-1}" if len(exps)>1 else ""))
 m4.metric("Snapshots",len(snaps))
-m5.metric("Last update",st.session_state.last_ts.strftime("%H:%M:%S"))
+m5.metric("Last update (EST)",st.session_state.last_ts.strftime("%H:%M:%S"))
 if bars is None:
-    st.caption("No same-session candles yet (pre-market or feed mismatch) — field shown without price bars.")
+    st.caption(f"Candles: none overlaid — {bars_msg}.")
+else:
+    st.caption(f"Candles: {bars_msg}.")
 
 tab_cone,tab_land,tab_surf=st.tabs(["🟢 Cone (single snapshot)",
                                     "📐 Landscape (forward projection)",
