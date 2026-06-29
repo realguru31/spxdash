@@ -1,32 +1,91 @@
 """
-vs3d2_v1.3.py — SPX 0DTE+ Gamma & Charm (Streamlit POC)
+vs3d2_v1.4.py — SPX 0DTE+ Gamma & Charm (Streamlit POC)
 =================================================
 Point your streamlit.io app at this file.
 
-VERSION LOG (newest first)
-  v1.3  CAPITAL.COM:SPX = index 1:1 — ALL bar rescaling removed; candles drawn exactly as TV.
-        Removed every spot*0.5 price-range clamp (price grid == requested window exactly).
-        Added on-chart ALIGNMENT GUARD: if gradient y-extent ever drifts from price grid/axis,
-        a 'DO NOT TRADE OFF THIS' banner shows. Numeric regression run across all renderers/windows.
-  v1.2  FIX: candles no longer rescaled by the day's median (which inflated prices on a
-        trending day — e.g. true 7429 high shown at ~7450). Rescale now only on a gross
-        (>=2x) feed mismatch vs the latest bar; otherwise candles are shown exactly as TV.
-  v1.1  X-axis hard-locked to RTH 09:30–16:00 EST (autoscale off + zero margins) so
-        candle/track plots can no longer drift the window; hourly x ticks.
-  v1.0  Surface projection now uses real T-DECAY (current book re-evaluated at shrinking
-        T to the 0DTE close; pockets sharpen as T→0). Candles pulled fresh from tvdatafeed
-        every run (no caching). Per-option expiry handled for multi-expiry.
-  v0.9  Surface projects CURRENT structure flat from now→close (dimmed levels map,
-        no time-decay forecast); recorded portion still shows real migration. File now versioned.
-  v0.8  Surface tab = Option A: positioning heatmap over real recorded time
-        (first snapshot→now), migrating γ-flip + call/put wall tracks; no projection.
-  v0.7  Candles switched to 1-minute bars; bars cache 90s so each 5-min refresh re-pulls.
-  v0.6  Snapshot scrubber slider (view book as of any past snapshot; surface trims to it).
-  v0.5  Unified candles + x-axis across all 3 tabs (one draw_candles, one session window).
-  v0.4  All times pinned to US Eastern (now_est/today_est); bars treated as EST.
-  v0.3  Tabbed UI (Cone | Landscape | Intraday surface); all methods shown, both greeks.
-  v0.2  Removed TradingView login (no-login CAPITALCOM:SPX works).
-  v0.1  Streamlit POC: in-memory 5-min snapshots, auto-refresh, manual snapshot/refresh.
+CHANGELOG (newest first) — what changed and why, per version
+─────────────────────────────────────────────────────────────────────────────
+v1.4
+  • FIX (regression from v1.3): price y-axis collapsed to 0–7400, gradient invisible,
+    candles flat at bottom. Two root causes fixed:
+    1) Bar sanity filter judged bars against their OWN median, so a cluster of corrupt
+       feed rows dragged the median down and let junk (near-zero lows) survive. Now
+       bars are filtered against the KNOWN spot (±20%), which cannot be fooled.
+    2) Window math took bars' raw min/max, so one bad low collapsed p_min→~0. Window
+       is now ANCHORED to spot (±window_pct), only widened by bars within ±15% of spot,
+       with a final check that the range straddles spot and is a sane width.
+  WHY v1.3 broke it: removing the spot*0.5 clamp exposed the weak median filter; the
+  alignment guard didn't catch it because price/gradient/axis all shared the SAME bad range.
+v1.3
+  • Removed ALL price rescaling. CAPITAL.COM:SPX is the SPX index 1:1, so candles
+    are now drawn exactly as TradingView reports them (prep_bars only drops
+    obviously corrupt rows; it never multiplies/shifts a price).
+  • Removed every `p_min = max(p_min, spot*0.5)` clamp in the three builders, so the
+    price grid (pg) equals the requested window exactly — no hidden range shift.
+  • Added an on-chart ALIGNMENT GUARD in _finish(): checks each gradient image's
+    y-extent == price grid == axis ylim; if they ever drift it stamps a red
+    "⚠ Y-AXIS MISALIGNED — DO NOT TRADE OFF THIS" banner. Verified it stays silent
+    when aligned and fires when broken.
+  • Added a numeric regression (run offline) across all 3 renderers × tight/normal/
+    wide windows confirming price/gradient/axis share one y-scale.
+  WHY: a candle high of 7429 was displaying at ~7450 — caused by rescaling bars by
+  the session median (inflates on a trending day). Decisions need price ON the true
+  gradient level, so every value-altering transform was stripped and guarded.
+
+v1.2
+  • First fix attempt for the above: rescale only on a gross (>=2x) mismatch vs the
+    latest bar instead of the day's median. (Superseded by v1.3, which removes it
+    entirely — the right call since the feed is already 1:1.)
+
+v1.1
+  • X-axis hard-locked to RTH 09:30–16:00 EST: set_autoscalex_on(False) + margins(x=0)
+    so candle wicks / wall-track plots can no longer re-expand the window. Hourly ticks.
+  WHY: the display window kept drifting because plotting bars outside RTH triggered
+  matplotlib autoscale after set_xlim.
+
+v1.0
+  • Surface projection (right of "now") now uses REAL TIME-DECAY: the current book is
+    re-evaluated at shrinking T minute-by-minute to the 0DTE close, so pockets sharpen
+    as T→0 (reuses the BS engine; per-option expiry, so multi-expiry decays correctly).
+  • Candles pulled FRESH from tvdatafeed every run — caching removed entirely.
+  WHY: flat projection "looked like shit"; candles looked stale due to the bars cache.
+
+v0.9
+  • Surface projects the CURRENT structure FLAT from now→close (dimmed levels map, no
+    decay yet); recorded portion still shows real migration. Filename versioning began.
+
+v0.8
+  • Surface tab reworked to "Option A": positioning heatmap over real recorded time
+    (first snapshot→now), migrating γ-flip contour + call/put wall migration tracks.
+    No projection. WHY: trader view = watch positioning shift vs price reaction.
+
+v0.7
+  • Candles switched to 1-minute bars (from 5-min) for tighter price tracking.
+
+v0.6
+  • Snapshot scrubber slider: view the book as of any past snapshot; cone/landscape
+    redraw to that snapshot, surface trims to snapshots up to the selected time.
+
+v0.5
+  • Unified candles + x-axis across all 3 tabs: one draw_candles(), one session_window(),
+    one style_time_axis(). Only the gradient math differs per tab now.
+
+v0.4
+  • All times pinned to US Eastern via now_est()/today_est() (zoneinfo); tvdatafeed
+    bars treated as already-EST. WHY: cloud box runs UTC, distorting T and the bar-date
+    filter so today's candles weren't printing.
+
+v0.3
+  • Tabbed UI: Cone | Landscape (forward projection) | Intraday surface. Each tab stacks
+    all its methods, every chart shows Gamma + Charm.
+
+v0.2
+  • Removed TradingView login — no-login CAPITALCOM:SPX works.
+
+v0.1
+  • Streamlit POC: in-memory 5-min chain snapshots (st.session_state, no files),
+    auto-refresh every 5 min, manual Snapshot/Refresh/Clear.
+─────────────────────────────────────────────────────────────────────────────
 
 requirements.txt (put this next to vs3d.py in your GitHub repo):
     streamlit
@@ -477,12 +536,13 @@ def prep_bars(spot, exp_date):
     bars=fetch_bars_raw()
     if bars is None or not len(bars): return None,"feed returned no bars"
     # CAPITAL.COM:SPX IS the SPX index — 1:1, no rescaling, ever. Bars are used
-    # exactly as TradingView reports them so price sits on the true gradient levels.
-    # Light sanity filter only drops obviously corrupt rows (zeros / absurd spikes).
-    m=float(bars[["o","h","l","c"]].stack().median())
-    ok=((bars[["o","h","l","c"]]>m*0.5).all(axis=1)&(bars[["o","h","l","c"]]<m*1.5).all(axis=1))
+    # exactly as TradingView reports them. Drop only rows that are clearly corrupt,
+    # judged against the KNOWN spot (from Barchart) — NOT a self-referential median,
+    # which a cluster of bad rows could drag down and let junk through.
+    cols=["o","h","l","c"]
+    ok=((bars[cols]>spot*0.80).all(axis=1)&(bars[cols]<spot*1.20).all(axis=1))
     bars=bars[ok].reset_index(drop=True)
-    if bars.empty: return None,"all bars failed sanity filter"
+    if bars.empty: return None,"all bars outside ±20% of spot (feed issue)"
     last=bars["t"].dt.date.max()
     today=today_est()
     todays=bars[bars["t"].dt.date==today]
@@ -575,9 +635,17 @@ sel_ts=latest["ts"]
 exp_date=dt.datetime.strptime(exps[0],"%Y-%m-%d").date()
 bars,bars_msg=prep_bars(spot,exp_date)
 
+# price window is ANCHORED to spot (always sane). Bars may widen it only within a
+# reasonable bound; a stray bar can never collapse the range toward zero.
 lo=spot*(1-window_pct); hi=spot*(1+window_pct)
-if bars is not None and len(bars): lo=min(lo,float(bars["l"].min())); hi=max(hi,float(bars["h"].max()))
+if bars is not None and len(bars):
+    bl,bh=float(bars["l"].min()),float(bars["h"].max())
+    if spot*0.85<bl<spot*1.15: lo=min(lo,bl)
+    if spot*0.85<bh<spot*1.15: hi=max(hi,bh)
 pad=(hi-lo)*0.05; p_min,p_max=lo-pad,hi+pad
+# final safety: range must straddle spot and be a sane width, else fall back to window
+if not (p_min<spot<p_max and (p_max-p_min)<spot*0.5):
+    lo=spot*(1-window_pct); hi=spot*(1+window_pct); pad=(hi-lo)*0.05; p_min,p_max=lo-pad,hi+pad
 
 straddle=None
 try:
