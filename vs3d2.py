@@ -455,7 +455,19 @@ snaps=st.session_state.snaps
 if not snaps:
     st.info("No snapshot yet. Click 📸 Snapshot now in the sidebar."); st.stop()
 
-latest=snaps[-1]; spot=latest["spot"]; exps=latest["exps"]
+# ── snapshot scrubber: view the book as of any recorded snapshot ─────────────
+st.sidebar.markdown("---")
+labels=[s["ts"].strftime("%H:%M:%S") for s in snaps]
+if len(snaps)==1:
+    sel_i=0; st.sidebar.caption(f"1 snapshot · {labels[0]} EST")
+else:
+    sel_label=st.sidebar.select_slider("View snapshot (EST)",options=labels,value=labels[-1])
+    sel_i=labels.index(sel_label)
+if sel_i!=len(snaps)-1:
+    st.sidebar.info(f"Viewing #{sel_i+1}/{len(snaps)} — not the latest.")
+
+latest=snaps[sel_i]; spot=latest["spot"]; exps=latest["exps"]
+sel_ts=latest["ts"]
 exp_date=dt.datetime.strptime(exps[0],"%Y-%m-%d").date()
 bars,bars_msg=prep_bars(spot,exp_date)
 
@@ -476,8 +488,8 @@ m1,m2,m3,m4,m5=st.columns(5)
 m1.metric("SPX spot",f"{spot:.2f}")
 m2.metric("Straddle",f"${straddle:.2f}" if straddle else "—")
 m3.metric("Expiry",exps[0]+(f" +{len(exps)-1}" if len(exps)>1 else ""))
-m4.metric("Snapshots",len(snaps))
-m5.metric("Last update (EST)",st.session_state.last_ts.strftime("%H:%M:%S"))
+m4.metric("Viewing snap",f"{sel_i+1}/{len(snaps)}")
+m5.metric("Snapshot (EST)",sel_ts.strftime("%H:%M:%S"))
 if bars is None:
     st.caption(f"Candles: none overlaid — {bars_msg}.")
 else:
@@ -488,7 +500,7 @@ tab_cone,tab_land,tab_surf=st.tabs(["🟢 Cone (single snapshot)",
                                     "🕒 Intraday surface (snapshot history)"])
 
 with tab_cone:
-    st.caption("x-axis = GEX size (not time). Single current snapshot. Original cone look.")
+    st.caption(f"x-axis = session clock · gradient = GEX size · snapshot {sel_ts:%H:%M:%S} EST.")
     for w in ["volume","oi","oi_plus_flow"]:
         st.markdown(f"**Cone — weight: `{w}`**")
         try:
@@ -497,9 +509,8 @@ with tab_cone:
         except Exception as ex: st.error(f"cone[{w}] failed: {ex}")
 
 with tab_land:
-    st.caption("x-axis = session clock. Current book projected to the close as time-to-expiry "
-               "decays (pockets sharpen toward the right). Single snapshot — does not evolve. "
-               "Note: pre/intraday from one pull, `volume` ≈ `flow_reset`.")
+    st.caption(f"x-axis = session clock · book at {sel_ts:%H:%M:%S} EST projected to the close "
+               "as T decays (pockets sharpen rightward). Note: `volume` ≈ `flow_reset` on one pull.")
     for m in ["oi","volume","oi_plus_flow","flow_reset"]:
         st.markdown(f"**Projection — method: `{m}`**")
         try:
@@ -509,14 +520,16 @@ with tab_land:
 
 with tab_surf:
     st.caption("x-axis = real recorded time. Built from your in-memory snapshot history — "
-               "this is the only view that EVOLVES as flow lands. Needs a few snapshots to be useful.")
-    if len(snaps)<2:
-        st.warning(f"Only {len(snaps)} snapshot so far. Let it run (or hit 📸) to build history; "
-                   "the surface fills in as snapshots accumulate.")
+               "this is the only view that EVOLVES as flow lands. The slider trims the surface "
+               "to snapshots up to the selected time.")
+    surf_snaps=snaps[:sel_i+1]
+    if len(surf_snaps)<2:
+        st.warning(f"Only {len(surf_snaps)} snapshot up to {sel_ts:%H:%M:%S}. Let it run (or hit 📸) "
+                   "to build history; the surface fills in as snapshots accumulate.")
     for m in ["oi_plus_flow","flow_from_open","interval_flow","cumulative"]:
         st.markdown(f"**Surface — mode: `{m}`**")
         try:
-            wt="volume" if m!="cumulative" else "volume"
-            pg,Zg,Zc,times,last,sp=build_time_surface(snaps,m,p_min,p_max,weighting=wt)
+            wt="volume"
+            pg,Zg,Zc,times,last,sp=build_time_surface(surf_snaps,m,p_min,p_max,weighting=wt)
             fig=fig_surface(m,pg,Zg,Zc,times,last,sp,bars,straddle); st.pyplot(fig,use_container_width=True); plt.close(fig)
         except Exception as ex: st.error(f"surface[{m}] failed: {ex}")
