@@ -257,12 +257,16 @@ def draw_candles(ax,bars,x0,x1,p_min,p_max):
     if bars is None or not len(bars): return
     bn=np.array([mdates.date2num(t) for t in bars["t"]]); inwin=(bn>=x0)&(bn<=x1)
     if not inwin.sum(): return
-    cwidth=(x1-x0)/(6.5*12)*0.7      # ~5-min slot width over a 6.5h session
+    bw=inwin.sum()
+    # width from median spacing of the visible bars (auto-adapts to 1/5/15-min)
+    bvis=np.sort(bn[inwin])
+    spacing=np.median(np.diff(bvis)) if bw>1 else (x1-x0)/390.0
+    cwidth=spacing*0.7
     for x,(_,r) in zip(bn[inwin],bars[inwin].iterrows()):
         up=r["c"]>=r["o"]; body=UP if up else DOWN
-        ln,=ax.plot([x,x],[r["l"],r["h"]],color=body,lw=0.9,zorder=4); ln.set_path_effects(WICKFX)
+        ln,=ax.plot([x,x],[r["l"],r["h"]],color=body,lw=0.6,zorder=4); ln.set_path_effects(WICKFX)
         ax.add_patch(plt.Rectangle((x-cwidth/2,min(r["o"],r["c"])),cwidth,
-            max(abs(r["c"]-r["o"]),(p_max-p_min)*0.0006),facecolor=body,edgecolor="#9aa0a6",lw=0.45,zorder=4))
+            max(abs(r["c"]-r["o"]),(p_max-p_min)*0.0006),facecolor=body,edgecolor="#9aa0a6",lw=0.3,zorder=4))
 
 def style_time_axis(ax,x0,x1):
     """Identical x-axis styling for every tab."""
@@ -355,13 +359,17 @@ def fig_surface(mode,pg,Zg,Zc,times,last,spot,bars,straddle):
     return fig
 
 # ════════════════════════════ bars ══════════════════════════════════════════
-@st.cache_data(ttl=60, show_spinner=False)
+# 1-minute bars for tight price tracking. Cache TTL < refresh interval so every
+# 5-min app refresh re-pulls fresh bars from TradingView (no stale reuse).
+@st.cache_data(ttl=90, show_spinner=False)
 def fetch_bars_raw():
     from tvDatafeed import TvDatafeed, Interval
     tv=TvDatafeed()                      # no-login works for CAPITALCOM:SPX
-    for itv in (Interval.in_5_minute,Interval.in_15_minute):
+    # 1-min primary; coarser fallbacks only if the 1-min pull comes back empty.
+    # n_bars sized so a full RTH session of 1-min bars (~390) is covered with margin.
+    for itv,n in ((Interval.in_1_minute,500),(Interval.in_5_minute,300),(Interval.in_15_minute,200)):
         try:
-            df=tv.get_hist(symbol="SPX",exchange="CAPITALCOM",interval=itv,n_bars=300)
+            df=tv.get_hist(symbol="SPX",exchange="CAPITALCOM",interval=itv,n_bars=n)
             if df is not None and len(df)>3:
                 df=df.reset_index().rename(columns={"datetime":"t","open":"o","high":"h","low":"l","close":"c"})
                 df["t"]=pd.to_datetime(df["t"]).dt.tz_localize(None)   # already EST (CAPITALCOM exchange tz)
