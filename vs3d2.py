@@ -1,10 +1,27 @@
 """
-vs3d2_v1.9.py — SPX 0DTE+ Gamma & Charm (Streamlit POC)
+vs3d2_v1.11.py — SPX 0DTE+ Gamma & Charm (Streamlit POC)
 =================================================
 Point your streamlit.io app at this file.
 
 CHANGELOG (newest first) — what changed and why, per version
 ─────────────────────────────────────────────────────────────────────────────
+v1.11
+  • THE ACTUAL ROOT CAUSE: the symbol was wrong. CAPITALCOM:SPX is a ~68-handle
+    instrument (1–3 vol/min) — NOT the index. The real S&P 500 is CAPITALCOM:SPX500
+    (~7400, real volume), already on correct scale. Confirmed via live Colab dump.
+  • Switched fetch_bars_raw to symbol "SPX500" and REMOVED all scaling/anchoring/window-
+    gating from prep_bars. Bars are plotted exactly as returned — no transform. This
+    retires the entire v1.2–v1.10 scaling saga, which was chasing a wrong-symbol artifact.
+  • Diagnostics (Colab): colab_rth_dump.py (raw RTH dump) + colab_symbol_probe.py.
+v1.10
+  • Bar handling rewritten to the user's rule (cleaner than the v1.9 threshold):
+    anchor CAPITAL.COM bars to the trusted BARCHART SPOT — scale by ratio=spot/feed-median
+    (skipped when ratio is 0.98–1.02, i.e. already correct, so a normal day is untouched) —
+    then KEEP ONLY bars within ±window_pct of spot (the slider); anything else is ignored.
+    Caption/diagnostics report the scale factor and how many bars were dropped.
+  • Added colab_bar_diagnostic.py (separate file): standalone Colab cell that pulls the
+    REAL CAPITAL.COM bars + REAL Barchart spot and prints the scale/window numbers, so the
+    feed's behaviour can be confirmed without fighting Streamlit.
 v1.9
   • ROOT CAUSE FOUND (via v1.8 diagnostics): the CAPITAL.COM:SPX feed quotes SPX on a
     DIVIDED scale (~108×, e.g. ~68 instead of ~7400). Candles were being drawn correctly
@@ -557,12 +574,12 @@ def fig_surface(mode,pg,Zg,Zc,times,last,spot,bars,straddle,cwalls=None,pwalls=N
 # (Candles must always reflect the latest 1-min TradingView data.)
 def fetch_bars_raw():
     from tvDatafeed import TvDatafeed, Interval
-    tv=TvDatafeed()                      # no-login works for CAPITALCOM:SPX
-    # 1-min primary; coarser fallbacks only if the 1-min pull comes back empty.
-    # n_bars sized so a full RTH session of 1-min bars (~390) is covered with margin.
+    tv=TvDatafeed()                      # no-login works for CAPITALCOM:SPX500
+    # CAPITALCOM:SPX500 is the real S&P 500 index (~7400), correct scale, real volume.
+    # (CAPITALCOM:SPX is a different ~68-handle instrument — do NOT use it.)
     for itv,n in ((Interval.in_1_minute,500),(Interval.in_5_minute,300),(Interval.in_15_minute,200)):
         try:
-            df=tv.get_hist(symbol="SPX",exchange="CAPITALCOM",interval=itv,n_bars=n)
+            df=tv.get_hist(symbol="SPX500",exchange="CAPITALCOM",interval=itv,n_bars=n)
             if df is not None and len(df)>3:
                 df=df.reset_index().rename(columns={"datetime":"t","open":"o","high":"h","low":"l","close":"c"})
                 df["t"]=pd.to_datetime(df["t"]).dt.tz_localize(None)   # already EST (CAPITALCOM exchange tz)
@@ -570,24 +587,13 @@ def fetch_bars_raw():
                 return df[["t","o","h","l","c"]].dropna().reset_index(drop=True)
         except Exception: pass
     return None
-def prep_bars(spot, exp_date):
-    """CAPITAL.COM:SPX 1-min bars. Some feeds quote SPX on a divided scale (observed
-    ~108×, e.g. ~68 instead of ~7400). Correction rule: compute ratio = spot / bar level;
-    if it's a GROSS mismatch (>3× or <1/3×) scale bars by that exact ratio so their level
-    matches spot; otherwise leave bars EXACTLY as-is. A normal/trending day (ratio≈1) is
-    never touched — that was the old inflation bug. Then keep today's RTH bars."""
+def prep_bars():
+    """CAPITALCOM:SPX500 1-min bars — already the real index scale (~7400), NO scaling.
+    Keep today's RTH bars (09:30–16:00 EST). Bars are plotted exactly as returned."""
     bars=fetch_bars_raw()
     if bars is None or not len(bars): return None,"feed returned no bars"
     bars=bars.dropna(subset=["o","h","l","c"]).reset_index(drop=True)
     if bars.empty: return None,"feed returned no usable bars"
-    note=""
-    if spot and len(bars):
-        lvl=float(bars["c"].median())
-        if lvl>0:
-            ratio=spot/lvl
-            if ratio>3 or ratio<1/3:           # gross scale mismatch only
-                for col in ("o","h","l","c"): bars[col]=bars[col]*ratio
-                note=f" ·scale×{ratio:.3g} (feed quoted ~{lvl:.1f})"
     today=today_est()
     todays=bars[bars["t"].dt.date==today]
     if len(todays)>0:
@@ -597,6 +603,16 @@ def prep_bars(spot, exp_date):
     rth=(bars["t"].dt.time>=dt.time(9,30))&(bars["t"].dt.time<=dt.time(16,0))
     bars=bars[rth].reset_index(drop=True)
     if not len(bars): return None,f"no RTH bars for {sess} yet"
+    msg=(f"showing {sess} RTH ({len(bars)} bars)"
+         + (" — today not in feed yet, prior session" if stale else ""))
+    return bars,msg
+    # gate on the slider window: ignore bars outside spot ± win_pct
+    if spot:
+        wlo,whi=spot*(1-win_pct),spot*(1+win_pct)
+        keep=(bars["l"]>=wlo)&(bars["h"]<=whi)
+        dropped=int((~keep).sum()); bars=bars[keep].reset_index(drop=True)
+        if dropped: note+=f" ·{dropped} bar(s) outside ±{win_pct*100:.1f}% ignored"
+    if not len(bars): return None,f"all bars outside ±{win_pct*100:.1f}% of spot after scaling"
     msg=(f"showing {sess} RTH ({len(bars)} bars)"+note
          + (" — today not in feed yet, prior session" if stale else ""))
     return bars,msg
@@ -679,7 +695,7 @@ if sel_i!=len(snaps)-1:
 latest=snaps[sel_i]; spot=latest["spot"]; exps=latest["exps"]
 sel_ts=latest["ts"]
 exp_date=dt.datetime.strptime(exps[0],"%Y-%m-%d").date()
-bars,bars_msg=prep_bars(spot,exp_date)
+bars,bars_msg=prep_bars()
 
 # Y-AXIS = spot ± window_pct, FULL STOP. Bars never influence the range, so no
 # stray feed value can ever collapse or blow out the axis. Widen the window % in
