@@ -1,10 +1,26 @@
 """
-vs3d2_v1.14.py — SPX 0DTE+ Gamma & Charm (Streamlit POC)
+vs3d2_v1.15.py — SPX 0DTE+ Gamma & Charm (Streamlit POC)
 =================================================
 Point your streamlit.io app at this file.
 
 CHANGELOG (newest first) — what changed and why, per version
 ─────────────────────────────────────────────────────────────────────────────
+v1.15  [NEW 'VS3D' TAB — sign-free dashboard ported from Colab; robust auto-refresh]
+  • Added a 4th tab '🧭 VS3D (sign-free dashboard)' alongside Cone/Landscape/Surface
+    (nothing removed). 6 panels, all computable from FREE Barchart data:
+      GAMMA net exposure · |GAMMA| magnitude (walls, sign-free) · SPEED ∂γ/∂spot ·
+      CHARM ∂δ/∂t (empirical, w/ flip lines) · COLOR ∂γ/∂t · SIGNALS block
+      (straddle range, straddle-decay 'snake-oil' gate, fishbone, gamma absorption,
+       skew proxy, VIX regime, timing window).
+    Charm/Color/decay populate on the 2nd snapshot (same pattern as Cone charm).
+    All panels carry SPX500 candles on the session-time axis (reuses draw_candles).
+  • Honest limit shown in-tab: strike-level dealer long/short (anchor vs test),
+    net-hedgeable filtering, and OTC flow are NOT replicable without paid data.
+  • Auto-refresh hardened: uses streamlit-autorefresh when present; otherwise a
+    built-in JS 5-min full-page reload (re-pulls; session_state/snapshots persist),
+    replacing the old fragment ticker that didn't re-pull.
+  • New analytics (sign-free): vs3d_profiles/_density, vs3d_straddle, vs3d_fishbone,
+    vs3d_absorption, vs3d_skew, vs3d_timing, vs3d_vix_regime + mag/speed cmaps.
 v1.14  [CONE: real Barchart gamma density + tunable smoothing — still no surface/proj]
   • Cone gamma profile rebuilt as a DENSITY: net signed GEX per strike (Barchart gamma,
     calls+/puts−) interpolated onto the price grid. Smoothing is a SIDEBAR SLIDER
@@ -438,6 +454,80 @@ def compute_walls(c, spot, mult=100):
     if per.empty: return None,None
     return float(per.idxmax()),float(per.idxmin())
 
+# ═══════════════ VS3D sign-free analytics (replicable from Barchart) ═══════════
+# Everything here is computable WITHOUT participant/signed data. The one thing we
+# canNOT do (strike-level dealer long/short = anchor vs test) is intentionally absent.
+def _vs3d_per(st, arr):
+    d={}
+    for k,a in zip(st,arr): d[k]=d.get(k,0.0)+a
+    return d
+def _vs3d_density(strike_map, pg, smooth=0.02):
+    if not strike_map: return np.zeros_like(pg)
+    ks=np.array(sorted(strike_map)); vs=np.array([strike_map[k] for k in ks])
+    p=np.interp(pg,ks,vs,left=0,right=0); sig=len(pg)*smooth
+    return gaussian_filter1d(p,sig) if sig>0.3 else p
+def vs3d_profiles(chain, spot, p_min, p_max, prev_chain=None, dt_hours=None, n_price=240, smooth=0.02):
+    """Returns dict of all sign-free VS3D fields on price grid pg."""
+    c=chain.dropna(subset=["strike","gamma"]).copy()
+    c=c[(c["strike"]>=p_min)&(c["strike"]<=p_max)]
+    pg=np.linspace(p_min,p_max,n_price)
+    st=c["strike"].values; sign=np.where(c["type"].values=="call",1.0,-1.0)
+    g=c["gamma"].fillna(0).values; oi=c["oi"].fillna(0).values; vol=c["volume"].fillna(0).values
+    w=np.where(vol>0,vol,oi)
+    gex=_vs3d_density(_vs3d_per(st,sign*g*w),pg,smooth)*100*spot      # net exposure (convention)
+    mag=_vs3d_density(_vs3d_per(st,np.abs(g)*w),pg,smooth)*100*spot   # magnitude (sign-free walls)
+    speed=np.gradient(gex,pg)                                         # ∂γ/∂spot
+    out=dict(pg=pg,gex=gex,mag=mag,speed=speed,charm=None,color=None,charm_flips=[])
+    if prev_chain is not None and dt_hours and dt_hours>0:
+        pc=prev_chain.dropna(subset=["strike"]).copy()
+        cj=c.set_index(["strike","type"]); pj=pc.set_index(["strike","type"])
+        j=cj.join(pj[["gamma","delta","volume"]],rsuffix="_p")
+        stj=cj.index.get_level_values(0).values
+        signj=np.where(cj.index.get_level_values(1).values=="call",1.0,-1.0)
+        volj=cj["volume"].fillna(0).values; oij=cj["oi"].fillna(0).values; wj=np.where(volj>0,volj,oij)
+        ddel=(j["delta"]-j["delta_p"]).fillna(0).values/dt_hours
+        dgam=(j["gamma"]-j["gamma_p"]).fillna(0).values/dt_hours
+        out["charm"]=_vs3d_density(_vs3d_per(stj,signj*ddel*wj),pg,smooth)*100*spot
+        out["color"]=_vs3d_density(_vs3d_per(stj,signj*dgam*wj),pg,smooth)*100*spot
+        out["charm_flips"]=zero_crossings(pg,out["charm"])
+    return out,c
+def vs3d_straddle(c, spot):
+    cc=c[c.type=="call"]; pp=c[c.type=="put"]
+    if cc.empty or pp.empty: return None
+    kc=cc.iloc[(cc.strike-spot).abs().argmin()]; kp=pp.iloc[(pp.strike-spot).abs().argmin()]
+    cm=(kc.bid+kc.ask)/2 if kc.ask>0 else kc.bid; pm=(kp.bid+kp.ask)/2 if kp.ask>0 else kp.bid
+    if cm<=0 or pm<=0: return None
+    return float(cm+pm)
+def vs3d_fishbone(c):
+    sign=np.where(c["type"].values=="call",1.0,-1.0)
+    net=pd.Series(sign*c["gamma"].fillna(0).values*np.where(c["volume"].fillna(0)>0,c["volume"].fillna(0),c["oi"].fillna(0)),
+                  index=c["strike"].values).groupby(level=0).sum().sort_index()
+    v=net.values
+    return int(sum(1 for i in range(1,len(v)) if np.sign(v[i])!=np.sign(v[i-1]) and v[i]!=0))
+def vs3d_absorption(c):
+    d=c["delta"].abs().clip(0,1); rem=np.where(d>0.5,(1-d),d)
+    return float((rem*c["oi"].fillna(0)*100).sum())
+def vs3d_skew(c):
+    cc=c[c.type=="call"].set_index("strike")["iv"]; pp=c[c.type=="put"].set_index("strike")["iv"]
+    common=sorted(set(cc.index)&set(pp.index))
+    return float(np.nanmean([pp[k]-cc[k] for k in common])) if common else float("nan")
+def vs3d_timing(now):
+    t=now.time()
+    if t<dt.time(11,0): return "OPEN 9:30-11 · avoid charm (external flow)"
+    if t<dt.time(13,0): return "MIDDAY 11-1 · charm building, not dominant"
+    if t<dt.time(15,0): return "SWEET SPOT 1:30-3 · best charm signal"
+    return "CLOSE 3-4 · gamma asymptotic, pin resolution"
+def vs3d_vix_regime(v):
+    if v is None: return "VIX n/a"
+    if v<16: return f"VIX {v:.1f} LOW · charm rules, vanna negligible"
+    if v<20: return f"VIX {v:.1f} MID · charm ok, watch vanna"
+    return f"VIX {v:.1f} HIGH · vanna can dominate, size down"
+def mag_cmap():
+    return mcolors.LinearSegmentedColormap.from_list("mag",[(0,(0,0,0)),(0.5,(0.15,0.45,0.6)),(1,(0.55,0.9,1.0))])
+def speed_cmap():
+    return mcolors.LinearSegmentedColormap.from_list("spd",[(0,(0.5,0,0.4)),(0.5,(0,0,0)),(1,(0.4,0.9,0.4))])
+
+
 # ════════════════════════════ colors / labels ═══════════════════════════════
 def gex_cmap():
     return mcolors.LinearSegmentedColormap.from_list("gex",
@@ -762,15 +852,15 @@ if force or refresh or _due():
         except Exception as ex: st.error(f"Snapshot failed: {ex}")
 
 if auto_on and not _AUTOREFRESH_OK:
-    st.warning("Auto-refresh package missing — add `streamlit-autorefresh` to requirements.txt. "
-               "Falling back to a 5-min timer; if the page still doesn't refresh, hit 🔄 Refresh data.",icon="⚠️")
-    try:
-        @st.fragment(run_every=300)
-        def _ticker():
-            st.caption(f"auto-tick {now_est():%H:%M:%S} EST")
-        _ticker()
-    except Exception:
-        pass
+    # Fallback that actually RE-RUNS THE WHOLE SCRIPT (so it re-pulls), without the
+    # package. A JS timer reloads the tab every 5 min; session_state survives reloads
+    # within the same browser session, so snapshots/charm history persist.
+    st.warning("`streamlit-autorefresh` not installed — using a built-in 5-min reload. "
+               "For the smoothest experience add `streamlit-autorefresh` to requirements.txt.",icon="⚠️")
+    import streamlit.components.v1 as _components
+    _components.html(
+        "<script>setTimeout(function(){ window.parent.location.reload(); }, 300000);</script>",
+        height=0)
 
 snaps=st.session_state.snaps
 if not snaps:
@@ -818,9 +908,10 @@ if bars is None:
 else:
     st.caption(f"Candles: {bars_msg}.")
 
-tab_cone,tab_land,tab_surf=st.tabs(["🟢 Cone (single snapshot)",
+tab_cone,tab_land,tab_surf,tab_vs3d=st.tabs(["🟢 Cone (single snapshot)",
                                     "📐 Landscape (forward projection)",
-                                    "🕒 Intraday surface (snapshot history)"])
+                                    "🕒 Intraday surface (snapshot history)",
+                                    "🧭 VS3D (sign-free dashboard)"])
 
 with tab_cone:
     st.caption(f"x-axis = session clock · gamma = Barchart per-strike · charm = Δdelta/Δt · snapshot {sel_ts:%H:%M:%S} EST.")
@@ -907,3 +998,73 @@ with tab_surf:
             pg,Zg,Zc,times,last,sp,cwalls,pwalls=build_time_surface(surf_snaps,m,p_min,p_max,weighting=wt)
             fig=fig_surface(m,pg,Zg,Zc,times,last,sp,bars,straddle,cwalls,pwalls); st.pyplot(fig,use_container_width=True); plt.close(fig)
         except Exception as ex: st.error(f"surface[{m}] failed: {ex}")
+
+with tab_vs3d:
+    st.caption("Everything replicable from FREE Barchart data, sign-free. The one thing we "
+               "canNOT do — strike-level dealer long/short (anchor vs test) — is intentionally absent.")
+    prev_snap=snaps[sel_i-1] if sel_i>0 else None
+    prev_chain=prev_snap["chain"] if prev_snap is not None else None
+    dt_hours=((sel_ts-prev_snap["ts"]).total_seconds()/3600.0) if prev_snap is not None else None
+    try:
+        vals,cc=vs3d_profiles(latest["chain"],spot,p_min,p_max,
+                              prev_chain=prev_chain,dt_hours=dt_hours,smooth=smooth_frac)
+        pg=vals["pg"]; x0,x1=session_window()
+        # VIX for regime (best-effort; don't break the tab if it fails)
+        vix_val=None
+        try:
+            _s,_h=init_session("$SPX"); vix_val=get_spot(_s,_h,"$VIX")
+        except Exception: vix_val=None
+        straddle_v=vs3d_straddle(cc,spot); fish=vs3d_fishbone(cc)
+        absorb=vs3d_absorption(cc); skew=vs3d_skew(cc)
+        decaying=None
+        if prev_chain is not None:
+            ps=vs3d_straddle(prev_chain.dropna(subset=["strike"]),prev_snap["spot"])
+            if ps is not None and straddle_v is not None: decaying=straddle_v<ps
+
+        def vs3d_panel(prof,cmap,title,signed=True,flips=None):
+            fig,ax=plt.subplots(figsize=(8.2,4.4),facecolor=DARK); ax.set_facecolor(DARK)
+            V,_b=field_from_profile(prof) if signed else (None,None)
+            if signed:
+                ax.imshow(V,origin="lower",extent=[x0,x1,pg[0],pg[-1]],aspect="auto",cmap=cmap,vmin=-1,vmax=1,interpolation="bilinear",zorder=0)
+            else:
+                sc=np.percentile(np.abs(prof),90) or 1.0
+                b=gaussian_filter1d(0.5+0.5*np.tanh(prof/sc),2.0); xs=np.linspace(0,1,360)
+                Vm=0.5+0.5*np.tanh(4.5*(b[:,None]-xs[None,:]))
+                ax.imshow(Vm,origin="lower",extent=[x0,x1,pg[0],pg[-1]],aspect="auto",cmap=cmap,vmin=0,vmax=1,interpolation="bilinear",zorder=0)
+            draw_candles(ax,bars,x0,x1,pg[0],pg[-1])
+            ax.axhline(spot,color="white",ls="--",lw=1,zorder=7)
+            for f in (flips or []):
+                if pg[0]<f<pg[-1]: ax.axhline(f,color="#ff5555",lw=0.8,ls=":",zorder=6)
+            ax.set_ylim(pg[0],pg[-1]); ax.set_title(title,color=TXT,fontsize=10,loc="left")
+            style_time_axis(ax,x0,x1); return fig
+
+        c1,c2=st.columns(2)
+        with c1:
+            st.pyplot(vs3d_panel(vals["gex"],gex_cmap(),"GAMMA net exposure (signed = convention)"),use_container_width=True)
+            st.pyplot(vs3d_panel(vals["speed"],speed_cmap(),"SPEED ∂γ/∂spot · wall edges"),use_container_width=True)
+            if vals["charm"] is not None:
+                st.pyplot(vs3d_panel(vals["charm"],charm_cmap(),"CHARM ∂δ/∂t (empirical) · dotted = flips",flips=vals["charm_flips"]),use_container_width=True)
+            else:
+                st.info("CHARM needs a 2nd snapshot — fills in next refresh.")
+        with c2:
+            st.pyplot(vs3d_panel(vals["mag"],mag_cmap(),"|GAMMA| magnitude · walls/pins (sign-free)",signed=False),use_container_width=True)
+            if vals["color"] is not None:
+                st.pyplot(vs3d_panel(vals["color"],gex_cmap(),"COLOR ∂γ/∂t · profile drift"),use_container_width=True)
+            else:
+                st.info("COLOR needs a 2nd snapshot — fills in next refresh.")
+            # signals block
+            rng=f"{spot-straddle_v:.0f} — {spot+straddle_v:.0f}" if straddle_v else "n/a"
+            dec=("YES — charm valid" if decaying else ("NO — charm SUSPECT" if decaying is not None else "need 2nd snapshot"))
+            fishtxt="CLEAN, trade" if fish<=4 else ("MESSY, size down" if fish<=8 else "FISHBONE, sit out")
+            st.markdown(f"""**Signals**
+- {vs3d_timing(sel_ts)}
+- {vs3d_vix_regime(vix_val)}
+- **Straddle** {('$%.2f'%straddle_v) if straddle_v else 'n/a'} · expected range **{rng}**
+- **Decaying?** {dec}  *(snake-oil gate: charm only leads if straddle is falling)*
+- **Fishbone** {fish} sign-flips → **{fishtxt}**
+- **Gamma absorption** {absorb:,.0f} fut-equiv remaining hedge
+- **Skew** (put−call IV) {skew:+.3f} → {'put-skew' if (skew==skew and skew>0) else 'call-skew'}
+- **Charm flips** {', '.join(f'{x:.0f}' for x in vals['charm_flips']) if vals['charm_flips'] else 'pending'}
+""")
+    except Exception as ex:
+        import traceback; st.error(f"VS3D dashboard failed: {ex}"); st.code(traceback.format_exc())
