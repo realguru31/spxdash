@@ -1,10 +1,26 @@
 """
-vs3d2_v1.16.py — SPX 0DTE+ Gamma & Charm (Streamlit POC)
+vs3d2_v1.17.py — SPX 0DTE+ Gamma & Charm (Streamlit POC)
 =================================================
 Point your streamlit.io app at this file.
 
 CHANGELOG (newest first) — what changed and why, per version
 ─────────────────────────────────────────────────────────────────────────────
+v1.17  [PLAYBACK engine + charm colors + 5-min candles; all tabs refactored]
+  • PLAYBACK: every snapshot, all 5 tabs render to PNG and cache in
+    session_state.frames[ts][tab]. Sidebar ▶Play/⏸Pause, ⏮Rewind, Speed 1/2/4 s/frame,
+    Frame slider. Play advances a frame each fast tick (st_autorefresh at the chosen
+    speed); Pause holds so you can read. Playback shows CACHED PNGs — no recompute
+    (verified: 22 figs cached live, 22 replayed with 0 recompute). Live 5-min refresh
+    is suspended while playing; resumes on pause.
+  • All 5 tab bodies refactored into _render_*() funcs called via dispatch(tab,fn),
+    which either renders+caches (live) or replays cached frames (playback). emit()
+    replaces st.pyplot so every figure is both shown and cached. Nothing removed.
+  • Forward-model CHARM recolored to the gold/blue charm_cmap (was red/green); titles
+    updated to 'gold=put/− · blue=call/+'.
+  • Candles switched to 5-MIN (prep_bars resamples 1-min→5-min OHLC) — less busy;
+    candle width auto-adapts to bar spacing.
+  • dVOL empty earlier was GENUINE: Barchart volume often unchanged between two 5-min
+    snapshots (coarse cache), so Δvol≈0. Not a bug; needs wider spacing to populate.
 v1.16  [NEW 'Forward models' tab — VS3D-style price×time forward simulation]
   • Added 5th tab '🔮 Forward models (price×time sim)'. Replicates VS3D's Gradient
     Chart mechanic: each pixel (price P, time-of-day τ) = the greek IF spot were P at
@@ -849,7 +865,15 @@ def prep_bars():
     if not stale: keep&=(bars["t"]<=now)
     bars=bars[keep].reset_index(drop=True)
     if not len(bars): return None,f"no RTH bars for {sess} yet"
-    msg=(f"showing {sess} RTH ({len(bars)} bars, to {bars['t'].max():%H:%M} EST)"
+    # resample 1-min -> 5-min OHLC (less busy candles); anchor to :30 so 09:30 aligns
+    try:
+        b=bars.set_index("t")
+        agg=b.resample("5min",offset="0min",label="left",closed="left").agg(
+            {"o":"first","h":"max","l":"min","c":"last"}).dropna(subset=["o","h","l","c"]).reset_index()
+        if len(agg)>0: bars=agg
+    except Exception:
+        pass
+    msg=(f"showing {sess} RTH ({len(bars)} 5-min bars, to {bars['t'].max():%H:%M} EST)"
          + (" — today not in feed yet, prior session" if stale else ""))
     return bars,msg
 
@@ -890,12 +914,21 @@ _AUTOREFRESH_OK=False
 if auto_on:
     try:
         from streamlit_autorefresh import st_autorefresh
-        st_autorefresh(interval=5*60*1000, key="auto5min")
+        # During Play, refresh at the chosen speed to advance frames; else 5-min live.
+        if st.session_state.get("pb_play") and st.session_state.get("frames"):
+            _iv=int(st.session_state.get("pb_speed",2.0)*1000)
+            _tick=st_autorefresh(interval=_iv,key="pb_tick")
+        else:
+            st_autorefresh(interval=5*60*1000, key="auto5min")
         _AUTOREFRESH_OK=True
     except Exception:
         _AUTOREFRESH_OK=False
 
+# advance playback frame on each fast tick while playing (handled after controls below)
+
+
 def _due():
+    if st.session_state.get("pb_play"): return False   # don't pull live during playback
     if not st.session_state.snaps: return True
     return (now_est()-st.session_state.last_ts).total_seconds() >= 5*60-5
 
@@ -930,6 +963,43 @@ else:
 if sel_i!=len(snaps)-1:
     st.sidebar.info(f"Viewing #{sel_i+1}/{len(snaps)} — not the latest.")
 
+# ── PLAYBACK: replay cached snapshot renders like a film ─────────────────────
+# All tabs are rendered to PNG each snapshot and cached in session_state.frames,
+# keyed by snapshot timestamp. Playback flips through them fast (no recompute).
+if "frames" not in st.session_state: st.session_state.frames={}   # {ts_iso: {tab:[png,...]}}
+if "pb_play" not in st.session_state: st.session_state.pb_play=False
+if "pb_idx"  not in st.session_state: st.session_state.pb_idx=0
+if "pb_speed" not in st.session_state: st.session_state.pb_speed=2.0
+st.sidebar.markdown("---"); st.sidebar.markdown("**▶ Playback (recorded snapshots)**")
+_frame_ts=[s["ts"] for s in snaps if s["ts"].isoformat() in st.session_state.frames]
+_nframes=len(_frame_ts)
+if _nframes==0:
+    st.sidebar.caption("No cached frames yet — they record automatically each snapshot.")
+    PLAYBACK=False
+else:
+    pbc1,pbc2=st.sidebar.columns(2)
+    if pbc1.button("▶ Play" if not st.session_state.pb_play else "⏸ Pause",use_container_width=True):
+        st.session_state.pb_play=not st.session_state.pb_play; st.rerun()
+    if pbc2.button("⏮ Rewind",use_container_width=True):
+        st.session_state.pb_idx=0; st.session_state.pb_play=False; st.rerun()
+    st.session_state.pb_speed=st.sidebar.radio("Speed (sec/frame)",[1.0,2.0,4.0],
+        index=[1.0,2.0,4.0].index(st.session_state.pb_speed),horizontal=True)
+    if st.session_state.pb_play:
+        # auto-advance: this rerun was triggered by the fast tick
+        st.session_state.pb_idx=(st.session_state.pb_idx+1)%_nframes
+        st.sidebar.progress((st.session_state.pb_idx+1)/_nframes)
+    else:
+        # paused: manual scrub
+        st.session_state.pb_idx=st.sidebar.slider("Frame",0,max(_nframes-1,0),
+            min(st.session_state.pb_idx,_nframes-1))
+    st.session_state.pb_idx=min(st.session_state.pb_idx,_nframes-1)
+    _cur=_frame_ts[st.session_state.pb_idx]
+    st.sidebar.caption(f"Frame {st.session_state.pb_idx+1}/{_nframes} · {_cur:%H:%M:%S} EST"
+                       + (" · ▶ playing" if st.session_state.pb_play else " · ⏸ paused"))
+    PLAYBACK=True
+    PLAYBACK_TS=_frame_ts[st.session_state.pb_idx].isoformat()
+if _nframes==0: PLAYBACK=False
+
 latest=snaps[sel_i]; spot=latest["spot"]; exps=latest["exps"]
 sel_ts=latest["ts"]
 exp_date=dt.datetime.strptime(exps[0],"%Y-%m-%d").date()
@@ -961,6 +1031,39 @@ if bars is None:
 else:
     st.caption(f"Candles: {bars_msg}.")
 
+# ── frame emit / replay helpers ──────────────────────────────────────────────
+import io as _io
+_EMIT_BUF={}   # tab -> list of png bytes, filled during a live render pass
+def emit(tab, fig, caption=None):
+    """Live mode: display the figure AND stash its PNG for playback caching."""
+    if caption: st.markdown(caption)
+    st.pyplot(fig,use_container_width=True)
+    try:
+        buf=_io.BytesIO(); fig.savefig(buf,format="png",dpi=85,facecolor=DARK,bbox_inches="tight")
+        _EMIT_BUF.setdefault(tab,[]).append(buf.getvalue())
+    except Exception: pass
+    plt.close(fig)
+def emit_caption(tab, text):
+    st.caption(text)
+def _replay_show(tab):
+    """Playback mode: show cached PNGs for the selected frame, no recompute."""
+    frame=st.session_state.frames.get(PLAYBACK_TS,{})
+    imgs=frame.get(tab,[])
+    if not imgs:
+        st.info(f"No cached frame for this tab at {PLAYBACK_TS[11:19]}. "
+                "Switch to this tab during a live snapshot to record it."); return
+    for png in imgs: st.image(png,use_container_width=True)
+def dispatch(tab, render_fn):
+    """Run render_fn live (display+cache) OR replay cached frames."""
+    if PLAYBACK:
+        _replay_show(tab)
+    else:
+        _EMIT_BUF[tab]=[]
+        render_fn()
+        # cache this tab's frame for the CURRENT (latest) snapshot ts
+        ts=sel_ts.isoformat()
+        st.session_state.frames.setdefault(ts,{})[tab]=list(_EMIT_BUF.get(tab,[]))
+
 tab_cone,tab_land,tab_surf,tab_vs3d,tab_fwd=st.tabs(["🟢 Cone (single snapshot)",
                                     "📐 Landscape (forward projection)",
                                     "🕒 Intraday surface (snapshot history)",
@@ -968,22 +1071,24 @@ tab_cone,tab_land,tab_surf,tab_vs3d,tab_fwd=st.tabs(["🟢 Cone (single snapshot
                                     "🔮 Forward models (price×time sim)"])
 
 with tab_cone:
-    st.caption(f"x-axis = session clock · gamma = Barchart per-strike · charm = Δdelta/Δt · snapshot {sel_ts:%H:%M:%S} EST.")
-    # previous snapshot (for empirical charm). None if viewing the first snapshot.
-    prev_snap=snaps[sel_i-1] if sel_i>0 else None
-    prev_chain=prev_snap["chain"] if prev_snap is not None else None
-    dt_hours=((sel_ts-prev_snap["ts"]).total_seconds()/3600.0) if prev_snap is not None else None
-    for w in ["volume","oi","oi_plus_flow"]:
-        st.markdown(f"**Cone — weight: `{w}`**")
-        try:
-            pg,gex,chm,cf=cone_profiles(latest["chain"],spot,p_min,p_max,w,
-                                        prev_chain=prev_chain,dt_hours=dt_hours,
-                                        smooth_frac=smooth_frac)
-            fig=fig_cone(pg,gex,chm,cf,spot,bars,straddle); st.pyplot(fig,use_container_width=True); plt.close(fig)
-        except Exception as ex: st.error(f"cone[{w}] failed: {ex}")
+    emit_caption("cone", f"x-axis = session clock · gamma = Barchart per-strike · charm = Δdelta/Δt · snapshot {sel_ts:%H:%M:%S} EST.")
+    def _render_cone():
+        prev_snap=snaps[sel_i-1] if sel_i>0 else None
+        prev_chain=prev_snap["chain"] if prev_snap is not None else None
+        dt_hours=((sel_ts-prev_snap["ts"]).total_seconds()/3600.0) if prev_snap is not None else None
+        for w in ["volume","oi","oi_plus_flow"]:
+            try:
+                pg,gex,chm,cf=cone_profiles(latest["chain"],spot,p_min,p_max,w,
+                                            prev_chain=prev_chain,dt_hours=dt_hours,
+                                            smooth_frac=smooth_frac)
+                fig=fig_cone(pg,gex,chm,cf,spot,bars,straddle)
+                emit("cone",fig,caption=f"**Cone — weight: `{w}`**")
+            except Exception as ex: st.error(f"cone[{w}] failed: {ex}")
+    dispatch("cone",_render_cone)
 
-    # ── DIAGNOSTICS ──────────────────────────────────────────────────────────
-    with st.expander("🔧 Candle / bar diagnostics", expanded=True):
+    # ── DIAGNOSTICS (live only) ──────────────────────────────────────────────
+    if not PLAYBACK:
+      with st.expander("🔧 Candle / bar diagnostics", expanded=True):
         x0,x1=session_window()
         st.write({
             "today_est()": str(today_est()),
@@ -1028,131 +1133,133 @@ with tab_cone:
                    "mismatch (not contrast). If bars are far outside the price window, it's a scale issue.")
 
 with tab_land:
-    st.caption(f"x-axis = session clock · book at {sel_ts:%H:%M:%S} EST projected to the close "
+    emit_caption("land", f"x-axis = session clock · book at {sel_ts:%H:%M:%S} EST projected to the close "
                "as T decays (pockets sharpen rightward). Note: `volume` ≈ `flow_reset` on one pull.")
-    for m in ["oi","volume","oi_plus_flow","flow_reset"]:
-        st.markdown(f"**Projection — method: `{m}`**")
-        try:
-            pg,Zg,Zc,times,jnow,cf=build_projection(latest["chain"],spot,m,p_min,p_max)
-            fig=fig_projection(m,pg,Zg,Zc,times,jnow,cf,spot,bars,straddle); st.pyplot(fig,use_container_width=True); plt.close(fig)
-        except Exception as ex: st.error(f"projection[{m}] failed: {ex}")
+    def _render_land():
+        for m in ["oi","volume","oi_plus_flow","flow_reset"]:
+            try:
+                pg,Zg,Zc,times,jnow,cf=build_projection(latest["chain"],spot,m,p_min,p_max)
+                fig=fig_projection(m,pg,Zg,Zc,times,jnow,cf,spot,bars,straddle)
+                emit("land",fig,caption=f"**Projection — method: `{m}`**")
+            except Exception as ex: st.error(f"projection[{m}] failed: {ex}")
+    dispatch("land",_render_land)
 
 with tab_surf:
-    st.caption("x-axis = real recorded time. Built from your in-memory snapshot history — "
+    emit_caption("surf","x-axis = real recorded time. Built from your in-memory snapshot history — "
                "this is the only view that EVOLVES as flow lands. The slider trims the surface "
                "to snapshots up to the selected time.")
-    surf_snaps=snaps[:sel_i+1]
-    if len(surf_snaps)<2:
-        st.warning(f"Only {len(surf_snaps)} snapshot up to {sel_ts:%H:%M:%S}. Let it run (or hit 📸) "
-                   "to build history; the surface fills in as snapshots accumulate.")
-    for m in ["oi_plus_flow","flow_from_open","interval_flow","cumulative"]:
-        st.markdown(f"**Surface — mode: `{m}`**")
-        try:
-            wt="volume"
-            pg,Zg,Zc,times,last,sp,cwalls,pwalls=build_time_surface(surf_snaps,m,p_min,p_max,weighting=wt)
-            fig=fig_surface(m,pg,Zg,Zc,times,last,sp,bars,straddle,cwalls,pwalls); st.pyplot(fig,use_container_width=True); plt.close(fig)
-        except Exception as ex: st.error(f"surface[{m}] failed: {ex}")
+    def _render_surf():
+        surf_snaps=snaps[:sel_i+1]
+        if len(surf_snaps)<2:
+            st.warning(f"Only {len(surf_snaps)} snapshot up to {sel_ts:%H:%M:%S}. Let it run (or hit 📸) "
+                       "to build history; the surface fills in as snapshots accumulate.")
+        for m in ["oi_plus_flow","flow_from_open","interval_flow","cumulative"]:
+            try:
+                wt="volume"
+                pg,Zg,Zc,times,last,sp,cwalls,pwalls=build_time_surface(surf_snaps,m,p_min,p_max,weighting=wt)
+                fig=fig_surface(m,pg,Zg,Zc,times,last,sp,bars,straddle,cwalls,pwalls)
+                emit("surf",fig,caption=f"**Surface — mode: `{m}`**")
+            except Exception as ex: st.error(f"surface[{m}] failed: {ex}")
+    dispatch("surf",_render_surf)
 
 with tab_vs3d:
-    st.caption("Everything replicable from FREE Barchart data, sign-free. The one thing we "
+    emit_caption("vs3d","Everything replicable from FREE Barchart data, sign-free. The one thing we "
                "canNOT do — strike-level dealer long/short (anchor vs test) — is intentionally absent.")
-    prev_snap=snaps[sel_i-1] if sel_i>0 else None
-    prev_chain=prev_snap["chain"] if prev_snap is not None else None
-    dt_hours=((sel_ts-prev_snap["ts"]).total_seconds()/3600.0) if prev_snap is not None else None
-    try:
-        vals,cc=vs3d_profiles(latest["chain"],spot,p_min,p_max,
-                              prev_chain=prev_chain,dt_hours=dt_hours,smooth=smooth_frac)
-        pg=vals["pg"]; x0,x1=session_window()
-        # VIX for regime (best-effort; don't break the tab if it fails)
-        vix_val=None
+    def _render_vs3d():
+        prev_snap=snaps[sel_i-1] if sel_i>0 else None
+        prev_chain=prev_snap["chain"] if prev_snap is not None else None
+        dt_hours=((sel_ts-prev_snap["ts"]).total_seconds()/3600.0) if prev_snap is not None else None
         try:
-            _s,_h=init_session("$SPX"); vix_val=get_spot(_s,_h,"$VIX")
-        except Exception: vix_val=None
-        straddle_v=vs3d_straddle(cc,spot); fish=vs3d_fishbone(cc)
-        absorb=vs3d_absorption(cc); skew=vs3d_skew(cc)
-        decaying=None
-        if prev_chain is not None:
-            ps=vs3d_straddle(prev_chain.dropna(subset=["strike"]),prev_snap["spot"])
-            if ps is not None and straddle_v is not None: decaying=straddle_v<ps
-
-        def vs3d_panel(prof,cmap,title,signed=True,flips=None):
-            fig,ax=plt.subplots(figsize=(8.2,4.4),facecolor=DARK); ax.set_facecolor(DARK)
-            V,_b=field_from_profile(prof) if signed else (None,None)
-            if signed:
-                ax.imshow(V,origin="lower",extent=[x0,x1,pg[0],pg[-1]],aspect="auto",cmap=cmap,vmin=-1,vmax=1,interpolation="bilinear",zorder=0)
-            else:
-                sc=np.percentile(np.abs(prof),90) or 1.0
-                b=gaussian_filter1d(0.5+0.5*np.tanh(prof/sc),2.0); xs=np.linspace(0,1,360)
-                Vm=0.5+0.5*np.tanh(4.5*(b[:,None]-xs[None,:]))
-                ax.imshow(Vm,origin="lower",extent=[x0,x1,pg[0],pg[-1]],aspect="auto",cmap=cmap,vmin=0,vmax=1,interpolation="bilinear",zorder=0)
-            draw_candles(ax,bars,x0,x1,pg[0],pg[-1])
-            ax.axhline(spot,color="white",ls="--",lw=1,zorder=7)
-            for f in (flips or []):
-                if pg[0]<f<pg[-1]: ax.axhline(f,color="#ff5555",lw=0.8,ls=":",zorder=6)
-            ax.set_ylim(pg[0],pg[-1]); ax.set_title(title,color=TXT,fontsize=10,loc="left")
-            style_time_axis(ax,x0,x1); return fig
-
-        c1,c2=st.columns(2)
-        with c1:
-            st.pyplot(vs3d_panel(vals["gex"],gex_cmap(),"GAMMA net exposure (signed = convention)"),use_container_width=True)
-            st.pyplot(vs3d_panel(vals["speed"],speed_cmap(),"SPEED ∂γ/∂spot · wall edges"),use_container_width=True)
+            vals,cc=vs3d_profiles(latest["chain"],spot,p_min,p_max,
+                                  prev_chain=prev_chain,dt_hours=dt_hours,smooth=smooth_frac)
+            pg=vals["pg"]; x0,x1=session_window()
+            vix_val=None
+            try:
+                _s,_h=init_session("$SPX"); vix_val=get_spot(_s,_h,"$VIX")
+            except Exception: vix_val=None
+            straddle_v=vs3d_straddle(cc,spot); fish=vs3d_fishbone(cc)
+            absorb=vs3d_absorption(cc); skew=vs3d_skew(cc)
+            decaying=None
+            if prev_chain is not None:
+                ps=vs3d_straddle(prev_chain.dropna(subset=["strike"]),prev_snap["spot"])
+                if ps is not None and straddle_v is not None: decaying=straddle_v<ps
+            def vs3d_panel(prof,cmap,title,signed=True,flips=None):
+                fig,ax=plt.subplots(figsize=(8.2,4.4),facecolor=DARK); ax.set_facecolor(DARK)
+                if signed:
+                    V,_b=field_from_profile(prof)
+                    ax.imshow(V,origin="lower",extent=[x0,x1,pg[0],pg[-1]],aspect="auto",cmap=cmap,vmin=-1,vmax=1,interpolation="bilinear",zorder=0)
+                else:
+                    sc=np.percentile(np.abs(prof),90) or 1.0
+                    b=gaussian_filter1d(0.5+0.5*np.tanh(prof/sc),2.0); xs=np.linspace(0,1,360)
+                    Vm=0.5+0.5*np.tanh(4.5*(b[:,None]-xs[None,:]))
+                    ax.imshow(Vm,origin="lower",extent=[x0,x1,pg[0],pg[-1]],aspect="auto",cmap=cmap,vmin=0,vmax=1,interpolation="bilinear",zorder=0)
+                draw_candles(ax,bars,x0,x1,pg[0],pg[-1])
+                ax.axhline(spot,color="white",ls="--",lw=1,zorder=7)
+                for f in (flips or []):
+                    if pg[0]<f<pg[-1]: ax.axhline(f,color="#ff5555",lw=0.8,ls=":",zorder=6)
+                ax.set_ylim(pg[0],pg[-1]); ax.set_title(title,color=TXT,fontsize=10,loc="left")
+                style_time_axis(ax,x0,x1); return fig
+            emit("vs3d",vs3d_panel(vals["gex"],gex_cmap(),"GAMMA net exposure (signed = convention)"))
+            emit("vs3d",vs3d_panel(vals["mag"],mag_cmap(),"|GAMMA| magnitude · walls/pins (sign-free)",signed=False))
+            emit("vs3d",vs3d_panel(vals["speed"],speed_cmap(),"SPEED ∂γ/∂spot · wall edges"))
             if vals["charm"] is not None:
-                st.pyplot(vs3d_panel(vals["charm"],charm_cmap(),"CHARM ∂δ/∂t (empirical) · dotted = flips",flips=vals["charm_flips"]),use_container_width=True)
-            else:
-                st.info("CHARM needs a 2nd snapshot — fills in next refresh.")
-        with c2:
-            st.pyplot(vs3d_panel(vals["mag"],mag_cmap(),"|GAMMA| magnitude · walls/pins (sign-free)",signed=False),use_container_width=True)
+                emit("vs3d",vs3d_panel(vals["charm"],charm_cmap(),"CHARM ∂δ/∂t (empirical) · dotted = flips",flips=vals["charm_flips"]))
+            else: st.info("CHARM needs a 2nd snapshot — fills in next refresh.")
             if vals["color"] is not None:
-                st.pyplot(vs3d_panel(vals["color"],gex_cmap(),"COLOR ∂γ/∂t · profile drift"),use_container_width=True)
-            else:
-                st.info("COLOR needs a 2nd snapshot — fills in next refresh.")
-            # signals block
+                emit("vs3d",vs3d_panel(vals["color"],gex_cmap(),"COLOR ∂γ/∂t · profile drift"))
+            else: st.info("COLOR needs a 2nd snapshot — fills in next refresh.")
+            # signals rendered to a figure (so it's captured for playback too)
             rng=f"{spot-straddle_v:.0f} — {spot+straddle_v:.0f}" if straddle_v else "n/a"
             dec=("YES — charm valid" if decaying else ("NO — charm SUSPECT" if decaying is not None else "need 2nd snapshot"))
             fishtxt="CLEAN, trade" if fish<=4 else ("MESSY, size down" if fish<=8 else "FISHBONE, sit out")
-            st.markdown(f"""**Signals**
-- {vs3d_timing(sel_ts)}
-- {vs3d_vix_regime(vix_val)}
-- **Straddle** {('$%.2f'%straddle_v) if straddle_v else 'n/a'} · expected range **{rng}**
-- **Decaying?** {dec}  *(snake-oil gate: charm only leads if straddle is falling)*
-- **Fishbone** {fish} sign-flips → **{fishtxt}**
-- **Gamma absorption** {absorb:,.0f} fut-equiv remaining hedge
-- **Skew** (put−call IV) {skew:+.3f} → {'put-skew' if (skew==skew and skew>0) else 'call-skew'}
-- **Charm flips** {', '.join(f'{x:.0f}' for x in vals['charm_flips']) if vals['charm_flips'] else 'pending'}
-""")
-    except Exception as ex:
-        import traceback; st.error(f"VS3D dashboard failed: {ex}"); st.code(traceback.format_exc())
+            sig_lines=[f"SPX {spot:.2f}   {sel_ts:%H:%M:%S} EST","",
+                vs3d_timing(sel_ts), vs3d_vix_regime(vix_val),
+                f"Straddle {('$%.2f'%straddle_v) if straddle_v else 'n/a'} · range {rng}",
+                f"Decaying? {dec}   (snake-oil gate)",
+                f"Fishbone {fish} → {fishtxt}",
+                f"Gamma absorption {absorb:,.0f} fut-equiv",
+                f"Skew (put−call IV) {skew:+.3f} → {'put-skew' if (skew==skew and skew>0) else 'call-skew'}",
+                f"Charm flips {', '.join(f'{x:.0f}' for x in vals['charm_flips']) if vals['charm_flips'] else 'pending'}",
+                "", "canNOT replicate: dealer long/short per strike,", "net-hedgeable filtering, OTC flow."]
+            figs,axs=plt.subplots(figsize=(8.2,4.4),facecolor=DARK); axs.axis("off"); axs.set_facecolor(DARK)
+            axs.text(0.02,0.98,"SIGNALS\n"+"\n".join(sig_lines),transform=axs.transAxes,color=TXT,
+                     va="top",ha="left",family="monospace",fontsize=10)
+            emit("vs3d",figs)
+        except Exception as ex:
+            import traceback; st.error(f"VS3D dashboard failed: {ex}"); st.code(traceback.format_exc())
+    dispatch("vs3d",_render_vs3d)
 
 with tab_fwd:
-    st.caption("VS3D-style FORWARD SIMULATION. Each pixel (price × time-of-day) = the greek "
+    emit_caption("fwd","VS3D-style FORWARD SIMULATION. Each pixel (price × time-of-day) = the greek "
                "IF spot were there at that time — from the CURRENT chain, clock advanced, BS "
                "re-priced with each strike's Barchart IV. Blue line = now (left actual, right simulated). "
-               "Charm colored by hedging effect: red = dealers sell as time passes, green = buy.")
-    now_naive=sel_ts.replace(tzinfo=None) if getattr(sel_ts,'tzinfo',None) else sel_ts
-    exp_use=(latest.get("exps") or [None])[0]
-    if not exp_use:
-        st.warning("No expiry available on the latest snapshot yet.")
-    else:
+               "Charm: gold = put/negative · blue = call/positive.")
+    def _render_fwd():
+        now_naive=sel_ts.replace(tzinfo=None) if getattr(sel_ts,'tzinfo',None) else sel_ts
+        exp_use=(latest.get("exps") or [None])[0]
+        if not exp_use:
+            st.warning("No expiry available on the latest snapshot yet."); return
         prev_snap=snaps[sel_i-1] if sel_i>0 else None
         prev_chain=prev_snap["chain"] if prev_snap is not None else None
         x0,x1=session_window()
         for m in _FWD_MODELS:
-            st.markdown(f"**Forward — model: `{m}`**"
-                        + ("  ·  ⚠️ forward-sim weak (defined by past change)" if m in ("4 dVOL","5 vol/OI") else ""))
+            cap=(f"**Forward — model: `{m}`**"
+                 + ("  ·  ⚠️ forward-sim weak (defined by past change)" if m in ("4 dVOL","5 vol/OI") else ""))
             try:
                 pg,Zg,Zc,taus=forward_sim_grid(latest["chain"],spot,exp_use,now_naive,m,prev_chain=prev_chain,
                                                p_min=p_min,p_max=p_max)
                 fig,(ag,ac)=plt.subplots(1,2,figsize=(16,5.2),facecolor=DARK)
                 ag.imshow(_fwd_norm(Zg),origin="lower",extent=[x0,x1,pg[0],pg[-1]],aspect="auto",cmap=gex_cmap(),vmin=-1,vmax=1,interpolation="bilinear",zorder=0)
-                ac.imshow(_fwd_norm(-Zc),origin="lower",extent=[x0,x1,pg[0],pg[-1]],aspect="auto",cmap=gex_cmap(),vmin=-1,vmax=1,interpolation="bilinear",zorder=0)
+                ac.imshow(_fwd_norm(Zc),origin="lower",extent=[x0,x1,pg[0],pg[-1]],aspect="auto",cmap=charm_cmap(),vmin=-1,vmax=1,interpolation="bilinear",zorder=0)
                 nowx=mdates.date2num(now_naive)
-                for a,ttl in [(ag,f"GAMMA · {m}"),(ac,f"CHARM · {m} (red=sell / green=buy)")]:
+                for a,ttl in [(ag,f"GAMMA · {m}"),(ac,f"CHARM · {m} (gold=put/− · blue=call/+)")]:
                     a.set_facecolor(DARK); draw_candles(a,bars,x0,x1,pg[0],pg[-1])
                     a.axhline(spot,color="white",ls="--",lw=1,zorder=7)
                     a.axvline(nowx,color="#3399dd",ls=":",lw=1.2,zorder=7)
                     a.set_ylim(pg[0],pg[-1]); a.set_title(ttl,color=TXT,fontsize=10,loc="left")
                     style_time_axis(a,x0,x1)
                 ag.set_ylabel("price",color="#777",fontsize=8)
-                st.pyplot(fig,use_container_width=True); plt.close(fig)
+                emit("fwd",fig,caption=cap)
             except Exception as ex:
                 import traceback; st.error(f"forward[{m}] failed: {ex}"); st.code(traceback.format_exc())
+    dispatch("fwd",_render_fwd)
