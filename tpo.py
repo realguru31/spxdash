@@ -28,7 +28,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 # ----------------------------------------------------------------------------- 
 # TPO letters: A..Z then a..z  (52 brackets max — plenty for any cash session)
@@ -399,8 +399,20 @@ def main():
 
     with st.sidebar:
         st.header("Instrument")
-        symbol = st.text_input("Symbol", value="NIFTY").strip().upper()
-        exchange = st.text_input("Exchange", value="NSE").strip().upper()
+        ticker = st.text_input(
+            "Ticker (EXCHANGE:SYMBOL)", value="AMEX:SPY",
+            help="TradingView style, e.g. AMEX:SPY, NSE:NIFTY, BINANCE:BTCUSDT",
+        ).strip().upper()
+        if ":" in ticker:
+            exchange, symbol = (p.strip() for p in ticker.split(":", 1))
+        else:
+            exchange, symbol = "", ticker
+        if not symbol:
+            st.caption("Enter a ticker to begin.")
+        elif not exchange:
+            st.caption(f"Symbol **{symbol}** · no exchange — add one like `NSE:{symbol}`")
+        else:
+            st.caption(f"Exchange **{exchange}** · symbol **{symbol}**")
 
         st.header("Data")
         base_interval = st.selectbox("Base interval (fetched)",
@@ -499,6 +511,8 @@ if __name__ == "__main__":
 
 # =============================================================================
 # CHANGELOG
+# 0.2.0  single combined "EXCHANGE:SYMBOL" ticker input (e.g. AMEX:SPY),
+#        parsed into exchange + symbol; default changed to AMEX:SPY.
 # 0.1.0  initial build: tvdatafeed fetch, TPO letters (grouped brackets),
 #        volume profile, developing POC / VPOC / value area, expand-latest-day
 #        split view, per-day summary table.
