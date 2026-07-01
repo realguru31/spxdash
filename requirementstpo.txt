@@ -1,0 +1,11 @@
+# requirementstpo.txt — dependencies for tpo.py
+streamlit>=1.30
+plotly>=5.18
+pandas>=2.0
+numpy>=1.24
+
+# TradingView data feed (unofficial).
+# The PyPI package below imports as `from tvDatafeed import TvDatafeed, Interval`.
+tvdatafeed
+# If the PyPI build misbehaves, use the maintained fork instead:
+#   pip install --upgrade --no-cache-dir git+https://github.com/rongardF/tvdatafeed.git
