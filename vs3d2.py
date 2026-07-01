@@ -5,6 +5,12 @@ Point your streamlit.io app at this file.
 
 CHANGELOG (newest first) — what changed and why, per version
 ─────────────────────────────────────────────────────────────────────────────
+v1.17.3 Fixed VS3D tab panels rendering at giant full-width size (regression from the
+  playback refactor, which emitted each panel full-width). Restored a 2-column grid
+  for VS3D in BOTH live and playback so the 6 panels stay a sane size. emit() now
+  accepts a container arg to render into a specific column.
+v1.17.2 Removed the Cone-tab candle/bar diagnostics expander (was for debugging the
+  'candles not drawing' issue, now resolved — just clutter).
 v1.17.1 [hotfix] Frame slider crashed when only 1 playback frame existed
   (Streamlit requires slider min<max). Now: <2 frames shows a caption instead of
   the slider, and Play won't start until ≥2 frames are cached. Rest unchanged.
@@ -1040,10 +1046,12 @@ else:
 # ── frame emit / replay helpers ──────────────────────────────────────────────
 import io as _io
 _EMIT_BUF={}   # tab -> list of png bytes, filled during a live render pass
-def emit(tab, fig, caption=None):
-    """Live mode: display the figure AND stash its PNG for playback caching."""
-    if caption: st.markdown(caption)
-    st.pyplot(fig,use_container_width=True)
+def emit(tab, fig, caption=None, container=None):
+    """Live mode: display the figure AND stash its PNG for playback caching.
+    If container is given (e.g. a st.columns() cell), render into it at a sane size."""
+    tgt=container if container is not None else st
+    if caption: tgt.markdown(caption)
+    tgt.pyplot(fig,use_container_width=True)
     try:
         buf=_io.BytesIO(); fig.savefig(buf,format="png",dpi=85,facecolor=DARK,bbox_inches="tight")
         _EMIT_BUF.setdefault(tab,[]).append(buf.getvalue())
@@ -1058,7 +1066,14 @@ def _replay_show(tab):
     if not imgs:
         st.info(f"No cached frame for this tab at {PLAYBACK_TS[11:19]}. "
                 "Switch to this tab during a live snapshot to record it."); return
-    for png in imgs: st.image(png,use_container_width=True)
+    if tab=="vs3d":
+        # 2-column grid so panels don't balloon (matches live layout)
+        for i in range(0,len(imgs),2):
+            cols=st.columns(2)
+            for j,png in enumerate(imgs[i:i+2]):
+                cols[j].image(png,use_container_width=True)
+    else:
+        for png in imgs: st.image(png,use_container_width=True)
 def dispatch(tab, render_fn):
     """Run render_fn live (display+cache) OR replay cached frames."""
     if PLAYBACK:
@@ -1092,51 +1107,6 @@ with tab_cone:
             except Exception as ex: st.error(f"cone[{w}] failed: {ex}")
     dispatch("cone",_render_cone)
 
-    # ── DIAGNOSTICS (live only) ──────────────────────────────────────────────
-    if not PLAYBACK:
-      with st.expander("🔧 Candle / bar diagnostics", expanded=True):
-        x0,x1=session_window()
-        st.write({
-            "today_est()": str(today_est()),
-            "session window x0..x1 (datenum)": [round(x0,5),round(x1,5)],
-            "session window (clock)": [str(mdates.num2date(x0))[:19], str(mdates.num2date(x1))[:19]],
-            "prep_bars msg": bars_msg,
-            "bars is None": bars is None,
-            "bars count (post prep_bars)": (0 if bars is None else int(len(bars))),
-        })
-        # raw feed, before prep_bars filtering
-        try:
-            raw=fetch_bars_raw()
-            if raw is None or not len(raw):
-                st.warning("fetch_bars_raw() returned no rows.")
-            else:
-                st.write({
-                    "RAW feed rows": int(len(raw)),
-                    "RAW dtypes o/h/l/c": [str(raw[c].dtype) for c in ["o","h","l","c"]],
-                    "RAW date(s) present": sorted({str(d) for d in raw["t"].dt.date.unique()})[:6],
-                    "RAW time min..max": [str(raw["t"].min()), str(raw["t"].max())],
-                    "RAW close min..max": [round(float(raw["c"].min()),2), round(float(raw["c"].max()),2)],
-                })
-        except Exception as ex:
-            st.error(f"fetch_bars_raw() raised: {ex}")
-        # what draw_candles actually sees: how many bars land inside the x-window
-        if bars is not None and len(bars):
-            bn=np.array([mdates.date2num(t) for t in bars["t"]])
-            inwin=(bn>=x0)&(bn<=x1)
-            st.write({
-                "bars datenum min..max": [round(float(bn.min()),5), round(float(bn.max()),5)],
-                "bars CLOCK min..max": [str(bars["t"].min()), str(bars["t"].max())],
-                "bars INSIDE session window (drawn)": int(inwin.sum()),
-                "bars OUTSIDE window (skipped)": int((~inwin).sum()),
-                "price window p_min..p_max": [round(p_min,2), round(p_max,2)],
-                "bars high/low": [round(float(bars["h"].max()),2), round(float(bars["l"].min()),2)],
-                "bars within price window": int(((bars["l"]>=p_min)&(bars["h"]<=p_max)).sum()),
-            })
-            if inwin.sum()==0:
-                st.error("0 bars fall inside the session x-window → nothing to draw. "
-                         "Likely a date/timezone mismatch between bar timestamps and today_est().")
-        st.caption("If 'bars INSIDE session window' is 0 but RAW rows exist, it's a time-axis "
-                   "mismatch (not contrast). If bars are far outside the price window, it's a scale issue.")
 
 with tab_land:
     emit_caption("land", f"x-axis = session clock · book at {sel_ts:%H:%M:%S} EST projected to the close "
@@ -1205,16 +1175,15 @@ with tab_vs3d:
                     if pg[0]<f<pg[-1]: ax.axhline(f,color="#ff5555",lw=0.8,ls=":",zorder=6)
                 ax.set_ylim(pg[0],pg[-1]); ax.set_title(title,color=TXT,fontsize=10,loc="left")
                 style_time_axis(ax,x0,x1); return fig
-            emit("vs3d",vs3d_panel(vals["gex"],gex_cmap(),"GAMMA net exposure (signed = convention)"))
-            emit("vs3d",vs3d_panel(vals["mag"],mag_cmap(),"|GAMMA| magnitude · walls/pins (sign-free)",signed=False))
-            emit("vs3d",vs3d_panel(vals["speed"],speed_cmap(),"SPEED ∂γ/∂spot · wall edges"))
+            # 2-column grid so panels stay a sane size (not full-width giants)
+            panels=[("gex",vs3d_panel(vals["gex"],gex_cmap(),"GAMMA net exposure (signed = convention)")),
+                    ("mag",vs3d_panel(vals["mag"],mag_cmap(),"|GAMMA| magnitude · walls/pins (sign-free)",signed=False)),
+                    ("speed",vs3d_panel(vals["speed"],speed_cmap(),"SPEED ∂γ/∂spot · wall edges"))]
             if vals["charm"] is not None:
-                emit("vs3d",vs3d_panel(vals["charm"],charm_cmap(),"CHARM ∂δ/∂t (empirical) · dotted = flips",flips=vals["charm_flips"]))
-            else: st.info("CHARM needs a 2nd snapshot — fills in next refresh.")
+                panels.append(("charm",vs3d_panel(vals["charm"],charm_cmap(),"CHARM ∂δ/∂t (empirical) · dotted = flips",flips=vals["charm_flips"])))
             if vals["color"] is not None:
-                emit("vs3d",vs3d_panel(vals["color"],gex_cmap(),"COLOR ∂γ/∂t · profile drift"))
-            else: st.info("COLOR needs a 2nd snapshot — fills in next refresh.")
-            # signals rendered to a figure (so it's captured for playback too)
+                panels.append(("color",vs3d_panel(vals["color"],gex_cmap(),"COLOR ∂γ/∂t · profile drift")))
+            # signals figure
             rng=f"{spot-straddle_v:.0f} — {spot+straddle_v:.0f}" if straddle_v else "n/a"
             dec=("YES — charm valid" if decaying else ("NO — charm SUSPECT" if decaying is not None else "need 2nd snapshot"))
             fishtxt="CLEAN, trade" if fish<=4 else ("MESSY, size down" if fish<=8 else "FISHBONE, sit out")
@@ -1230,7 +1199,13 @@ with tab_vs3d:
             figs,axs=plt.subplots(figsize=(8.2,4.4),facecolor=DARK); axs.axis("off"); axs.set_facecolor(DARK)
             axs.text(0.02,0.98,"SIGNALS\n"+"\n".join(sig_lines),transform=axs.transAxes,color=TXT,
                      va="top",ha="left",family="monospace",fontsize=10)
-            emit("vs3d",figs)
+            panels.append(("signals",figs))
+            # lay out 2 per row
+            for i in range(0,len(panels),2):
+                cols=st.columns(2)
+                for j,(nm,fig) in enumerate(panels[i:i+2]):
+                    emit("vs3d",fig,container=cols[j])
+            if vals["charm"] is None: st.info("CHARM/COLOR need a 2nd snapshot — fill in next refresh.")
         except Exception as ex:
             import traceback; st.error(f"VS3D dashboard failed: {ex}"); st.code(traceback.format_exc())
     dispatch("vs3d",_render_vs3d)
