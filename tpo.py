@@ -28,7 +28,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 # ----------------------------------------------------------------------------- 
 # TPO letters: A..Z then a..z  (52 brackets max — plenty for any cash session)
@@ -199,14 +199,28 @@ def value_area(counts: Dict[float, float], prices_asc: List[float],
 
 
 def build_day_profile(bars: pd.DataFrame, day: dt.date, tick: float,
-                      session_start: dt.time, bracket_minutes: int,
-                      va_pct: float = 0.70) -> DayProfile:
-    """Build one DayProfile from that day's base-interval bars."""
-    dp = DayProfile(day=day, tick=tick)
+                      bracket_minutes: int, va_pct: float = 0.70,
+                      anchor: str = "first_bar",
+                      session_start: Optional[dt.time] = None) -> DayProfile:
+    """Build one DayProfile from that day's base-interval bars.
 
-    # group bars into brackets
+    anchor="first_bar": bracket A starts at the day's opening bar (timezone-proof).
+    anchor="session":  brackets are cut from a fixed wall-clock `session_start`.
+    """
+    dp = DayProfile(day=day, tick=tick)
+    if bars.empty:
+        return dp
+
+    if anchor == "session" and session_start is not None:
+        anchor_ts = bars.index.min().normalize() + pd.Timedelta(
+            hours=session_start.hour, minutes=session_start.minute)
+    else:
+        anchor_ts = bars.index.min()
+
+    # group bars into brackets, measured from the anchor
     bar_bracket: List[int] = [
-        _bracket_index(ts, session_start, bracket_minutes) for ts in bars.index
+        int((ts - anchor_ts).total_seconds() // 60 // bracket_minutes)
+        for ts in bars.index
     ]
     seen_brackets: List[int] = sorted(set(b for b in bar_bracket if b >= 0))
     bracket_letter = {b: LETTERS[i] for i, b in enumerate(seen_brackets)
@@ -259,16 +273,17 @@ def build_day_profile(bars: pd.DataFrame, day: dt.date, tick: float,
     return dp
 
 
-def split_days(bars: pd.DataFrame, tick: float, session_start: dt.time,
-               bracket_minutes: int, va_pct: float = 0.70) -> List[DayProfile]:
+def split_days(bars: pd.DataFrame, tick: float, bracket_minutes: int,
+               va_pct: float = 0.70, anchor: str = "first_bar",
+               session_start: Optional[dt.time] = None) -> List[DayProfile]:
     """Split a multi-day bar frame into per-day DayProfiles (chronological)."""
     out: List[DayProfile] = []
     if bars is None or bars.empty:
         return out
     bars = bars.sort_index()
     for day, grp in bars.groupby(bars.index.date):
-        out.append(build_day_profile(grp, day, tick, session_start,
-                                     bracket_minutes, va_pct))
+        out.append(build_day_profile(grp, day, tick, bracket_minutes, va_pct,
+                                     anchor=anchor, session_start=session_start))
     return out
 
 
@@ -496,14 +511,22 @@ def main():
         st.header("Profile")
         bracket_minutes = st.selectbox("Bracket size (TPO letter)",
                                        [5, 15, 30, 45, 60], index=2)
+        anchor_mode = st.radio(
+            "Bracket anchor",
+            ["First bar of session", "Fixed clock time"],
+            index=0,
+            help="First bar = timezone-proof (recommended). Fixed time cuts "
+                 "brackets from the clock time below.")
         auto_tick = st.checkbox("Auto row size", True,
                                 help="Pick a sensible row height from the data range")
         tick_manual = st.number_input("Row size / tick (manual)",
                                       0.01, 500.0, 0.25, step=0.05, format="%.2f",
                                       disabled=auto_tick)
+        st.caption("Typical: SPY 0.25–0.5 · NIFTY 5–10 · BTC 25–50 (or use Auto)")
         va_pct = st.slider("Value area %", 50, 90, 70) / 100.0
         c1, c2 = st.columns(2)
-        sess_start = c1.time_input("Session start", dt.time(9, 30))
+        sess_start = c1.time_input("Session start (fixed)", dt.time(9, 30),
+                                   disabled=(anchor_mode == "First bar of session"))
         max_days = c2.number_input("Days to show", 1, 30, 5)
 
         st.header("Overlays")
@@ -551,7 +574,9 @@ def main():
         if not source_is_local:
             bars = localize_index(bars, "UTC", tz_override.strip() or "UTC")
         tick = nice_tick(bars) if auto_tick else float(tick_manual)
-        profiles = split_days(bars, tick, sess_start, int(bracket_minutes), va_pct)
+        anchor = "first_bar" if anchor_mode == "First bar of session" else "session"
+        profiles = split_days(bars, tick, int(bracket_minutes), va_pct,
+                              anchor=anchor, session_start=sess_start)
         profiles = profiles[-int(max_days):]
         st.session_state["profiles"] = profiles
         st.session_state["tick"] = tick
@@ -572,9 +597,9 @@ def main():
     first_ts = st.session_state.get("first_ts")
     if first_ts is not None:
         st.caption(
-            f"First bar of latest session reads **{first_ts:%H:%M}** "
-            f"({tz_override.strip() or 'UTC'}). If that isn't the real open, "
-            f"fix the exchange timezone or the local-time toggle."
+            f"Latest session opens at **{first_ts:%H:%M}** "
+            f"({tz_override.strip() or 'UTC'}). Brackets anchor to this first bar, "
+            f"so the timezone only affects how bars group into calendar days."
         )
 
     split_idx = set()
@@ -608,6 +633,9 @@ if __name__ == "__main__":
 
 # =============================================================================
 # CHANGELOG
+# 0.5.0  bracket anchoring defaults to FIRST BAR of each session -> fully
+#        timezone-independent (fixes NSE:NIFTY). Fixed-clock anchoring kept as
+#        an option. Tick guidance in UI. Timezone now only affects day grouping.
 # 0.4.0  exchange-timezone handling: naive feed timestamps (assumed UTC) are
 #        converted to the exchange's local wall-clock, so `session_start` means
 #        real local open. Exchange->tz map + manual override + "already local"
