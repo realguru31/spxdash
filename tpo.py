@@ -28,7 +28,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 # ----------------------------------------------------------------------------- 
 # TPO letters: A..Z then a..z  (52 brackets max — plenty for any cash session)
@@ -82,6 +82,26 @@ def _row_edges(low: float, high: float, tick: float) -> List[float]:
 def _bracket_index(ts: pd.Timestamp, session_start: dt.time, bracket_minutes: int) -> int:
     start = ts.normalize() + pd.Timedelta(hours=session_start.hour, minutes=session_start.minute)
     return int((ts - start).total_seconds() // 60 // bracket_minutes)
+
+
+_TICK_LADDER = [0.01, 0.02, 0.05, 0.1, 0.2, 0.25, 0.5, 1.0, 2.0, 2.5,
+                5.0, 10.0, 20.0, 25.0, 50.0, 100.0, 250.0, 500.0]
+
+
+def nice_tick(bars: pd.DataFrame, target_rows: int = 25) -> float:
+    """Choose a sensible row height so a typical session spans ~target_rows rows."""
+    if bars is None or bars.empty:
+        return 1.0
+    g = bars.groupby(bars.index.date)
+    rng = (g["high"].max() - g["low"].min())
+    typ = float(rng.median()) if len(rng) else float(bars["high"].max() - bars["low"].min())
+    if typ <= 0:
+        return 1.0
+    raw = typ / max(target_rows, 1)
+    for t in _TICK_LADDER:
+        if t >= raw:
+            return t
+    return _TICK_LADDER[-1]
 
 
 def poc_from_counts(counts: Dict[float, float], prices_asc: List[float]) -> Optional[float]:
@@ -259,7 +279,7 @@ def render_chart(profiles: List[DayProfile], tick: float, *,
 
     SLOT = 1.0            # horizontal slot width per collapsed day (data units)
     GAP = 0.25            # gap between days
-    VOL_FRAC = 0.42       # fraction of slot used by the volume histogram
+    VOL_FRAC = 0.32       # fraction of slot used by the volume histogram
     LETTER_X = VOL_FRAC + 0.02
 
     fig = go.Figure()
@@ -287,7 +307,7 @@ def render_chart(profiles: List[DayProfile], tick: float, *,
                 vy.append(p + tick / 2)
             fig.add_trace(go.Bar(
                 x=vx, y=vy, base=x_offset, width=tick * 0.9,
-                orientation="h", marker=dict(color="rgba(214,178,94,0.55)",
+                orientation="h", marker=dict(color="rgba(214,178,94,0.40)",
                                              line=dict(width=0)),
                 hoverinfo="skip", showlegend=False,
             ))
@@ -422,11 +442,14 @@ def main():
         st.header("Profile")
         bracket_minutes = st.selectbox("Bracket size (TPO letter)",
                                        [5, 15, 30, 45, 60], index=2)
-        tick = st.number_input("Row size / tick", 0.05, 500.0, 5.0, step=0.05,
-                               format="%.2f")
+        auto_tick = st.checkbox("Auto row size", True,
+                                help="Pick a sensible row height from the data range")
+        tick_manual = st.number_input("Row size / tick (manual)",
+                                      0.01, 500.0, 0.25, step=0.05, format="%.2f",
+                                      disabled=auto_tick)
         va_pct = st.slider("Value area %", 50, 90, 70) / 100.0
         c1, c2 = st.columns(2)
-        sess_start = c1.time_input("Session start", dt.time(9, 15))
+        sess_start = c1.time_input("Session start", dt.time(9, 30))
         max_days = c2.number_input("Days to show", 1, 30, 5)
 
         st.header("Overlays")
@@ -471,14 +494,20 @@ def main():
         if bars.empty:
             st.error("No data returned. Check the symbol/exchange spelling.")
             return
+        tick = nice_tick(bars) if auto_tick else float(tick_manual)
         profiles = split_days(bars, tick, sess_start, int(bracket_minutes), va_pct)
         profiles = profiles[-int(max_days):]
         st.session_state["profiles"] = profiles
+        st.session_state["tick"] = tick
         st.session_state["meta"] = (symbol, exchange, base_interval)
 
     profiles: List[DayProfile] = st.session_state.get("profiles", [])
+    tick = st.session_state.get("tick", float(tick_manual))
     if not profiles:
         return
+
+    if auto_tick:
+        st.caption(f"Auto row size: **{tick:g}** per row")
 
     split_idx = set()
     if expand_latest and profiles:
@@ -511,6 +540,9 @@ if __name__ == "__main__":
 
 # =============================================================================
 # CHANGELOG
+# 0.3.0  auto row-size (nice_tick) so profiles resolve correctly per instrument
+#        (fixes SPY-on-$5-tick collapse); session start default 9:30; lighter
+#        volume bars; resolved tick persisted in session_state.
 # 0.2.0  single combined "EXCHANGE:SYMBOL" ticker input (e.g. AMEX:SPY),
 #        parsed into exchange + symbol; default changed to AMEX:SPY.
 # 0.1.0  initial build: tvdatafeed fetch, TPO letters (grouped brackets),
