@@ -28,7 +28,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 # ----------------------------------------------------------------------------- 
 # TPO letters: A..Z then a..z  (52 brackets max — plenty for any cash session)
@@ -102,6 +102,53 @@ def nice_tick(bars: pd.DataFrame, target_rows: int = 25) -> float:
         if t >= raw:
             return t
     return _TICK_LADDER[-1]
+
+
+# Exchange -> IANA timezone. tvdatafeed hands back naive timestamps (usually UTC);
+# we convert to the exchange's local wall-clock so `session_start` is intuitive.
+_EXCHANGE_TZ = {
+    "NYSE": "America/New_York", "AMEX": "America/New_York",
+    "NASDAQ": "America/New_York", "ARCA": "America/New_York",
+    "BATS": "America/New_York", "CBOE": "America/New_York",
+    "COMEX": "America/New_York", "NYMEX": "America/New_York",
+    "CME": "America/Chicago", "CME_MINI": "America/Chicago",
+    "CBOT": "America/Chicago",
+    "NSE": "Asia/Kolkata", "BSE": "Asia/Kolkata", "MCX": "Asia/Kolkata",
+    "LSE": "Europe/London", "EURONEXT": "Europe/Paris",
+    "XETR": "Europe/Berlin", "FWB": "Europe/Berlin",
+    "TSE": "Asia/Tokyo", "HKEX": "Asia/Hong_Kong",
+    "SSE": "Asia/Shanghai", "SZSE": "Asia/Shanghai",
+    "ASX": "Australia/Sydney", "SGX": "Asia/Singapore",
+    "BINANCE": "UTC", "COINBASE": "UTC", "BITSTAMP": "UTC", "KRAKEN": "UTC",
+    "BYBIT": "UTC", "OKX": "UTC",
+    "FX_IDC": "UTC", "OANDA": "UTC", "FOREXCOM": "UTC",
+}
+
+
+def resolve_tz(exchange: str) -> str:
+    """Best-guess IANA timezone for an exchange code (defaults to UTC)."""
+    return _EXCHANGE_TZ.get((exchange or "").upper(), "UTC")
+
+
+def localize_index(df: pd.DataFrame, source_tz: str, target_tz: str) -> pd.DataFrame:
+    """Reinterpret a naive index as `source_tz`, convert to `target_tz`, drop tz.
+
+    Result is naive local wall-clock in the exchange timezone, so that a naive
+    `session_start` (e.g. 09:30) compares correctly.
+    """
+    if df is None or df.empty:
+        return df
+    idx = pd.DatetimeIndex(df.index)
+    try:
+        if idx.tz is None:
+            idx = idx.tz_localize(source_tz, nonexistent="shift_forward",
+                                  ambiguous="NaT")
+        idx = idx.tz_convert(target_tz).tz_localize(None)
+    except Exception:  # noqa: BLE001 - bad tz string etc.; leave as-is
+        return df
+    out = df.copy()
+    out.index = idx
+    return out
 
 
 def poc_from_counts(counts: Dict[float, float], prices_asc: List[float]) -> Optional[float]:
@@ -438,6 +485,13 @@ def main():
         base_interval = st.selectbox("Base interval (fetched)",
                                      list(_INTERVAL_MAP.keys()), index=2)
         n_bars = st.number_input("Bars to fetch", 200, 5000, 1500, step=100)
+        tz_override = st.text_input(
+            "Exchange timezone", value=resolve_tz(exchange),
+            help="IANA name, e.g. America/New_York, Asia/Kolkata, UTC")
+        source_is_local = st.checkbox(
+            "Feed already returns exchange-local time", value=False,
+            help="Leave OFF if tvdatafeed hands back UTC (usual). "
+                 "Turn ON only if your build already localises.")
 
         st.header("Profile")
         bracket_minutes = st.selectbox("Bracket size (TPO letter)",
@@ -494,12 +548,18 @@ def main():
         if bars.empty:
             st.error("No data returned. Check the symbol/exchange spelling.")
             return
+        if not source_is_local:
+            bars = localize_index(bars, "UTC", tz_override.strip() or "UTC")
         tick = nice_tick(bars) if auto_tick else float(tick_manual)
         profiles = split_days(bars, tick, sess_start, int(bracket_minutes), va_pct)
         profiles = profiles[-int(max_days):]
         st.session_state["profiles"] = profiles
         st.session_state["tick"] = tick
         st.session_state["meta"] = (symbol, exchange, base_interval)
+        # first bar of the most recent session, for alignment sanity-check
+        last_day = bars.index.date.max()
+        first_ts = bars[bars.index.date == last_day].index.min()
+        st.session_state["first_ts"] = first_ts
 
     profiles: List[DayProfile] = st.session_state.get("profiles", [])
     tick = st.session_state.get("tick", float(tick_manual))
@@ -508,6 +568,14 @@ def main():
 
     if auto_tick:
         st.caption(f"Auto row size: **{tick:g}** per row")
+
+    first_ts = st.session_state.get("first_ts")
+    if first_ts is not None:
+        st.caption(
+            f"First bar of latest session reads **{first_ts:%H:%M}** "
+            f"({tz_override.strip() or 'UTC'}). If that isn't the real open, "
+            f"fix the exchange timezone or the local-time toggle."
+        )
 
     split_idx = set()
     if expand_latest and profiles:
@@ -540,6 +608,10 @@ if __name__ == "__main__":
 
 # =============================================================================
 # CHANGELOG
+# 0.4.0  exchange-timezone handling: naive feed timestamps (assumed UTC) are
+#        converted to the exchange's local wall-clock, so `session_start` means
+#        real local open. Exchange->tz map + manual override + "already local"
+#        toggle + first-bar alignment check caption.
 # 0.3.0  auto row-size (nice_tick) so profiles resolve correctly per instrument
 #        (fixes SPY-on-$5-tick collapse); session start default 9:30; lighter
 #        volume bars; resolved tick persisted in session_state.
