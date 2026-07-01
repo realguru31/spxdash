@@ -5,6 +5,9 @@ Point your streamlit.io app at this file.
 
 CHANGELOG (newest first) — what changed and why, per version
 ─────────────────────────────────────────────────────────────────────────────
+v1.17.1 [hotfix] Frame slider crashed when only 1 playback frame existed
+  (Streamlit requires slider min<max). Now: <2 frames shows a caption instead of
+  the slider, and Play won't start until ≥2 frames are cached. Rest unchanged.
 v1.17  [PLAYBACK engine + charm colors + 5-min candles; all tabs refactored]
   • PLAYBACK: every snapshot, all 5 tabs render to PNG and cache in
     session_state.frames[ts][tab]. Sidebar ▶Play/⏸Pause, ⏮Rewind, Speed 1/2/4 s/frame,
@@ -979,7 +982,7 @@ if _nframes==0:
 else:
     pbc1,pbc2=st.sidebar.columns(2)
     if pbc1.button("▶ Play" if not st.session_state.pb_play else "⏸ Pause",use_container_width=True):
-        st.session_state.pb_play=not st.session_state.pb_play; st.rerun()
+        st.session_state.pb_play=(not st.session_state.pb_play) and _nframes>1; st.rerun()
     if pbc2.button("⏮ Rewind",use_container_width=True):
         st.session_state.pb_idx=0; st.session_state.pb_play=False; st.rerun()
     st.session_state.pb_speed=st.sidebar.radio("Speed (sec/frame)",[1.0,2.0,4.0],
@@ -988,10 +991,13 @@ else:
         # auto-advance: this rerun was triggered by the fast tick
         st.session_state.pb_idx=(st.session_state.pb_idx+1)%_nframes
         st.sidebar.progress((st.session_state.pb_idx+1)/_nframes)
-    else:
-        # paused: manual scrub
-        st.session_state.pb_idx=st.sidebar.slider("Frame",0,max(_nframes-1,0),
+    elif _nframes>1:
+        # paused: manual scrub (only when there's more than one frame)
+        st.session_state.pb_idx=st.sidebar.slider("Frame",0,_nframes-1,
             min(st.session_state.pb_idx,_nframes-1))
+    else:
+        st.session_state.pb_idx=0
+        st.sidebar.caption("1 frame cached — more appear each snapshot.")
     st.session_state.pb_idx=min(st.session_state.pb_idx,_nframes-1)
     _cur=_frame_ts[st.session_state.pb_idx]
     st.sidebar.caption(f"Frame {st.session_state.pb_idx+1}/{_nframes} · {_cur:%H:%M:%S} EST"
