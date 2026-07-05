@@ -5,6 +5,13 @@ Point your streamlit.io app at this file.
 
 CHANGELOG (newest first) — what changed and why, per version
 ─────────────────────────────────────────────────────────────────────────────
+v1.19.1 [FIX] Forward-sim field was TIME-FLAT (looked like flat green/red blocks, not
+  the smooth fade-and-intensify of the real VS3D chart). Cause: forward_sim_grid clamped
+  every time column's T to 'now' (when=max(tau,now)), so gamma never decayed across the
+  session. Fix: T=_T_at(exp,tau) across the WHOLE 09:30–16:00 axis, so near-dated gamma
+  goes asymptotic toward expiry (verified: ATM gamma grows ~16x open→close; time-var
+  ratio 0.00→0.17). This also feeds the Forward-models tab (same function). The blue
+  'now' line still marks present; candles still overlay actual price.
 v1.19  [NEW 'Pinak 2' tab — VS3D Gradient Chart with normalization/transform controls]
   • Added 7th tab '🌈 Pinak 2 (VS3D gradient)'. Reuses the forward-sim grid (model 2,
     today's live-flow VOL weight) and layers the VS3D handoff's tuning chain on top:
@@ -623,7 +630,10 @@ def forward_sim_grid(chain, spot, exp, now, model, prev_chain=None, p_min=None, 
     w=_fwd_weight(c,model,prev_chain)
     Zg=np.zeros((n_price,n_time)); Zc=np.zeros((n_price,n_time))
     for j,tau in enumerate(taus):
-        when=max(tau,now); T=_T_at(exp,when); Sg=pg[:,None]
+        # T decays across the WHOLE session axis (09:30->16:00) so near-dated gamma
+        # goes asymptotic toward expiry — the 'increasingly local' intensification the
+        # VS3D chart shows. (Previously clamped to now → time-flat field.)
+        T=_T_at(exp,tau); Sg=pg[:,None]
         g=bs_gamma(Sg,K[None,:],T,iv[None,:]); ch=bs_charm(Sg,K[None,:],T,iv[None,:])
         Zg[:,j]=(g*sgn*w).sum(1)*100*pg; Zc[:,j]=(ch*sgn*w).sum(1)*100*pg
     Zg=gaussian_filter1d(Zg,1.2,axis=0); Zc=gaussian_filter1d(Zc,1.2,axis=0)
