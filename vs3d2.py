@@ -1,10 +1,24 @@
 """
-vs3d2_v1.17.py — SPX 0DTE+ Gamma & Charm (Streamlit POC)
+vs3d2_v1.18.py — SPX 0DTE+ Gamma & Charm (Streamlit POC)
 =================================================
 Point your streamlit.io app at this file.
 
 CHANGELOG (newest first) — what changed and why, per version
 ─────────────────────────────────────────────────────────────────────────────
+v1.18  [NEW 'Pinak' tab — dealer-positioning levels, NIFTY-GEX method]
+  • Added 6th tab '🎯 Pinak (dealer levels)'. Ports the NIFTY GEX skill's
+    methodology onto Barchart 0DTE data, in our price-axis style.
+  • GEX per strike = gamma·OI·spot·100 (Barchart gamma). Computes: vol trigger
+    (gamma flip = net-GEX zero-cross), call/put walls, ceiling/floor (positive-net-
+    GEX ranked by |gex|·OI), upside/downside hedge walls (exp proximity-decay ×
+    (1+vanna)), K* (put-call parity forward vs no-arb band), 3 gravity centers,
+    pin level + 0-100 confidence score/label, Color exposure (∂γ/∂t).
+  • Vanna: TRUE closed-form bs_vanna = -φ(d1)·d2/σ seeded with Barchart IV
+    (the skill's #1 upgrade), not the OI×GEX proxy. Also added bs_delta, bs_color.
+  • Visual: GEX profile as left-gutter density (green call / red put / gold net) on
+    the price axis + candles + all levels as labeled horizontal lines. Signals figure
+    below. Uses dispatch/emit so it caches for playback (2 figs/snapshot).
+  • Sign remains dealers-short-options CONVENTION (not measured) — noted in-tab.
 v1.17.3 Fixed VS3D tab panels rendering at giant full-width size (regression from the
   playback refactor, which emitted each panel full-width). Restored a 2-column grid
   for VS3D in BOTH live and playback so the 6 panels stay a sane size. emit() now
@@ -604,6 +618,109 @@ def forward_sim_grid(chain, spot, exp, now, model, prev_chain=None, p_min=None, 
 def _fwd_norm(Z):
     sc=np.percentile(np.abs(Z),92) or 1.0; return np.clip(Z/sc,-1,1)
 
+# ═══════════════ PINAK — dealer-positioning levels (NIFTY-GEX method) ═══════════
+# Adapted from the NIFTY GEX skill to Barchart 0DTE data. GEX per strike =
+# gamma·OI·spot·100 (Barchart gamma). TRUE closed-form Vanna (BS, seeded with
+# Barchart IV) feeds the hedge-wall amplifier. All levels: vol trigger (gamma
+# flip), call/put walls, pin + confidence, floor/ceiling, upside/downside hedge
+# walls, K* (put-call parity forward), gravity centers, Color (∂γ/∂t).
+def bs_delta(S,K,T,sig,is_call=True):
+    S=np.asarray(S,float);K=np.asarray(K,float);T=np.maximum(T,1e-9);sig=np.maximum(sig,1e-4)
+    d1=(np.log(S/K)+0.5*sig**2*T)/(sig*np.sqrt(T))
+    return norm.cdf(d1) if is_call else norm.cdf(d1)-1.0
+def bs_vanna(S,K,T,sig):
+    S=np.asarray(S,float);K=np.asarray(K,float);T=np.maximum(T,1e-9);sig=np.maximum(sig,1e-4)
+    sq=sig*np.sqrt(T); d1=(np.log(S/K)+0.5*sig**2*T)/sq; d2=d1-sq
+    return -norm.pdf(d1)*d2/sig                                   # closed-form ∂delta/∂σ
+def bs_color(S,K,T,sig,r=0.0):
+    # ∂gamma/∂T closed form (q=0); returns per-day color = -raw/365
+    S=np.asarray(S,float);K=np.asarray(K,float);T=np.maximum(T,1e-9);sig=np.maximum(sig,1e-4)
+    sq=sig*np.sqrt(T); d1=(np.log(S/K)+(r+0.5*sig**2)*T)/sq; d2=d1-sq
+    raw=-norm.pdf(d1)/(2*S*T*sq)*(1+d1*(2*r*T-d2*sq)/sq)
+    return raw/365.0
+
+def pinak_levels(chain, spot, exp, now):
+    """Compute all dealer-positioning levels from a Barchart chain. Strike-indexed."""
+    c=chain.dropna(subset=["strike"]).copy()
+    c=c.groupby(["strike","type"],as_index=False).first()
+    cc=c[c.type=="call"].set_index("strike"); pp=c[c.type=="put"].set_index("strike")
+    K=np.array(sorted(set(cc.index)|set(pp.index)),float)
+    def col(df,k): return df[k].reindex(K).fillna(0).values
+    cg=col(cc,"gamma"); pg=col(pp,"gamma"); coi=col(cc,"oi"); poi=col(pp,"oi")
+    civ=col(cc,"iv"); piv=col(pp,"iv"); cpx=col(cc,"bid"); ppx=col(pp,"bid")
+    mult=100.0
+    call_gex=cg*coi*spot*mult; put_gex=pg*poi*spot*mult
+    net_gex=call_gex-put_gex; tot_gex=call_gex+put_gex
+    # ---- vol trigger / gamma flip: zero-cross of net_gex ----
+    flip=None
+    for i in range(len(K)-1):
+        if np.sign(net_gex[i])!=np.sign(net_gex[i+1]) and net_gex[i+1]!=net_gex[i]:
+            flip=float(K[i]+(K[i+1]-K[i])*(-net_gex[i])/(net_gex[i+1]-net_gex[i])); break
+    # ---- call / put walls ----
+    above=K>spot; below=K<spot
+    call_wall=float(K[above][np.argmax(call_gex[above])]) if above.any() and call_gex[above].max()>0 else None
+    put_wall =float(K[below][np.argmax(put_gex[below])])  if below.any() and put_gex[below].max()>0 else None
+    # ---- true closed-form vanna (seeded with Barchart IV) ----
+    T=_T_at(exp, now)
+    vanna=np.abs(bs_vanna(spot,K,T,np.where(civ>0,civ,np.where(piv>0,piv,0.15))))
+    vn=vanna/ (vanna.max() or 1.0)
+    # ---- upside hedge wall (above call wall) ----
+    up_hw=None
+    if call_wall is not None:
+        m=K>call_wall
+        if m.any():
+            hp=(call_gex[m]*coi[m])*np.exp(-5*(K[m]-call_wall)/call_wall)*(1+vn[m])
+            if hp.max()>0: up_hw=float(K[m][np.argmax(hp)])
+    # ---- downside hedge wall (below put wall) ----
+    dn_hw=None
+    if put_wall is not None:
+        m=K<put_wall
+        if m.any():
+            hp=(put_gex[m]*poi[m])*np.exp(-5*(put_wall-K[m])/put_wall)*(1+vn[m])
+            if hp.max()>0: dn_hw=float(K[m][np.argmax(hp)])
+    # ---- floor / ceiling: positive-net-gex strikes ranked by |gex|*OI ----
+    posmask=net_gex>0
+    def side_level(mask):
+        idx=np.where(mask)[0]
+        if len(idx)==0: return None
+        score=np.abs(net_gex[idx])*(coi[idx]+poi[idx])
+        return float(K[idx][np.argmax(score)])
+    ceiling=side_level(posmask & above); floor=side_level(posmask & below)
+    # ---- gravity centers (3 methods, call side toward ceiling / put toward floor) ----
+    def centroid(mask):
+        w=np.abs(net_gex[mask]); return float((K[mask]*w).sum()/w.sum()) if w.sum()>0 else None
+    call_grav=centroid(above) ; put_grav=centroid(below)
+    # ---- pin level + confidence ----
+    max_gex_k=float(K[np.argmax(tot_gex)]) if tot_gex.max()>0 else spot
+    max_oi_k =float(K[np.argmax(coi+poi)]) if (coi+poi).max()>0 else spot
+    in_pos=(flip is not None and spot>flip) or (flip is None and net_gex[np.argmin(np.abs(K-spot))]>0)
+    conv=abs(max_gex_k-max_oi_k)
+    grav_agree=(call_grav is not None and put_grav is not None and abs(call_grav-put_grav)<spot*0.01)
+    pin=float(np.average([max_gex_k,max_oi_k]))
+    score=0
+    score+=35 if in_pos else 0
+    score+=30 if conv<spot*0.0015 else (15 if conv<spot*0.004 else 0)
+    score+=20 if grav_agree else 0
+    score+=15 if abs(pin-spot)<spot*0.003 else (7 if abs(pin-spot)<spot*0.008 else 0)
+    label=("STRONG PIN" if score>=75 else "MODERATE PIN" if score>=50 else "WEAK PIN" if score>=25 else "NO PIN")
+    # ---- K*: put-call parity forward vs no-arb band ----
+    kstar=None; best=1e18
+    for i,k in enumerate(K):
+        if cpx[i]<=0 or ppx[i]<=0: continue
+        F=cpx[i]+k-ppx[i]                       # implied forward
+        lo=abs(put_gex[i]-call_gex[i]); hi=put_gex[i]+call_gex[i]
+        pen=0 if lo<=abs(F-k)<=hi else min(abs(abs(F-k)-lo),abs(abs(F-k)-hi))
+        d=abs(F-spot)+pen*1e-9
+        if d<best: best=d; kstar=float(k)
+    # ---- color exposure (∂γ/∂t) per strike ----
+    colr=(bs_color(spot,K,T,np.where(civ>0,civ,0.15))*coi + bs_color(spot,K,T,np.where(piv>0,piv,0.15))*poi)*spot*mult
+    return dict(K=K,call_gex=call_gex,put_gex=put_gex,net_gex=net_gex,tot_gex=tot_gex,color=colr,
+                flip=flip,call_wall=call_wall,put_wall=put_wall,up_hw=up_hw,dn_hw=dn_hw,
+                ceiling=ceiling,floor=floor,call_grav=call_grav,put_grav=put_grav,
+                pin=pin,pin_score=score,pin_label=label,kstar=kstar,in_pos=in_pos)
+
+
+
 
 
 # ════════════════════════════ colors / labels ═══════════════════════════════
@@ -1085,11 +1202,12 @@ def dispatch(tab, render_fn):
         ts=sel_ts.isoformat()
         st.session_state.frames.setdefault(ts,{})[tab]=list(_EMIT_BUF.get(tab,[]))
 
-tab_cone,tab_land,tab_surf,tab_vs3d,tab_fwd=st.tabs(["🟢 Cone (single snapshot)",
+tab_cone,tab_land,tab_surf,tab_vs3d,tab_fwd,tab_pinak=st.tabs(["🟢 Cone (single snapshot)",
                                     "📐 Landscape (forward projection)",
                                     "🕒 Intraday surface (snapshot history)",
                                     "🧭 VS3D (sign-free dashboard)",
-                                    "🔮 Forward models (price×time sim)"])
+                                    "🔮 Forward models (price×time sim)",
+                                    "🎯 Pinak (dealer levels)"])
 
 with tab_cone:
     emit_caption("cone", f"x-axis = session clock · gamma = Barchart per-strike · charm = Δdelta/Δt · snapshot {sel_ts:%H:%M:%S} EST.")
@@ -1244,3 +1362,74 @@ with tab_fwd:
             except Exception as ex:
                 import traceback; st.error(f"forward[{m}] failed: {ex}"); st.code(traceback.format_exc())
     dispatch("fwd",_render_fwd)
+
+with tab_pinak:
+    emit_caption("pinak","Dealer-positioning levels (NIFTY-GEX method, adapted to Barchart 0DTE). "
+                 "GEX = γ·OI·spot·100. Vanna = true closed-form (BS, Barchart IV). Levels drawn on the "
+                 "price axis with candles: flip/vol-trigger, call/put walls, ceiling/floor, hedge walls, K*, pin.")
+    def _render_pinak():
+        now_naive=sel_ts.replace(tzinfo=None) if getattr(sel_ts,'tzinfo',None) else sel_ts
+        exp_use=(latest.get("exps") or [None])[0]
+        if not exp_use:
+            st.warning("No expiry available yet."); return
+        try:
+            r=pinak_levels(latest["chain"],spot,exp_use,now_naive)
+        except Exception as ex:
+            import traceback; st.error(f"pinak levels failed: {ex}"); st.code(traceback.format_exc()); return
+        K=r["K"]; x0,x1=session_window()
+        # keep to price window for a clean view
+        m=(K>=p_min)&(K<=p_max)
+        Kv=K[m]; net=r["net_gex"][m]; callg=r["call_gex"][m]; putg=r["put_gex"][m]
+        if len(Kv)<3:
+            st.warning("Not enough strikes in the price window."); return
+        # ---- MAIN chart: GEX density on price(y) axis + candles + level lines ----
+        fig,ax=plt.subplots(figsize=(16,7.5),facecolor=DARK); ax.set_facecolor(DARK)
+        draw_candles(ax,bars,x0,x1,p_min,p_max)
+        ax.axhline(spot,color="#c400c4",ls="--",lw=1.2,zorder=6,label="spot")
+        # GEX horizontal bars from a fixed x anchor (left gutter) so it reads as a strike profile
+        xr=x1-x0; base=x0+xr*0.015; scale=xr*0.28/ (np.abs(net).max() or 1)
+        for k,cgx,pgx in zip(Kv,callg,putg):
+            ax.plot([base,base+cgx*scale],[k,k],color="#007700",lw=2,alpha=.55,zorder=3)   # call GEX (green, right)
+            ax.plot([base,base-pgx*scale],[k,k],color="#cc0000",lw=2,alpha=.55,zorder=3)   # put GEX (red, left)
+        ax.axvline(base,color="#555",lw=0.6,zorder=2)
+        # net GEX smoothed profile as a thicker gold line
+        nety=gaussian_filter1d(net,2.0) if len(net)>3 else net
+        ax.plot(base+nety*scale,Kv,color="#b8860b",lw=2.2,zorder=5,label="net GEX")
+        # ---- level lines (horizontal, price axis) ----
+        def lvl(v,color,txt,ls="--",lw=1.4):
+            if v is None or not (p_min<=v<=p_max): return
+            ax.axhline(v,color=color,ls=ls,lw=lw,zorder=7)
+            ax.text(x1,v,f" {txt} {v:.0f}",color=color,fontsize=8,va="center",ha="left",zorder=8)
+        lvl(r["flip"],"#0066cc","VOL TRIG",ls="-",lw=1.6)
+        lvl(r["call_wall"],"#ff5a3c","CALL WALL")
+        lvl(r["put_wall"],"#3ca0ff","PUT WALL")
+        lvl(r["ceiling"],"#D35400","CEILING")
+        lvl(r["floor"],"#148F77","FLOOR")
+        lvl(r["up_hw"],"#8B008B","UP HW",ls=":")
+        lvl(r["dn_hw"],"#006400","DN HW",ls=":")
+        lvl(r["kstar"],"#dddddd","K*",ls="-.")
+        lvl(r["pin"],"#FF6600","PIN",ls="-",lw=2.2)
+        ax.set_ylim(p_min,p_max); ax.set_title("PINAK · GEX profile + dealer levels  (green=call GEX · red=put GEX · gold=net)",
+                                               color=TXT,fontsize=11,loc="left")
+        ax.set_ylabel("price / strike",color="#777",fontsize=8)
+        style_time_axis(ax,x0,x1)
+        emit("pinak",fig)
+        # ---- signals figure (so it caches for playback) ----
+        def f(v): return f"{v:.0f}" if isinstance(v,(int,float)) and v is not None else "n/a"
+        regime="POSITIVE γ (pin/mean-revert)" if r["in_pos"] else "NEGATIVE γ (trend/amplify)"
+        lines=[f"SPX {spot:.2f}   exp {exp_use}   {sel_ts:%H:%M:%S} EST","",
+            f"REGIME  {regime}",
+            f"PIN  {f(r['pin'])}   [{r['pin_label']} · {r['pin_score']}/100]","",
+            f"VOL TRIGGER (flip)  {f(r['flip'])}",
+            f"CALL WALL  {f(r['call_wall'])}     PUT WALL  {f(r['put_wall'])}",
+            f"CEILING    {f(r['ceiling'])}     FLOOR     {f(r['floor'])}",
+            f"UPSIDE HW  {f(r['up_hw'])}     DOWNSIDE HW  {f(r['dn_hw'])}",
+            f"K* (parity forward)  {f(r['kstar'])}","",
+            f"gravity: call {f(r['call_grav'])}  put {f(r['put_grav'])}",
+            "", "GEX=γ·OI·spot·100 · vanna=closed-form(BS,Barchart IV)",
+            "sign is dealers-short-options convention (not measured)."]
+        fs,axs=plt.subplots(figsize=(16,3.2),facecolor=DARK); axs.axis("off"); axs.set_facecolor(DARK)
+        axs.text(0.01,0.98,"PINAK LEVELS\n"+"\n".join(lines),transform=axs.transAxes,color=TXT,
+                 va="top",ha="left",family="monospace",fontsize=10)
+        emit("pinak",fs)
+    dispatch("pinak",_render_pinak)
