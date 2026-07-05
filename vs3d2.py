@@ -1,10 +1,23 @@
 """
-vs3d2_v1.18.py — SPX 0DTE+ Gamma & Charm (Streamlit POC)
+vs3d2_v1.19.py — SPX 0DTE+ Gamma & Charm (Streamlit POC)
 =================================================
 Point your streamlit.io app at this file.
 
 CHANGELOG (newest first) — what changed and why, per version
 ─────────────────────────────────────────────────────────────────────────────
+v1.19  [NEW 'Pinak 2' tab — VS3D Gradient Chart with normalization/transform controls]
+  • Added 7th tab '🌈 Pinak 2 (VS3D gradient)'. Reuses the forward-sim grid (model 2,
+    today's live-flow VOL weight) and layers the VS3D handoff's tuning chain on top:
+      - Normalization modes: Percentile(default, tunable hi pctile) / Linear / Std Dev / Z-Score
+      - Intensity transforms: Arcsinh(default, gain slider) / Square Root / Power Law / Linear
+        (these tame the 0DTE asymptotic 'deep green all the time' blowout)
+      - γ=0 boundary + ridge/trough contour lines
+      - Reverse +/- toggle; Greek selector (Gamma green/red · Charm gold/blue)
+    All controls live in a sidebar '🌈 Pinak 2 gradient controls' expander.
+  • New helpers: pinak2_normalize(), pinak2_transform(), pinak2_contours().
+  • Honest note in-tab: OI-proxy sign gives a clean green/red split, not green-with-
+    red-pockets (that needs dealer long/short, which free data lacks) — the split is
+    the proxy's tell, not a bug. Caches for playback (1 fig/snapshot).
 v1.18  [NEW 'Pinak' tab — dealer-positioning levels, NIFTY-GEX method]
   • Added 6th tab '🎯 Pinak (dealer levels)'. Ports the NIFTY GEX skill's
     methodology onto Barchart 0DTE data, in our price-axis style.
@@ -618,6 +631,51 @@ def forward_sim_grid(chain, spot, exp, now, model, prev_chain=None, p_min=None, 
 def _fwd_norm(Z):
     sc=np.percentile(np.abs(Z),92) or 1.0; return np.clip(Z/sc,-1,1)
 
+# ═══════════════ PINAK 2 — VS3D gradient normalization / transforms / contours ══
+# From the VS3D handoff: normalization modes + intensity transforms exist to tame
+# the 0DTE asymptotic blowout ("deep green all the time"). All operate on a signed
+# field Z and return values in [-1,1] preserving sign, centered on 0.
+def pinak2_normalize(Z, mode="Percentile", lo=5, hi=95):
+    a=np.abs(Z)
+    if mode=="Linear":
+        sc=a.max() or 1.0
+    elif mode=="Percentile":
+        sc=np.percentile(a,hi) or 1.0
+    elif mode=="Std Dev":
+        sc=(2.0*a.std()) or 1.0
+    elif mode=="Z-Score":
+        mu=a.mean(); sd=a.std() or 1.0
+        return np.clip(np.sign(Z)*((a-mu)/sd),-3,3)/3.0
+    else:  # Manual handled by caller passing a scale via lo (abs cap)
+        sc=(lo if lo>0 else a.max()) or 1.0
+    return np.clip(Z/sc,-1,1)
+def pinak2_transform(V, kind="Arcsinh", power=0.5, gain=3.0):
+    """Intensity transform on a signed [-1,1] field; preserves sign, keeps [-1,1]."""
+    s=np.sign(V); m=np.abs(V)
+    if kind=="Square Root":
+        m=np.sqrt(m)
+    elif kind=="Power Law":
+        m=np.power(m, max(power,0.05))
+    elif kind=="Arcsinh":
+        m=np.arcsinh(gain*m)/np.arcsinh(gain)      # normalized so max stays 1
+    # "Linear" → unchanged
+    return s*m
+def pinak2_contours(ax, Z, x0, x1, pg, zero=True, ridges=True):
+    """Draw γ=0 boundary + ridge/trough lines on an imshow'd field."""
+    import numpy as _np
+    X=_np.linspace(x0,x1,Z.shape[1]); Y=pg
+    if zero:
+        try: ax.contour(X,Y,Z,levels=[0.0],colors="#dddddd",linewidths=1.1,alpha=.85,zorder=6)
+        except Exception: pass
+    if ridges:
+        try:
+            lv=[_np.nanpercentile(Z[Z>0],80)] if (Z>0).any() else []
+            lo=[_np.nanpercentile(Z[Z<0],20)] if (Z<0).any() else []
+            for L,col in ((lv,"#39d353"),(lo,"#ff5a3c")):
+                if L and _np.isfinite(L[0]) and L[0]!=0:
+                    ax.contour(X,Y,Z,levels=L,colors=col,linewidths=0.7,alpha=.6,linestyles="--",zorder=6)
+        except Exception: pass
+
 # ═══════════════ PINAK — dealer-positioning levels (NIFTY-GEX method) ═══════════
 # Adapted from the NIFTY GEX skill to Barchart 0DTE data. GEX per strike =
 # gamma·OI·spot·100 (Barchart gamma). TRUE closed-form Vanna (BS, seeded with
@@ -1021,6 +1079,15 @@ num_expiries=st.sidebar.slider("Expiries to aggregate",1,5,1)
 window_pct=st.sidebar.slider("Price window ±%",1.0,5.0,2.5,0.5)/100.0
 smooth_frac=st.sidebar.slider("Gradient smoothing",0.0,5.0,1.0,0.25,
     help="0 = raw per-strike detail (bumpy, like vols3d), higher = smoother density")/100.0
+with st.sidebar.expander("🌈 Pinak 2 gradient controls"):
+    p2_greek=st.selectbox("Greek",["Gamma","Charm"],index=0)
+    p2_norm=st.selectbox("Normalization",["Percentile","Linear","Std Dev","Z-Score"],index=0)
+    p2_pct=st.slider("Percentile hi",80,99,95) if p2_norm=="Percentile" else 95
+    p2_xform=st.selectbox("Intensity transform",["Arcsinh","Square Root","Power Law","Linear"],index=0)
+    p2_power=st.slider("Power (if Power Law)",0.2,1.0,0.5,0.05)
+    p2_gain=st.slider("Arcsinh gain",1.0,8.0,3.0,0.5)
+    p2_contours=st.checkbox("γ=0 + ridge contours",value=True)
+    p2_reverse=st.checkbox("Reverse +/−",value=False)
 auto_on=st.sidebar.toggle("Auto-refresh (5 min)",value=True)
 c1,c2=st.sidebar.columns(2)
 force=c1.button("📸 Snapshot now",use_container_width=True)
@@ -1202,12 +1269,13 @@ def dispatch(tab, render_fn):
         ts=sel_ts.isoformat()
         st.session_state.frames.setdefault(ts,{})[tab]=list(_EMIT_BUF.get(tab,[]))
 
-tab_cone,tab_land,tab_surf,tab_vs3d,tab_fwd,tab_pinak=st.tabs(["🟢 Cone (single snapshot)",
+tab_cone,tab_land,tab_surf,tab_vs3d,tab_fwd,tab_pinak,tab_pinak2=st.tabs(["🟢 Cone (single snapshot)",
                                     "📐 Landscape (forward projection)",
                                     "🕒 Intraday surface (snapshot history)",
                                     "🧭 VS3D (sign-free dashboard)",
                                     "🔮 Forward models (price×time sim)",
-                                    "🎯 Pinak (dealer levels)"])
+                                    "🎯 Pinak (dealer levels)",
+                                    "🌈 Pinak 2 (VS3D gradient)"])
 
 with tab_cone:
     emit_caption("cone", f"x-axis = session clock · gamma = Barchart per-strike · charm = Δdelta/Δt · snapshot {sel_ts:%H:%M:%S} EST.")
@@ -1433,3 +1501,46 @@ with tab_pinak:
                  va="top",ha="left",family="monospace",fontsize=10)
         emit("pinak",fs)
     dispatch("pinak",_render_pinak)
+
+with tab_pinak2:
+    emit_caption("pinak2","VS3D Gradient Chart replica. Forward-simulated greek across price×time "
+                 "(BS, Barchart IV), with VS3D normalization + intensity transform to tame the 0DTE "
+                 "blowout, plus γ=0 & ridge contours. Green/Red gamma · gold/blue charm. Blue line = now.")
+    def _render_pinak2():
+        now_naive=sel_ts.replace(tzinfo=None) if getattr(sel_ts,'tzinfo',None) else sel_ts
+        exp_use=(latest.get("exps") or [None])[0]
+        if not exp_use:
+            st.warning("No expiry available yet."); return
+        try:
+            # reuse the forward-sim grid (model 2 = today's live-flow VOL weight)
+            pg,Zg,Zc,taus=forward_sim_grid(latest["chain"],spot,exp_use,now_naive,"2 zero-open VOL",
+                                           prev_chain=None,p_min=p_min,p_max=p_max)
+        except Exception as ex:
+            import traceback; st.error(f"pinak2 grid failed: {ex}"); st.code(traceback.format_exc()); return
+        Z = Zg if p2_greek=="Gamma" else Zc
+        cmap = gex_cmap() if p2_greek=="Gamma" else charm_cmap()
+        # normalize -> transform  (the VS3D tuning chain)
+        V = pinak2_normalize(Z, p2_norm, lo=p2_pct, hi=p2_pct)
+        V = pinak2_transform(V, p2_xform, power=p2_power, gain=p2_gain)
+        if p2_reverse: V = -V
+        x0,x1=session_window()
+        fig,ax=plt.subplots(figsize=(16,7.5),facecolor=DARK); ax.set_facecolor(DARK)
+        ax.imshow(V,origin="lower",extent=[x0,x1,pg[0],pg[-1]],aspect="auto",cmap=cmap,
+                  vmin=-1,vmax=1,interpolation="bilinear",zorder=0)
+        if p2_contours:
+            pinak2_contours(ax,(-V if p2_reverse else V),x0,x1,pg,zero=True,ridges=True)
+        draw_candles(ax,bars,x0,x1,pg[0],pg[-1])
+        ax.axhline(spot,color="white",ls="--",lw=1,zorder=7)
+        ax.axvline(mdates.date2num(now_naive),color="#3399dd",ls=":",lw=1.2,zorder=7)
+        ax.set_ylim(pg[0],pg[-1])
+        ttl=(f"PINAK 2 · {p2_greek} · norm={p2_norm}"
+             + (f"({p2_pct})" if p2_norm=="Percentile" else "")
+             + f" · {p2_xform}"
+             + ("  [green=+/− red]" if p2_greek=="Gamma" else "  [gold=put/− · blue=call/+]"))
+        ax.set_title(ttl,color=TXT,fontsize=11,loc="left")
+        ax.set_ylabel("price",color="#777",fontsize=8)
+        style_time_axis(ax,x0,x1)
+        emit("pinak2",fig)
+        st.caption("Sign is the OI/calls+puts− CONVENTION (dealer long/short not measured) — clean split, "
+                   "not green-with-red-pockets. That split is the proxy's tell, not a bug.")
+    dispatch("pinak2",_render_pinak2)
