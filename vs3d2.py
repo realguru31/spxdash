@@ -5,6 +5,15 @@ Point your streamlit.io app at this file.
 
 CHANGELOG (newest first) — what changed and why, per version
 ─────────────────────────────────────────────────────────────────────────────
+v1.19.2 [FIX] Pinak tab, on live 0DTE: three glitches fixed.
+  • VOL TRIGGER (flip) showed nonsense (e.g. 4800) — the zero-cross finder grabbed the
+    first sign flip in the deep near-zero wings. Now ignores crossings where |GEX| is
+    <2% of max and picks the crossing NEAREST spot.
+  • K* (parity forward) showed nonsense (e.g. 7320) — parity solver trusted stale/crossed
+    deep-ITM quotes. Now restricted to strikes within ±3% of spot with valid two-sided
+    quotes (ask>bid), using bid/ask MIDS.
+  • Level labels collided/overwrote (CALL WALL+CEILING+K* stacked). Now labels are
+    staggered vertically with leader lines when levels sit close together.
 v1.19.1 [FIX] Forward-sim field was TIME-FLAT (looked like flat green/red blocks, not
   the smooth fade-and-intensify of the real VS3D chart). Cause: forward_sim_grid clamped
   every time column's T to 'now' (when=max(tau,now)), so gamma never decayed across the
@@ -719,11 +728,17 @@ def pinak_levels(chain, spot, exp, now):
     mult=100.0
     call_gex=cg*coi*spot*mult; put_gex=pg*poi*spot*mult
     net_gex=call_gex-put_gex; tot_gex=call_gex+put_gex
-    # ---- vol trigger / gamma flip: zero-cross of net_gex ----
+    # ---- vol trigger / gamma flip: zero-cross of net_gex NEAREST spot ----
+    # (ignore deep-wing noise where |GEX| is tiny; pick the crossing closest to spot)
     flip=None
+    gex_floor=0.02*np.abs(net_gex).max()          # ignore crossings in near-zero wings
+    cross=[]
     for i in range(len(K)-1):
-        if np.sign(net_gex[i])!=np.sign(net_gex[i+1]) and net_gex[i+1]!=net_gex[i]:
-            flip=float(K[i]+(K[i+1]-K[i])*(-net_gex[i])/(net_gex[i+1]-net_gex[i])); break
+        a,b=net_gex[i],net_gex[i+1]
+        if np.sign(a)!=np.sign(b) and b!=a and max(abs(a),abs(b))>=gex_floor:
+            xc=float(K[i]+(K[i+1]-K[i])*(-a)/(b-a)); cross.append(xc)
+    if cross:
+        flip=float(min(cross,key=lambda x:abs(x-spot)))   # nearest to spot
     # ---- call / put walls ----
     above=K>spot; below=K<spot
     call_wall=float(K[above][np.argmax(call_gex[above])]) if above.any() and call_gex[above].max()>0 else None
@@ -771,14 +786,16 @@ def pinak_levels(chain, spot, exp, now):
     score+=20 if grav_agree else 0
     score+=15 if abs(pin-spot)<spot*0.003 else (7 if abs(pin-spot)<spot*0.008 else 0)
     label=("STRONG PIN" if score>=75 else "MODERATE PIN" if score>=50 else "WEAK PIN" if score>=25 else "NO PIN")
-    # ---- K*: put-call parity forward vs no-arb band ----
-    kstar=None; best=1e18
+    # ---- K*: put-call parity forward vs no-arb band (near-spot, valid quotes only) ----
+    cask=col(cc,"ask"); pask=col(pp,"ask")
+    kstar=None; best=1e18; band=spot*0.03
     for i,k in enumerate(K):
-        if cpx[i]<=0 or ppx[i]<=0: continue
-        F=cpx[i]+k-ppx[i]                       # implied forward
-        lo=abs(put_gex[i]-call_gex[i]); hi=put_gex[i]+call_gex[i]
-        pen=0 if lo<=abs(F-k)<=hi else min(abs(abs(F-k)-lo),abs(abs(F-k)-hi))
-        d=abs(F-spot)+pen*1e-9
+        if abs(k-spot)>band: continue                      # near-spot only
+        if cpx[i]<=0 or ppx[i]<=0: continue                # need two-sided
+        if cask[i]<cpx[i] or pask[i]<ppx[i]: continue      # skip crossed/stale quotes
+        cmid=0.5*(cpx[i]+cask[i]); pmid=0.5*(ppx[i]+pask[i])
+        F=cmid+k-pmid                                       # implied forward (mids)
+        d=abs(F-spot)
         if d<best: best=d; kstar=float(k)
     # ---- color exposure (∂γ/∂t) per strike ----
     colr=(bs_color(spot,K,T,np.where(civ>0,civ,0.15))*coi + bs_color(spot,K,T,np.where(piv>0,piv,0.15))*poi)*spot*mult
@@ -1474,10 +1491,12 @@ with tab_pinak:
         nety=gaussian_filter1d(net,2.0) if len(net)>3 else net
         ax.plot(base+nety*scale,Kv,color="#b8860b",lw=2.2,zorder=5,label="net GEX")
         # ---- level lines (horizontal, price axis) ----
+        # draw lines first; collect labels to stagger if they collide
+        _labels=[]
         def lvl(v,color,txt,ls="--",lw=1.4):
             if v is None or not (p_min<=v<=p_max): return
             ax.axhline(v,color=color,ls=ls,lw=lw,zorder=7)
-            ax.text(x1,v,f" {txt} {v:.0f}",color=color,fontsize=8,va="center",ha="left",zorder=8)
+            _labels.append([v,color,txt])
         lvl(r["flip"],"#0066cc","VOL TRIG",ls="-",lw=1.6)
         lvl(r["call_wall"],"#ff5a3c","CALL WALL")
         lvl(r["put_wall"],"#3ca0ff","PUT WALL")
@@ -1487,6 +1506,16 @@ with tab_pinak:
         lvl(r["dn_hw"],"#006400","DN HW",ls=":")
         lvl(r["kstar"],"#dddddd","K*",ls="-.")
         lvl(r["pin"],"#FF6600","PIN",ls="-",lw=2.2)
+        # stagger: sort by price, push apart labels closer than min_gap
+        min_gap=(p_max-p_min)*0.040
+        _labels.sort(key=lambda z:z[0])
+        ypos=[]; last=-1e9
+        for v,_,_ in _labels:
+            y=max(v,last+min_gap); ypos.append(y); last=y
+        for (v,color,txt),y in zip(_labels,ypos):
+            ax.text(x1,y,f" {txt} {v:.0f}",color=color,fontsize=8,va="center",ha="left",zorder=8)
+            if abs(y-v)>min_gap*0.5:                        # leader line if nudged
+                ax.plot([x1,x1+ (x1-x0)*0.008],[v,y],color=color,lw=0.5,alpha=.5,zorder=8,clip_on=False)
         ax.set_ylim(p_min,p_max); ax.set_title("PINAK · GEX profile + dealer levels  (green=call GEX · red=put GEX · gold=net)",
                                                color=TXT,fontsize=11,loc="left")
         ax.set_ylabel("price / strike",color="#777",fontsize=8)
