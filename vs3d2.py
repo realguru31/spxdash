@@ -1,10 +1,31 @@
 """
-vs3d2_v1.19.py — SPX 0DTE+ Gamma & Charm (Streamlit POC)
+vs3d3_v2.0.py — SPX Dealer Terrain (VS3D guide-spec rebuild) (Streamlit POC)
 =================================================
 Point your streamlit.io app at this file.
 
 CHANGELOG (newest first) — what changed and why, per version
 ─────────────────────────────────────────────────────────────────────────────
+v2.0  [REBUILD to VS3D guide spec — 7 tabs → 2]
+  After a word-by-word read of the VS3D Onboarding Guide (all 7 chapters):
+  • 🗺 TERRAIN — the Gradient Chart done right. Multi-expiry book (each expiry
+    decays on its own clock; 0DTE dominates via asymptotic gamma, §1.5/1.6).
+    Greeks: Delta Change (§7.7, new — book_delta(now) − book_delta(P,τ); the
+    'path of least resistance', combines gamma+charm), Gamma (model or §2.7
+    simulated $5 finite-diff), Charm (hedging-effect polarity: SELL=gold).
+    Rendering per §2.4: MANUAL symmetric range with Calibrate-from-trailing
+    (a loose day looks loose; no per-frame percentile rescaling), Power
+    intensity default 1.0 (near-linear; low power = Dan's 'cartoon setting'
+    warning), field opacity default 0.38 BEHIND candles. §1.5 contours: dotted
+    zero boundary, RED ridge chains (local maxima through time), BLUE troughs.
+    Straddle bounds (§5.3), side profile histogram (right edge), Vol Adjust
+    0/+1%, Pinak dealer-levels overlay.
+  • 🧭 SIGNALS — the §5.1 daily workflow as one panel: straddle now/open +
+    decaying gate (snake-oil check), spot±straddle range, fishbone verdict,
+    regime vs trailing, timing window, CHARM GATE (decaying AND 1:30–3pm),
+    gamma absorption to each bound in e-mini equiv (§5.4 'profile consumes
+    itself') with path-of-least-resistance read, Pinak levels block.
+  • Playback engine unchanged (keys: terrain, signals). Old tabs retired; their
+    logic lives on inside these two. v1.19 kept as deploy fallback.
 v1.19.2 [FIX] Pinak tab, on live 0DTE: three glitches fixed.
   • VOL TRIGGER (flip) showed nonsense (e.g. 4800) — the zero-cross finder grabbed the
     first sign flip in the deep near-zero wings. Now ignores crossings where |GEX| is
@@ -808,7 +829,131 @@ def pinak_levels(chain, spot, exp, now):
 
 
 
-# ════════════════════════════ colors / labels ═══════════════════════════════
+# ═══════════════ TERRAIN — the VS3D Gradient Chart, built to guide spec ═════════
+# Guide §1.5/§1.6: models the WHOLE book (multi-expiry), 0DTE dominates naturally
+# via asymptotic gamma. §7.7: greeks = Delta Change (new, combines gamma+charm,
+# "path of least resistance"), Gamma, Charm (hedging-effect polarity). §2.4:
+# near-linear intensity, MANUAL symmetric range (fixed cap, not per-frame
+# percentile), ~35% opacity so the field sits BEHIND price. §1.5 contours:
+# red=local maxima ridges, blue=local minima troughs, dotted=zero boundary.
+from scipy.signal import argrelextrema
+
+def terrain_grid(chain, spot, exps, now, greek="Delta Change", vol_adj=0.0,
+                 p_min=None, p_max=None, n_price=170, n_time=84, simulated_gamma=False):
+    """Field Z(price,time) for the chosen greek over ALL expiries in `exps`.
+    Each expiry decays on its own T(τ) across the 09:30–16:00 axis.
+    Sign convention (proxy): calls +, puts − (dealer long/short NOT measured).
+    Delta Change = book_delta(now) − book_delta(P,τ)  [§7.9: futures dealers must
+    trade to arrive hedged at (P,τ); + = they BUY along the way (supportive)]."""
+    if p_min is None: p_min=spot*0.975
+    if p_max is None: p_max=spot*1.025
+    pg=np.linspace(p_min,p_max,n_price)
+    open_=dt.datetime.combine(now.date(),dt.time(9,30)); close=dt.datetime.combine(now.date(),dt.time(16,0))
+    taus=[open_+dt.timedelta(seconds=s) for s in np.linspace(0,(close-open_).total_seconds(),n_time)]
+    Z=np.zeros((n_price,n_time))
+    book_now=0.0
+    for es in exps:
+        ce=chain[chain.get("expiry",es)==es] if "expiry" in chain.columns else chain
+        ce=ce.dropna(subset=["strike","gamma"])
+        if ce.empty: continue
+        cc=ce[ce.type=="call"]; pp=ce[ce.type=="put"]
+        def arr(df):
+            K=df["strike"].values.astype(float)
+            iv=np.where(df["iv"].fillna(0).values>0,df["iv"].fillna(0).values,0.15)+vol_adj
+            w=np.where(df["volume"].fillna(0).values>0,df["volume"].fillna(0).values,df["oi"].fillna(0).values)
+            return K,iv,w
+        Kc,ivc,wc=arr(cc); Kp,ivp,wp=arr(pp)
+        Tn=_T_at(es,now)
+        if greek=="Delta Change":
+            book_now+= (wc*bs_delta(spot,Kc,Tn,ivc,True)).sum()*100 \
+                      -(wp*bs_delta(spot,Kp,Tn,ivp,False)).sum()*100
+        Sg=pg[:,None]
+        for j,tau in enumerate(taus):
+            T=_T_at(es,tau)
+            if greek=="Gamma":
+                if simulated_gamma:  # §2.7 finite difference over $5 (effective gamma)
+                    dU=bs_delta(Sg+5,Kc[None,:],T,ivc[None,:],True); dD=bs_delta(Sg-5,Kc[None,:],T,ivc[None,:],True)
+                    gc=(dU-dD)/10.0
+                    dU=bs_delta(Sg+5,Kp[None,:],T,ivp[None,:],False); dD=bs_delta(Sg-5,Kp[None,:],T,ivp[None,:],False)
+                    gp=(dU-dD)/10.0
+                else:
+                    gc=bs_gamma(Sg,Kc[None,:],T,ivc[None,:]); gp=bs_gamma(Sg,Kp[None,:],T,ivp[None,:])
+                Z[:,j]+= (gc*wc[None,:]).sum(1)*100*pg - (gp*wp[None,:]).sum(1)*100*pg
+            elif greek=="Charm":
+                ch_c=bs_charm(Sg,Kc[None,:],T,ivc[None,:]); ch_p=bs_charm(Sg,Kp[None,:],T,ivp[None,:])
+                Z[:,j]+= (ch_c*wc[None,:]).sum(1)*100 - (ch_p*wp[None,:]).sum(1)*100
+            else:  # Delta Change
+                dc=bs_delta(Sg,Kc[None,:],T,ivc[None,:],True); dp=bs_delta(Sg,Kp[None,:],T,ivp[None,:],False)
+                Z[:,j]+= (dc*wc[None,:]).sum(1)*100 - (dp*wp[None,:]).sum(1)*100
+    if greek=="Delta Change":
+        Z=book_now-Z            # + = dealers BUY futures to arrive hedged there
+    Z=gaussian_filter1d(Z,1.2,axis=0)   # smooth PRICE only, never time
+    return pg,Z,taus
+
+def terrain_scale(Z, mode, cap, pct):
+    """§2.4: Manual symmetric range is the default — a loose day LOOKS loose.
+    Percentile/StdDev kept for exploration (they rescale per frame)."""
+    if mode=="Manual (fixed cap)":
+        sc=cap if cap and cap>0 else (np.percentile(np.abs(Z),92) or 1.0)
+    elif mode=="Percentile":
+        sc=np.percentile(np.abs(Z),pct) or 1.0
+    else:  # Std Dev
+        sc=(2.0*np.abs(Z).std()) or 1.0
+    return np.clip(Z/sc,-1,1), sc
+
+def terrain_intensity(V, kind="Power", power=1.0, gain=3.0):
+    s=np.sign(V); m=np.abs(V)
+    if kind=="Sqrt": m=np.sqrt(m)
+    elif kind=="Arcsinh": m=np.arcsinh(gain*m)/np.arcsinh(gain)
+    else: m=np.power(m,max(power,0.05))     # Power, default 1.0 = linear (§2.4)
+    return s*m
+
+def terrain_contours(ax, Z, x0, x1, pg, cap, zero=True, ridges=True):
+    """§1.5: dotted zero boundary + RED ridge lines (local maxima through time)
+    and BLUE trough lines (local minima). Chains linked across adjacent columns."""
+    X=np.linspace(x0,x1,Z.shape[1])
+    if zero:
+        try: ax.contour(X,pg,Z,levels=[0.0],colors="#e8e8e8",linewidths=1.0,
+                        linestyles=(0,(4,3)),alpha=.9,zorder=6)
+        except Exception: pass
+    if not ridges: return
+    thr=0.15*(cap or (np.abs(Z).max() or 1.0)); edge=4
+    def chains(sign):
+        pts={}   # col -> list of row idx (edges excluded — border artifacts)
+        for j in range(Z.shape[1]):
+            colv=Z[:,j]*sign
+            idx=argrelextrema(colv,np.greater,order=3)[0]
+            pts[j]=[i for i in idx if colv[i]>thr and edge<=i<Z.shape[0]-edge]
+        used=set(); out=[]
+        for j0 in range(Z.shape[1]):
+            for i0 in pts.get(j0,[]):
+                if (j0,i0) in used: continue
+                ch=[(j0,i0)]; used.add((j0,i0)); j,i=j0,i0
+                while j+1<Z.shape[1]:
+                    cand=[k for k in pts.get(j+1,[]) if abs(k-i)<=4 and (j+1,k) not in used]
+                    if not cand: break
+                    k=min(cand,key=lambda q:abs(q-i)); ch.append((j+1,k)); used.add((j+1,k)); j,i=j+1,k
+                if len(ch)>=8: out.append(ch)
+        return out
+    for ch in chains(+1):
+        ax.plot([X[j] for j,_ in ch],[pg[i] for _,i in ch],color="#ff5a6a",lw=0.9,alpha=.85,zorder=6)
+    for ch in chains(-1):
+        ax.plot([X[j] for j,_ in ch],[pg[i] for _,i in ch],color="#4aa8ff",lw=0.9,alpha=.85,zorder=6)
+
+def terrain_straddle(chain0, spot):
+    """ATM straddle (mid) from the 0DTE chain — Dan's range tool (§5.3)."""
+    c=chain0.dropna(subset=["strike"])
+    if c.empty: return None
+    ks=c["strike"].unique(); k=ks[np.argmin(np.abs(ks-spot))]
+    def mid(df):
+        if df.empty: return np.nan
+        b=df["bid"].iloc[0] or 0; a=df.get("ask",df["bid"]).iloc[0] or b
+        return (b+a)/2 if (b or a) else np.nan
+    cm=mid(c[(c.strike==k)&(c.type=="call")]); pm=mid(c[(c.strike==k)&(c.type=="put")])
+    v=(0 if np.isnan(cm) else cm)+(0 if np.isnan(pm) else pm)
+    return float(v) if v>0 else None
+
+
 def gex_cmap():
     return mcolors.LinearSegmentedColormap.from_list("gex",
         [(0.0,(0.50,0,0)),(0.34,(0.86,0.06,0.06)),(0.47,(0.10,0,0)),
@@ -1106,15 +1251,28 @@ num_expiries=st.sidebar.slider("Expiries to aggregate",1,5,1)
 window_pct=st.sidebar.slider("Price window ±%",1.0,5.0,2.5,0.5)/100.0
 smooth_frac=st.sidebar.slider("Gradient smoothing",0.0,5.0,1.0,0.25,
     help="0 = raw per-strike detail (bumpy, like vols3d), higher = smoother density")/100.0
-with st.sidebar.expander("🌈 Pinak 2 gradient controls"):
-    p2_greek=st.selectbox("Greek",["Gamma","Charm"],index=0)
-    p2_norm=st.selectbox("Normalization",["Percentile","Linear","Std Dev","Z-Score"],index=0)
-    p2_pct=st.slider("Percentile hi",80,99,95) if p2_norm=="Percentile" else 95
-    p2_xform=st.selectbox("Intensity transform",["Arcsinh","Square Root","Power Law","Linear"],index=0)
-    p2_power=st.slider("Power (if Power Law)",0.2,1.0,0.5,0.05)
-    p2_gain=st.slider("Arcsinh gain",1.0,8.0,3.0,0.5)
-    p2_contours=st.checkbox("γ=0 + ridge contours",value=True)
-    p2_reverse=st.checkbox("Reverse +/−",value=False)
+with st.sidebar.expander("🗺 Terrain controls", expanded=False):
+    t_greek=st.selectbox("Greek",["Delta Change","Gamma","Charm"],index=0,
+        help="Delta Change (§7.7): futures dealers must trade to arrive hedged at each price/time — combines gamma+charm; path of least resistance.")
+    t_norm=st.selectbox("Range",["Manual (fixed cap)","Percentile","Std Dev"],index=0,
+        help="Manual (guide §2.4): fixed symmetric cap so a loose day LOOKS loose. Percentile rescales every frame.")
+    t_pct=st.slider("Percentile hi",80,99,95) if t_norm=="Percentile" else 95
+    cc1,cc2=st.columns(2)
+    if cc1.button("Calibrate range",use_container_width=True):
+        for g in ["Delta Change","Gamma","Charm"]:
+            h=st.session_state.get(f"terr_hist_{g}",[])
+            if h: st.session_state[f"terr_cap_{g}"]=1.3*float(np.mean(h[-24:]))
+    if cc2.button("Reset cap",use_container_width=True):
+        for g in ["Delta Change","Gamma","Charm"]: st.session_state.pop(f"terr_cap_{g}",None)
+    t_int=st.selectbox("Intensity",["Power","Sqrt","Arcsinh"],index=0)
+    t_pow=st.slider("Power exponent",0.4,1.5,1.0,0.05,
+        help="§2.4: ~1 feels most natural. Low values = the 'cartoon setting' Dan warns about.")
+    t_alpha=st.slider("Field opacity",0.15,1.0,0.38,0.01,help="Dan uses ~35% — field behind price.")
+    t_cont=st.checkbox("Contours (zero + ridges/troughs)",value=True)
+    t_strad=st.checkbox("Straddle bounds",value=True)
+    t_lvls=st.checkbox("Dealer levels overlay (Pinak)",value=True)
+    t_voladj=st.radio("Vol adjust",["0%","+1%"],index=0,horizontal=True)
+    t_simg=st.checkbox("Simulated gamma ($5 finite diff, §2.7)",value=False)
 auto_on=st.sidebar.toggle("Auto-refresh (5 min)",value=True)
 c1,c2=st.sidebar.columns(2)
 force=c1.button("📸 Snapshot now",use_container_width=True)
@@ -1296,290 +1454,143 @@ def dispatch(tab, render_fn):
         ts=sel_ts.isoformat()
         st.session_state.frames.setdefault(ts,{})[tab]=list(_EMIT_BUF.get(tab,[]))
 
-tab_cone,tab_land,tab_surf,tab_vs3d,tab_fwd,tab_pinak,tab_pinak2=st.tabs(["🟢 Cone (single snapshot)",
-                                    "📐 Landscape (forward projection)",
-                                    "🕒 Intraday surface (snapshot history)",
-                                    "🧭 VS3D (sign-free dashboard)",
-                                    "🔮 Forward models (price×time sim)",
-                                    "🎯 Pinak (dealer levels)",
-                                    "🌈 Pinak 2 (VS3D gradient)"])
+tab_terr,tab_sig=st.tabs(["🗺 Terrain (gradient chart)","🧭 Signals (daily workflow)"])
 
-with tab_cone:
-    emit_caption("cone", f"x-axis = session clock · gamma = Barchart per-strike · charm = Δdelta/Δt · snapshot {sel_ts:%H:%M:%S} EST.")
-    def _render_cone():
-        prev_snap=snaps[sel_i-1] if sel_i>0 else None
-        prev_chain=prev_snap["chain"] if prev_snap is not None else None
-        dt_hours=((sel_ts-prev_snap["ts"]).total_seconds()/3600.0) if prev_snap is not None else None
-        for w in ["volume","oi","oi_plus_flow"]:
-            try:
-                pg,gex,chm,cf=cone_profiles(latest["chain"],spot,p_min,p_max,w,
-                                            prev_chain=prev_chain,dt_hours=dt_hours,
-                                            smooth_frac=smooth_frac)
-                fig=fig_cone(pg,gex,chm,cf,spot,bars,straddle)
-                emit("cone",fig,caption=f"**Cone — weight: `{w}`**")
-            except Exception as ex: st.error(f"cone[{w}] failed: {ex}")
-    dispatch("cone",_render_cone)
-
-
-with tab_land:
-    emit_caption("land", f"x-axis = session clock · book at {sel_ts:%H:%M:%S} EST projected to the close "
-               "as T decays (pockets sharpen rightward). Note: `volume` ≈ `flow_reset` on one pull.")
-    def _render_land():
-        for m in ["oi","volume","oi_plus_flow","flow_reset"]:
-            try:
-                pg,Zg,Zc,times,jnow,cf=build_projection(latest["chain"],spot,m,p_min,p_max)
-                fig=fig_projection(m,pg,Zg,Zc,times,jnow,cf,spot,bars,straddle)
-                emit("land",fig,caption=f"**Projection — method: `{m}`**")
-            except Exception as ex: st.error(f"projection[{m}] failed: {ex}")
-    dispatch("land",_render_land)
-
-with tab_surf:
-    emit_caption("surf","x-axis = real recorded time. Built from your in-memory snapshot history — "
-               "this is the only view that EVOLVES as flow lands. The slider trims the surface "
-               "to snapshots up to the selected time.")
-    def _render_surf():
-        surf_snaps=snaps[:sel_i+1]
-        if len(surf_snaps)<2:
-            st.warning(f"Only {len(surf_snaps)} snapshot up to {sel_ts:%H:%M:%S}. Let it run (or hit 📸) "
-                       "to build history; the surface fills in as snapshots accumulate.")
-        for m in ["oi_plus_flow","flow_from_open","interval_flow","cumulative"]:
-            try:
-                wt="volume"
-                pg,Zg,Zc,times,last,sp,cwalls,pwalls=build_time_surface(surf_snaps,m,p_min,p_max,weighting=wt)
-                fig=fig_surface(m,pg,Zg,Zc,times,last,sp,bars,straddle,cwalls,pwalls)
-                emit("surf",fig,caption=f"**Surface — mode: `{m}`**")
-            except Exception as ex: st.error(f"surface[{m}] failed: {ex}")
-    dispatch("surf",_render_surf)
-
-with tab_vs3d:
-    emit_caption("vs3d","Everything replicable from FREE Barchart data, sign-free. The one thing we "
-               "canNOT do — strike-level dealer long/short (anchor vs test) — is intentionally absent.")
-    def _render_vs3d():
-        prev_snap=snaps[sel_i-1] if sel_i>0 else None
-        prev_chain=prev_snap["chain"] if prev_snap is not None else None
-        dt_hours=((sel_ts-prev_snap["ts"]).total_seconds()/3600.0) if prev_snap is not None else None
-        try:
-            vals,cc=vs3d_profiles(latest["chain"],spot,p_min,p_max,
-                                  prev_chain=prev_chain,dt_hours=dt_hours,smooth=smooth_frac)
-            pg=vals["pg"]; x0,x1=session_window()
-            vix_val=None
-            try:
-                _s,_h=init_session("$SPX"); vix_val=get_spot(_s,_h,"$VIX")
-            except Exception: vix_val=None
-            straddle_v=vs3d_straddle(cc,spot); fish=vs3d_fishbone(cc)
-            absorb=vs3d_absorption(cc); skew=vs3d_skew(cc)
-            decaying=None
-            if prev_chain is not None:
-                ps=vs3d_straddle(prev_chain.dropna(subset=["strike"]),prev_snap["spot"])
-                if ps is not None and straddle_v is not None: decaying=straddle_v<ps
-            def vs3d_panel(prof,cmap,title,signed=True,flips=None):
-                fig,ax=plt.subplots(figsize=(8.2,4.4),facecolor=DARK); ax.set_facecolor(DARK)
-                if signed:
-                    V,_b=field_from_profile(prof)
-                    ax.imshow(V,origin="lower",extent=[x0,x1,pg[0],pg[-1]],aspect="auto",cmap=cmap,vmin=-1,vmax=1,interpolation="bilinear",zorder=0)
-                else:
-                    sc=np.percentile(np.abs(prof),90) or 1.0
-                    b=gaussian_filter1d(0.5+0.5*np.tanh(prof/sc),2.0); xs=np.linspace(0,1,360)
-                    Vm=0.5+0.5*np.tanh(4.5*(b[:,None]-xs[None,:]))
-                    ax.imshow(Vm,origin="lower",extent=[x0,x1,pg[0],pg[-1]],aspect="auto",cmap=cmap,vmin=0,vmax=1,interpolation="bilinear",zorder=0)
-                draw_candles(ax,bars,x0,x1,pg[0],pg[-1])
-                ax.axhline(spot,color="white",ls="--",lw=1,zorder=7)
-                for f in (flips or []):
-                    if pg[0]<f<pg[-1]: ax.axhline(f,color="#ff5555",lw=0.8,ls=":",zorder=6)
-                ax.set_ylim(pg[0],pg[-1]); ax.set_title(title,color=TXT,fontsize=10,loc="left")
-                style_time_axis(ax,x0,x1); return fig
-            # 2-column grid so panels stay a sane size (not full-width giants)
-            panels=[("gex",vs3d_panel(vals["gex"],gex_cmap(),"GAMMA net exposure (signed = convention)")),
-                    ("mag",vs3d_panel(vals["mag"],mag_cmap(),"|GAMMA| magnitude · walls/pins (sign-free)",signed=False)),
-                    ("speed",vs3d_panel(vals["speed"],speed_cmap(),"SPEED ∂γ/∂spot · wall edges"))]
-            if vals["charm"] is not None:
-                panels.append(("charm",vs3d_panel(vals["charm"],charm_cmap(),"CHARM ∂δ/∂t (empirical) · dotted = flips",flips=vals["charm_flips"])))
-            if vals["color"] is not None:
-                panels.append(("color",vs3d_panel(vals["color"],gex_cmap(),"COLOR ∂γ/∂t · profile drift")))
-            # signals figure
-            rng=f"{spot-straddle_v:.0f} — {spot+straddle_v:.0f}" if straddle_v else "n/a"
-            dec=("YES — charm valid" if decaying else ("NO — charm SUSPECT" if decaying is not None else "need 2nd snapshot"))
-            fishtxt="CLEAN, trade" if fish<=4 else ("MESSY, size down" if fish<=8 else "FISHBONE, sit out")
-            sig_lines=[f"SPX {spot:.2f}   {sel_ts:%H:%M:%S} EST","",
-                vs3d_timing(sel_ts), vs3d_vix_regime(vix_val),
-                f"Straddle {('$%.2f'%straddle_v) if straddle_v else 'n/a'} · range {rng}",
-                f"Decaying? {dec}   (snake-oil gate)",
-                f"Fishbone {fish} → {fishtxt}",
-                f"Gamma absorption {absorb:,.0f} fut-equiv",
-                f"Skew (put−call IV) {skew:+.3f} → {'put-skew' if (skew==skew and skew>0) else 'call-skew'}",
-                f"Charm flips {', '.join(f'{x:.0f}' for x in vals['charm_flips']) if vals['charm_flips'] else 'pending'}",
-                "", "canNOT replicate: dealer long/short per strike,", "net-hedgeable filtering, OTC flow."]
-            figs,axs=plt.subplots(figsize=(8.2,4.4),facecolor=DARK); axs.axis("off"); axs.set_facecolor(DARK)
-            axs.text(0.02,0.98,"SIGNALS\n"+"\n".join(sig_lines),transform=axs.transAxes,color=TXT,
-                     va="top",ha="left",family="monospace",fontsize=10)
-            panels.append(("signals",figs))
-            # lay out 2 per row
-            for i in range(0,len(panels),2):
-                cols=st.columns(2)
-                for j,(nm,fig) in enumerate(panels[i:i+2]):
-                    emit("vs3d",fig,container=cols[j])
-            if vals["charm"] is None: st.info("CHARM/COLOR need a 2nd snapshot — fill in next refresh.")
-        except Exception as ex:
-            import traceback; st.error(f"VS3D dashboard failed: {ex}"); st.code(traceback.format_exc())
-    dispatch("vs3d",_render_vs3d)
-
-with tab_fwd:
-    emit_caption("fwd","VS3D-style FORWARD SIMULATION. Each pixel (price × time-of-day) = the greek "
-               "IF spot were there at that time — from the CURRENT chain, clock advanced, BS "
-               "re-priced with each strike's Barchart IV. Blue line = now (left actual, right simulated). "
-               "Charm: gold = put/negative · blue = call/positive.")
-    def _render_fwd():
+with tab_terr:
+    emit_caption("terrain","VS3D Gradient Chart, guide-spec. Field = chosen greek across price×time for the "
+        "WHOLE fetched book (each expiry decays on its own clock; 0DTE dominates via asymptotic gamma). "
+        "Manual symmetric range (a loose day looks loose) · near-linear intensity · field behind price. "
+        "Contours: dotted = zero boundary · red = ridge (local max) · blue = trough. Sign is the "
+        "calls+/puts− CONVENTION — dealer long/short not measured; clean split is the proxy's tell.")
+    def _render_terrain():
         now_naive=sel_ts.replace(tzinfo=None) if getattr(sel_ts,'tzinfo',None) else sel_ts
-        exp_use=(latest.get("exps") or [None])[0]
-        if not exp_use:
-            st.warning("No expiry available on the latest snapshot yet."); return
-        prev_snap=snaps[sel_i-1] if sel_i>0 else None
-        prev_chain=prev_snap["chain"] if prev_snap is not None else None
+        use_exps=(latest.get("exps") or [])[:max(1,int(num_expiries))]
+        if not use_exps:
+            st.warning("No expiries in this snapshot yet."); return
+        try:
+            pg,Z,taus=terrain_grid(latest["chain"],spot,use_exps,now_naive,greek=t_greek,
+                                   vol_adj=(0.01 if t_voladj=="+1%" else 0.0),
+                                   p_min=p_min,p_max=p_max,simulated_gamma=t_simg)
+        except Exception as ex:
+            import traceback; st.error(f"terrain grid failed: {ex}"); st.code(traceback.format_exc()); return
+        # fixed-cap scaling (per greek, seeded once; Calibrate button re-seeds)
+        capkey=f"terr_cap_{t_greek}"
+        seed=st.session_state.get(capkey)
+        V,used_cap=terrain_scale(Z,t_norm,seed if t_norm=="Manual (fixed cap)" else None,t_pct)
+        if t_norm=="Manual (fixed cap)" and seed is None:
+            st.session_state[capkey]=used_cap*1.3; V,used_cap=terrain_scale(Z,t_norm,st.session_state[capkey],t_pct)
+        st.session_state.setdefault(f"terr_hist_{t_greek}",[]).append(float(np.percentile(np.abs(Z),92)))
+        V=terrain_intensity(V,t_int,power=t_pow,gain=3.0)
+        cmap=gex_cmap() if t_greek!="Charm" else charm_cmap()
+        plotV=V if t_greek!="Charm" else -V   # hedging-effect polarity: dealers-must-SELL renders gold (§7.7)
         x0,x1=session_window()
-        for m in _FWD_MODELS:
-            cap=(f"**Forward — model: `{m}`**"
-                 + ("  ·  ⚠️ forward-sim weak (defined by past change)" if m in ("4 dVOL","5 vol/OI") else ""))
-            try:
-                pg,Zg,Zc,taus=forward_sim_grid(latest["chain"],spot,exp_use,now_naive,m,prev_chain=prev_chain,
-                                               p_min=p_min,p_max=p_max)
-                fig,(ag,ac)=plt.subplots(1,2,figsize=(16,5.2),facecolor=DARK)
-                ag.imshow(_fwd_norm(Zg),origin="lower",extent=[x0,x1,pg[0],pg[-1]],aspect="auto",cmap=gex_cmap(),vmin=-1,vmax=1,interpolation="bilinear",zorder=0)
-                ac.imshow(_fwd_norm(Zc),origin="lower",extent=[x0,x1,pg[0],pg[-1]],aspect="auto",cmap=charm_cmap(),vmin=-1,vmax=1,interpolation="bilinear",zorder=0)
-                nowx=mdates.date2num(now_naive)
-                for a,ttl in [(ag,f"GAMMA · {m}"),(ac,f"CHARM · {m} (gold=put/− · blue=call/+)")]:
-                    a.set_facecolor(DARK); draw_candles(a,bars,x0,x1,pg[0],pg[-1])
-                    a.axhline(spot,color="white",ls="--",lw=1,zorder=7)
-                    a.axvline(nowx,color="#3399dd",ls=":",lw=1.2,zorder=7)
-                    a.set_ylim(pg[0],pg[-1]); a.set_title(ttl,color=TXT,fontsize=10,loc="left")
-                    style_time_axis(a,x0,x1)
-                ag.set_ylabel("price",color="#777",fontsize=8)
-                emit("fwd",fig,caption=cap)
-            except Exception as ex:
-                import traceback; st.error(f"forward[{m}] failed: {ex}"); st.code(traceback.format_exc())
-    dispatch("fwd",_render_fwd)
-
-with tab_pinak:
-    emit_caption("pinak","Dealer-positioning levels (NIFTY-GEX method, adapted to Barchart 0DTE). "
-                 "GEX = γ·OI·spot·100. Vanna = true closed-form (BS, Barchart IV). Levels drawn on the "
-                 "price axis with candles: flip/vol-trigger, call/put walls, ceiling/floor, hedge walls, K*, pin.")
-    def _render_pinak():
-        now_naive=sel_ts.replace(tzinfo=None) if getattr(sel_ts,'tzinfo',None) else sel_ts
-        exp_use=(latest.get("exps") or [None])[0]
-        if not exp_use:
-            st.warning("No expiry available yet."); return
-        try:
-            r=pinak_levels(latest["chain"],spot,exp_use,now_naive)
-        except Exception as ex:
-            import traceback; st.error(f"pinak levels failed: {ex}"); st.code(traceback.format_exc()); return
-        K=r["K"]; x0,x1=session_window()
-        # keep to price window for a clean view
-        m=(K>=p_min)&(K<=p_max)
-        Kv=K[m]; net=r["net_gex"][m]; callg=r["call_gex"][m]; putg=r["put_gex"][m]
-        if len(Kv)<3:
-            st.warning("Not enough strikes in the price window."); return
-        # ---- MAIN chart: GEX density on price(y) axis + candles + level lines ----
-        fig,ax=plt.subplots(figsize=(16,7.5),facecolor=DARK); ax.set_facecolor(DARK)
-        draw_candles(ax,bars,x0,x1,p_min,p_max)
-        ax.axhline(spot,color="#c400c4",ls="--",lw=1.2,zorder=6,label="spot")
-        # GEX horizontal bars from a fixed x anchor (left gutter) so it reads as a strike profile
-        xr=x1-x0; base=x0+xr*0.015; scale=xr*0.28/ (np.abs(net).max() or 1)
-        for k,cgx,pgx in zip(Kv,callg,putg):
-            ax.plot([base,base+cgx*scale],[k,k],color="#007700",lw=2,alpha=.55,zorder=3)   # call GEX (green, right)
-            ax.plot([base,base-pgx*scale],[k,k],color="#cc0000",lw=2,alpha=.55,zorder=3)   # put GEX (red, left)
-        ax.axvline(base,color="#555",lw=0.6,zorder=2)
-        # net GEX smoothed profile as a thicker gold line
-        nety=gaussian_filter1d(net,2.0) if len(net)>3 else net
-        ax.plot(base+nety*scale,Kv,color="#b8860b",lw=2.2,zorder=5,label="net GEX")
-        # ---- level lines (horizontal, price axis) ----
-        # draw lines first; collect labels to stagger if they collide
-        _labels=[]
-        def lvl(v,color,txt,ls="--",lw=1.4):
-            if v is None or not (p_min<=v<=p_max): return
-            ax.axhline(v,color=color,ls=ls,lw=lw,zorder=7)
-            _labels.append([v,color,txt])
-        lvl(r["flip"],"#0066cc","VOL TRIG",ls="-",lw=1.6)
-        lvl(r["call_wall"],"#ff5a3c","CALL WALL")
-        lvl(r["put_wall"],"#3ca0ff","PUT WALL")
-        lvl(r["ceiling"],"#D35400","CEILING")
-        lvl(r["floor"],"#148F77","FLOOR")
-        lvl(r["up_hw"],"#8B008B","UP HW",ls=":")
-        lvl(r["dn_hw"],"#006400","DN HW",ls=":")
-        lvl(r["kstar"],"#dddddd","K*",ls="-.")
-        lvl(r["pin"],"#FF6600","PIN",ls="-",lw=2.2)
-        # stagger: sort by price, push apart labels closer than min_gap
-        min_gap=(p_max-p_min)*0.040
-        _labels.sort(key=lambda z:z[0])
-        ypos=[]; last=-1e9
-        for v,_,_ in _labels:
-            y=max(v,last+min_gap); ypos.append(y); last=y
-        for (v,color,txt),y in zip(_labels,ypos):
-            ax.text(x1,y,f" {txt} {v:.0f}",color=color,fontsize=8,va="center",ha="left",zorder=8)
-            if abs(y-v)>min_gap*0.5:                        # leader line if nudged
-                ax.plot([x1,x1+ (x1-x0)*0.008],[v,y],color=color,lw=0.5,alpha=.5,zorder=8,clip_on=False)
-        ax.set_ylim(p_min,p_max); ax.set_title("PINAK · GEX profile + dealer levels  (green=call GEX · red=put GEX · gold=net)",
-                                               color=TXT,fontsize=11,loc="left")
-        ax.set_ylabel("price / strike",color="#777",fontsize=8)
-        style_time_axis(ax,x0,x1)
-        emit("pinak",fig)
-        # ---- signals figure (so it caches for playback) ----
-        def f(v): return f"{v:.0f}" if isinstance(v,(int,float)) and v is not None else "n/a"
-        regime="POSITIVE γ (pin/mean-revert)" if r["in_pos"] else "NEGATIVE γ (trend/amplify)"
-        lines=[f"SPX {spot:.2f}   exp {exp_use}   {sel_ts:%H:%M:%S} EST","",
-            f"REGIME  {regime}",
-            f"PIN  {f(r['pin'])}   [{r['pin_label']} · {r['pin_score']}/100]","",
-            f"VOL TRIGGER (flip)  {f(r['flip'])}",
-            f"CALL WALL  {f(r['call_wall'])}     PUT WALL  {f(r['put_wall'])}",
-            f"CEILING    {f(r['ceiling'])}     FLOOR     {f(r['floor'])}",
-            f"UPSIDE HW  {f(r['up_hw'])}     DOWNSIDE HW  {f(r['dn_hw'])}",
-            f"K* (parity forward)  {f(r['kstar'])}","",
-            f"gravity: call {f(r['call_grav'])}  put {f(r['put_grav'])}",
-            "", "GEX=γ·OI·spot·100 · vanna=closed-form(BS,Barchart IV)",
-            "sign is dealers-short-options convention (not measured)."]
-        fs,axs=plt.subplots(figsize=(16,3.2),facecolor=DARK); axs.axis("off"); axs.set_facecolor(DARK)
-        axs.text(0.01,0.98,"PINAK LEVELS\n"+"\n".join(lines),transform=axs.transAxes,color=TXT,
-                 va="top",ha="left",family="monospace",fontsize=10)
-        emit("pinak",fs)
-    dispatch("pinak",_render_pinak)
-
-with tab_pinak2:
-    emit_caption("pinak2","VS3D Gradient Chart replica. Forward-simulated greek across price×time "
-                 "(BS, Barchart IV), with VS3D normalization + intensity transform to tame the 0DTE "
-                 "blowout, plus γ=0 & ridge contours. Green/Red gamma · gold/blue charm. Blue line = now.")
-    def _render_pinak2():
-        now_naive=sel_ts.replace(tzinfo=None) if getattr(sel_ts,'tzinfo',None) else sel_ts
-        exp_use=(latest.get("exps") or [None])[0]
-        if not exp_use:
-            st.warning("No expiry available yet."); return
-        try:
-            # reuse the forward-sim grid (model 2 = today's live-flow VOL weight)
-            pg,Zg,Zc,taus=forward_sim_grid(latest["chain"],spot,exp_use,now_naive,"2 zero-open VOL",
-                                           prev_chain=None,p_min=p_min,p_max=p_max)
-        except Exception as ex:
-            import traceback; st.error(f"pinak2 grid failed: {ex}"); st.code(traceback.format_exc()); return
-        Z = Zg if p2_greek=="Gamma" else Zc
-        cmap = gex_cmap() if p2_greek=="Gamma" else charm_cmap()
-        # normalize -> transform  (the VS3D tuning chain)
-        V = pinak2_normalize(Z, p2_norm, lo=p2_pct, hi=p2_pct)
-        V = pinak2_transform(V, p2_xform, power=p2_power, gain=p2_gain)
-        if p2_reverse: V = -V
-        x0,x1=session_window()
-        fig,ax=plt.subplots(figsize=(16,7.5),facecolor=DARK); ax.set_facecolor(DARK)
-        ax.imshow(V,origin="lower",extent=[x0,x1,pg[0],pg[-1]],aspect="auto",cmap=cmap,
-                  vmin=-1,vmax=1,interpolation="bilinear",zorder=0)
-        if p2_contours:
-            pinak2_contours(ax,(-V if p2_reverse else V),x0,x1,pg,zero=True,ridges=True)
+        fig=plt.figure(figsize=(16.5,7.6),facecolor=DARK)
+        gs=fig.add_gridspec(1,2,width_ratios=[24,2.2],wspace=0.015)
+        ax=fig.add_subplot(gs[0,0]); axp=fig.add_subplot(gs[0,1],sharey=ax)
+        ax.set_facecolor(DARK); axp.set_facecolor(DARK)
+        ax.imshow(plotV,origin="lower",extent=[x0,x1,pg[0],pg[-1]],aspect="auto",cmap=cmap,
+                  vmin=-1,vmax=1,interpolation="bilinear",zorder=0,alpha=t_alpha)
+        if t_cont: terrain_contours(ax,Z,x0,x1,pg,st.session_state.get(capkey))
         draw_candles(ax,bars,x0,x1,pg[0],pg[-1])
-        ax.axhline(spot,color="white",ls="--",lw=1,zorder=7)
-        ax.axvline(mdates.date2num(now_naive),color="#3399dd",ls=":",lw=1.2,zorder=7)
-        ax.set_ylim(pg[0],pg[-1])
-        ttl=(f"PINAK 2 · {p2_greek} · norm={p2_norm}"
-             + (f"({p2_pct})" if p2_norm=="Percentile" else "")
-             + f" · {p2_xform}"
-             + ("  [green=+/− red]" if p2_greek=="Gamma" else "  [gold=put/− · blue=call/+]"))
-        ax.set_title(ttl,color=TXT,fontsize=11,loc="left")
-        ax.set_ylabel("price",color="#777",fontsize=8)
-        style_time_axis(ax,x0,x1)
-        emit("pinak2",fig)
-        st.caption("Sign is the OI/calls+puts− CONVENTION (dealer long/short not measured) — clean split, "
-                   "not green-with-red-pockets. That split is the proxy's tell, not a bug.")
-    dispatch("pinak2",_render_pinak2)
+        ax.axhline(spot,color=WHITE,ls="--",lw=1.0,alpha=.9,zorder=7)
+        ax.axvline(mdates.date2num(now_naive),color="#3399dd",ls=":",lw=1.1,zorder=7)
+        # straddle bounds (§5.3) from the 0DTE chain
+        strad=terrain_straddle(latest["chain"][latest["chain"].get("expiry",use_exps[0])==use_exps[0]]
+                               if "expiry" in latest["chain"].columns else latest["chain"], spot)
+        if t_strad and strad:
+            for b in (spot-strad,spot+strad):
+                if pg[0]<b<pg[-1]:
+                    ax.axhline(b,color="#e06ce0",ls=(0,(5,3)),lw=1.0,alpha=.85,zorder=7)
+                    ax.text(x1,b,f" {b:.0f}",color="#e06ce0",fontsize=8,va="center",zorder=8)
+        # Pinak dealer-level overlay (0DTE)
+        if t_lvls:
+            try:
+                ch0=latest["chain"][latest["chain"].get("expiry",use_exps[0])==use_exps[0]] \
+                    if "expiry" in latest["chain"].columns else latest["chain"]
+                r=pinak_levels(ch0,spot,use_exps[0],now_naive)
+                _labels=[]
+                def lvl(v,color,txt,ls,lw):
+                    if v is None or not(pg[0]<v<pg[-1]): return
+                    ax.axhline(v,color=color,ls=ls,lw=lw,alpha=.9,zorder=7); _labels.append([v,color,txt])
+                lvl(r["pin"],"#FF6600","PIN","-",1.8); lvl(r["flip"],"#0080ff","FLIP","-",1.2)
+                lvl(r["call_wall"],"#ff5a3c","CW","--",1.0); lvl(r["put_wall"],"#3ca0ff","PW","--",1.0)
+                lvl(r["kstar"],"#cccccc","K*","-.",0.9)
+                mg=(pg[-1]-pg[0])*0.04; _labels.sort(key=lambda z:z[0]); last=-1e9
+                for v,color,txt in _labels:
+                    y=max(v,last+mg); last=y
+                    ax.text(x0+(x1-x0)*0.002,y,f"{txt} {v:.0f}",color=color,fontsize=8,va="center",zorder=8,
+                            bbox=dict(boxstyle="round,pad=0.2",facecolor=DARK,edgecolor=color,alpha=.85,lw=.6))
+            except Exception: pass
+        # side profile histogram — the current-time column (real VS3D right-edge panel)
+        jnow=int(np.clip(round((mdates.date2num(now_naive)-x0)/(x1-x0)*(Z.shape[1]-1)),0,Z.shape[1]-1))
+        prof=Z[:,jnow]; capv=st.session_state.get(capkey) or (np.abs(prof).max() or 1)
+        posc,negc=(("#d9a90b","#3399dd") if t_greek=="Charm" else ("#22b14c","#d13438"))
+        axp.fill_betweenx(pg,0,np.clip(prof/capv,-1,1),where=prof>=0,color=posc,alpha=.85)
+        axp.fill_betweenx(pg,0,np.clip(prof/capv,-1,1),where=prof<0,color=negc,alpha=.85)
+        axp.axvline(0,color="#555",lw=.6); axp.axhline(spot,color=WHITE,ls="--",lw=.8,alpha=.8)
+        axp.set_xlim(-1,1); axp.set_xticks([]); plt.setp(axp.get_yticklabels(),visible=False)
+        for s_ in ("top","right","left","bottom"): axp.spines[s_].set_color(GRID)
+        pol=("green = dealers BUY to arrive hedged (supportive) · red = SELL" if t_greek=="Delta Change"
+             else ("green = +γ suppressive · red = −γ amplifying" if t_greek=="Gamma"
+             else "gold = dealers must SELL as time passes · blue = must BUY"))
+        ax.set_title(f"TERRAIN · {t_greek} · exps {len(use_exps)} · cap {st.session_state.get(capkey,0):,.0f}"
+                     f" · {t_int}({t_pow:g}) · α{t_alpha:.2f}   [{pol}]",color=TXT,fontsize=10.5,loc="left")
+        ax.set_ylim(pg[0],pg[-1]); style_time_axis(ax,x0,x1)
+        emit("terrain",fig)
+    dispatch("terrain",_render_terrain)
+
+with tab_sig:
+    emit_caption("signals","§5.1 daily workflow: straddle range → structure quality → charm gate → absorption. "
+                 "All sign-free; Pinak levels included. Charm is a weighted coin — needs a decaying straddle "
+                 "and the 1:30–3pm window to have a say.")
+    def _render_signals():
+        now_naive=sel_ts.replace(tzinfo=None) if getattr(sel_ts,'tzinfo',None) else sel_ts
+        use_exps=(latest.get("exps") or [])
+        if not use_exps: st.warning("No data yet."); return
+        ch0=latest["chain"][latest["chain"].get("expiry",use_exps[0])==use_exps[0]] \
+            if "expiry" in latest["chain"].columns else latest["chain"]
+        strad_now=terrain_straddle(ch0,spot)
+        first=snaps[0]; ch0_first=first["chain"][first["chain"].get("expiry",use_exps[0])==first["exps"][0]] \
+            if "expiry" in first["chain"].columns else first["chain"]
+        strad_open=terrain_straddle(ch0_first,first["spot"])
+        decaying=None
+        if strad_now and strad_open and len(snaps)>1: decaying=strad_now<strad_open*0.995
+        # gamma absorption toward each straddle bound (§5.4 mental math, futures-equiv)
+        c=ch0.dropna(subset=["strike","delta"])
+        w=np.where(c["volume"].fillna(0)>0,c["volume"].fillna(0),c["oi"].fillna(0)).astype(float)
+        dlt=c["delta"].fillna(0).values; K=c["strike"].values
+        rem=np.abs(np.where(dlt>=0,1-dlt,-1-dlt))*w*100/50.0   # e-mini equiv remaining hedge
+        up=float(rem[(K>spot)&(K<=spot+(strad_now or spot*0.005))].sum())
+        dn=float(rem[(K<spot)&(K>=spot-(strad_now or spot*0.005))].sum())
+        fish=vs3d_fishbone(ch0); fishtxt="CLEAN — trade" if fish<=4 else("MESSY — size down" if fish<=8 else "FISHBONE — sit out")
+        hist=st.session_state.get(f"terr_hist_Gamma",[]) or st.session_state.get(f"terr_hist_Delta Change",[])
+        reg=""
+        if hist:
+            cur=hist[-1]; avg=float(np.mean(hist)) if len(hist)>1 else cur
+            reg=("HEAVY (γ > 1.5× trailing)" if cur>1.5*avg else "LOOSE (γ < 0.5× trailing)" if cur<0.5*avg else "NORMAL")
+        t=now_naive.time(); win=vs3d_timing(now_naive)
+        charm_ok=(decaying is True) and dt.time(13,30)<=t<=dt.time(15,0)
+        gate=("OPEN — straddle decaying, in window" if charm_ok else
+              "CLOSED — "+("straddle NOT decaying (snake-oil check)" if decaying is False else
+              "need 2nd snapshot" if decaying is None else "outside 1:30–3pm window"))
+        try: r=pinak_levels(ch0,spot,use_exps[0],now_naive)
+        except Exception: r=None
+        f=lambda v: f"{v:,.0f}" if isinstance(v,(int,float)) and v is not None else "n/a"
+        L=[f"SPX {spot:,.2f}   {sel_ts:%H:%M:%S} EST   exps fetched {len(use_exps)}","",
+           f"STRADDLE  now {('$%.2f'%strad_now) if strad_now else 'n/a'} · open {('$%.2f'%strad_open) if strad_open else 'n/a'}"
+           f" · decaying? {'YES' if decaying else 'NO' if decaying is False else 'n/a'}",
+           f"RANGE (spot±straddle)  {f(spot-(strad_now or 0))} — {f(spot+(strad_now or 0))}",
+           f"STRUCTURE  fishbone {fish} → {fishtxt}",
+           f"REGIME  {reg or 'building trailing…'}   ·   WINDOW  {win}",
+           f"CHARM GATE  {gate}",
+           f"ABSORPTION to bounds (e-mini equiv)  up {up:,.0f} · down {dn:,.0f}"
+           f"   → path of least resistance: {'DOWN' if up>dn*1.4 else 'UP' if dn>up*1.4 else 'balanced'}",""]
+        if r: L+=[f"PIN {f(r['pin'])} [{r['pin_label']} {r['pin_score']}/100]   FLIP {f(r['flip'])}",
+                  f"CALL WALL {f(r['call_wall'])} · PUT WALL {f(r['put_wall'])} · K* {f(r['kstar'])}",
+                  f"CEIL {f(r['ceiling'])} · FLOOR {f(r['floor'])} · HW up/dn {f(r['up_hw'])}/{f(r['dn_hw'])}"]
+        L+=["","cannot measure: dealer long/short (anchor vs test), MM-on-MM netting, OTC flow."]
+        fs,axs=plt.subplots(figsize=(16,4.6),facecolor=DARK); axs.axis("off"); axs.set_facecolor(DARK)
+        axs.text(0.01,0.98,"SIGNALS — daily workflow\n"+"\n".join(L),transform=axs.transAxes,color=TXT,
+                 va="top",ha="left",family="monospace",fontsize=10.5)
+        emit("signals",fs)
+    dispatch("signals",_render_signals)
