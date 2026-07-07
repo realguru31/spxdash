@@ -5,6 +5,13 @@ Point your streamlit.io app at this file.
 
 CHANGELOG (newest first) — what changed and why, per version
 ─────────────────────────────────────────────────────────────────────────────
+v2.1.9 [IV KILL-SHOT + TRIPWIRE — post-close hardening]
+  • _iv_norm_chain(): units decided ONCE per fetched chain from the MEDIAN and
+    applied uniformly — closes the per-value leak (a legit 2.8%-IV strike
+    printed percent-style as 2.8 passed the >3 test and entered as 280%).
+    Mixed-units chains are now impossible by construction.
+  • Header shows ATM IV next to the candles caption (e.g. · ATM IV 19.4%) —
+    a units regression can never again hide behind a rendered field.
 v2.1.8 [IV UNITS ROOT CAUSE + STACKED CHARM — 2026-07-07 midday]
   • ROOT CAUSE of the flat two-tone terrain: Barchart serves IV percent-style
     (19.5 = 19.5%) and we consumed it as decimal → every BS greek priced at
@@ -449,6 +456,17 @@ def _iv_norm(v):
         return v/100.0 if v>3.0 else v
     except Exception: return v
 
+def _iv_norm_chain(s):
+    """Chain-level units detector (v2.1.9): decide percent-vs-decimal ONCE from the
+    chain MEDIAN (percent-style medians ~15-30, decimal ~0.15-0.3), then apply
+    uniformly. Closes the per-value leak where a legit 2.8%-IV strike printed
+    percent-style as 2.8 would pass the >3 test and enter as 280%."""
+    try:
+        ss=pd.Series(s).astype(float)
+        med=float(ss.dropna().median())
+        return ss/100.0 if (med==med and med>3.0) else ss
+    except Exception: return s
+
 def fetch_chain(s,h,expiry,sym="$SPX"):
     f="strikePrice,bidPrice,askPrice,optionType,volatility,delta,gamma,openInterest,volume"
     for a in range(3):
@@ -463,10 +481,12 @@ def fetch_chain(s,h,expiry,sym="$SPX"):
                         raw=it.get("raw",it)
                         def num(k):
                             v=raw.get(k,None); return float(v) if v not in (None,"") else np.nan
-                        rows.append({"strike":num("strikePrice"),"type":ot.lower(),"iv":_iv_norm(num("volatility")),
+                        rows.append({"strike":num("strikePrice"),"type":ot.lower(),"iv":num("volatility"),
                             "gamma":num("gamma"),"delta":num("delta"),"oi":num("openInterest"),"volume":num("volume"),
                             "bid":num("bidPrice"),"ask":num("askPrice")})
-            return pd.DataFrame(rows) if rows else None
+            if not rows: return None
+            df=pd.DataFrame(rows); df["iv"]=_iv_norm_chain(df["iv"])
+            return df
         except Exception as ex:
             _time.sleep(2)
     return None
@@ -1641,6 +1661,11 @@ latest=snaps[sel_i]; spot=latest["spot"]; exps=latest["exps"]
 sel_ts=latest["ts"]
 exp_date=dt.datetime.strptime(exps[0],"%Y-%m-%d").date()
 bars,bars_msg=prep_bars()
+try:  # ATM IV tripwire (v2.1.9): a units regression must be humanly visible
+    _c0=latest["chain"]; _c0=_c0[_c0["expiry"]==use_exps[0]]
+    _aiv=float(_c0.iloc[(_c0["strike"]-spot).abs().argsort()[:2]]["iv"].median())
+    _atmiv_txt=f"  ·  ATM IV {100*_aiv:.1f}%" if _aiv==_aiv else ""
+except Exception: _atmiv_txt=""
 
 # Y-AXIS = spot ± window_pct, FULL STOP. Bars never influence the range, so no
 # stray feed value can ever collapse or blow out the axis. Widen the window % in
@@ -1664,9 +1689,9 @@ m3.metric("Expiry",exps[0]+(f" +{len(exps)-1}" if len(exps)>1 else ""))
 m4.metric("Viewing snap",f"{sel_i+1}/{len(snaps)}")
 m5.metric("Snapshot (EST)",sel_ts.strftime("%H:%M:%S"))
 if bars is None:
-    st.caption(f"Candles: none overlaid — {bars_msg}.")
+    st.caption(f"Candles: none overlaid — {bars_msg}.{_atmiv_txt}")
 else:
-    st.caption(f"Candles: {bars_msg}.")
+    st.caption(f"Candles: {bars_msg}.{_atmiv_txt}")
 
 # ── frame emit / replay helpers ──────────────────────────────────────────────
 import io as _io
