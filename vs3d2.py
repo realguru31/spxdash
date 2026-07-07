@@ -5,6 +5,12 @@ Point your streamlit.io app at this file.
 
 CHANGELOG (newest first) — what changed and why, per version
 ─────────────────────────────────────────────────────────────────────────────
+v2.1.2 [Read tab glance graphics] Two cheat-sheet panels under the text:
+  left = minimal sketch of the current pattern (chop zigzag with range band for
+  +γ; expansion curve with trigger dot for −γ, in direction color); right = 'the
+  day on one map' drawn with LIVE levels — UPPER/LOWER TEST (walls, amber),
+  ANCHOR (PIN, blue; merged label when pin sits on a wall), spot dot, and a lean
+  arrow to target (label suppressed when it would collide with a level label).
 v2.1.1 [Read tab visual + pin fix] Read card rebuilt: large bold pattern header
   with ▲/▼ in direction color (green bullish / red bearish vs spot), wrapped NEXT
   line, colored gate stack (bull/bear/amber semantics; fixed FLOW-contains-LOW
@@ -1109,7 +1115,7 @@ def read_verdict(snaps, exps, now):
     if tension: nxt+="  ·  "+tension
     return dict(pat=pat,do=do,env=env,lean=lean+f"  [{src} · ≈{flow5:,.0f} minis/5min proxy]",
                 decay=decay,clock=clock,vix=vixline,fish=f"{fishline} (score {fish})",
-                nxt=nxt,conf=conf,through=through,to=to,spot=spot,
+                nxt=nxt,conf=conf,through=through,to=to,spot=spot,wall_up=wall_up,wall_dn=wall_dn,pin=target,
                 strad=f"${strad_now:.2f}" if strad_now else "n/a")
 
 def gex_cmap():
@@ -1810,12 +1816,65 @@ with tab_read:
         lines.append(("",WHT,6,False))
         lines.append(("flips this read: straddle repricing up · VIX spike (vanna over charm) · a test",DIM,10.5,False))
         lines.append(("breaking AND holding (delta 30→100, new range) · any external trigger",DIM,10.5,False))
-        H=sum(l[2] for l in lines)*1.55/72+0.5
-        fr,axr=plt.subplots(figsize=(13.5,H),facecolor=DARK); axr.axis("off"); axr.set_facecolor(DARK)
+        # ---- layout: text block on top, two glance-graphics below (cheat-sheet style)
+        textH=sum(l[2] for l in lines)*1.55/72+0.35; gfxH=1.9; H=textH+gfxH
+        fr=plt.figure(figsize=(13.5,H),facecolor=DARK)
+        axr=fr.add_axes([0.0,gfxH/H,1.0,textH/H]); axr.axis("off"); axr.set_facecolor(DARK)
         y=1.0
         for txt,col,fs,bold in lines:
             axr.text(0.012,y,txt,transform=axr.transAxes,color=col,va="top",ha="left",
                      family="monospace",fontsize=fs,fontweight=("bold" if bold else "normal"))
-            y-=fs*1.55/(H*72)
+            y-=fs*1.55/(textH*72)
+        # left: minimal pattern sketch (from the cheat sheet 'pick the day' row)
+        axl=fr.add_axes([0.015,0.045,0.30,(gfxH-0.35)/H]); axl.set_facecolor("#10151d")
+        axl.set_xticks([]); axl.set_yticks([])
+        for sp in axl.spines.values(): sp.set_color("#242c38")
+        gpos="LEANS" in v["pat"]
+        xs=np.linspace(0,1,13)
+        if gpos:
+            drift=0.16 if up else -0.16
+            ys=0.5+0.16*np.array([0,1,-1,1,-1,1,-1,1,-1,1,-1,1,0])[:13]*0.9+drift*xs
+            axl.axhspan(0.30,0.70,color=("#12331f" if up else "#331416"),alpha=.5,zorder=0)
+            axl.plot(xs,ys,color="#e6edf3",lw=2.0,solid_capstyle="round")
+        else:
+            ys=(0.18+0.64*xs**1.7) if up else (0.82-0.64*xs**1.7)
+            axl.plot(xs,ys,color=dirc,lw=2.4,solid_capstyle="round")
+            axl.plot([0.42],[np.interp(0.42,xs,ys)],marker="o",color=WARN,ms=6)
+            axl.text(0.44,np.interp(0.42,xs,ys)+(0.09 if up else -0.13),"trigger",color=WARN,fontsize=8)
+            axl.plot([1.0],[ys[-1]],marker=("^" if up else "v"),color=dirc,ms=8)
+        axl.set_xlim(0,1.04); axl.set_ylim(0,1)
+        axl.set_title(("RANGE — fade edges" if gpos else "TREND — needs trigger"),
+                      color=("#3fb950" if gpos else dirc),fontsize=9,loc="left",pad=3)
+        # right: the day on one map — LIVE levels
+        axm=fr.add_axes([0.365,0.045,0.615,(gfxH-0.35)/H]); axm.set_facecolor("#10151d")
+        axm.set_xticks([]); axm.set_yticks([])
+        for sp in axm.spines.values(): sp.set_color("#242c38")
+        cw,pw,pin,sp_,to=v.get("through") and None or None, None, None, v["spot"], v["to"]
+        cw=v.get("wall_up"); pw=v.get("wall_dn"); pin=v.get("pin")
+        lv=[x for x in (cw,pw,pin,sp_,to) if x]
+        ylo,yhi=min(lv),max(lv); pad=max((yhi-ylo)*0.30,sp_*0.0015); axm.set_ylim(ylo-pad,yhi+pad)
+        axm.set_xlim(0,1)
+        pin_on_cw=pin and cw and abs(pin-cw)<=1; pin_on_pw=pin and pw and abs(pin-pw)<=1
+        if cw and not pin_on_cw:
+            axm.axhline(cw,color=WARN,lw=1.6); axm.text(0.995,cw,f"UPPER TEST {cw:,.0f} ",color=WARN,fontsize=8.5,ha="right",va="bottom")
+        if pw and not pin_on_pw:
+            axm.axhline(pw,color=WARN,lw=1.6); axm.text(0.995,pw,f"LOWER TEST {pw:,.0f} ",color=WARN,fontsize=8.5,ha="right",va="top")
+        if pin:
+            lbl=(f"ANCHOR = UPPER TEST {pin:,.0f} " if pin_on_cw else
+                 f"ANCHOR = LOWER TEST {pin:,.0f} " if pin_on_pw else f"ANCHOR {pin:,.0f} ")
+            axm.axhline(pin,color="#3b82f6",lw=1.8)
+            axm.text(0.995,pin,lbl,color="#3b82f6",fontsize=8.5,ha="right",
+                     va=("bottom" if pin>=sp_ else "top"))
+        axm.plot([0.10],[sp_],marker="o",color="#e6edf3",ms=7,zorder=5)
+        axm.text(0.10,sp_,f"  spot {sp_:,.0f}",color="#e6edf3",fontsize=8.5,va="center")
+        if to:
+            axm.annotate("",xy=(0.80,to),xytext=(0.13,sp_),
+                         arrowprops=dict(arrowstyle="-|>",color=dirc,lw=2.0,
+                                         connectionstyle="arc3,rad="+("-0.08" if to>=sp_ else "0.08")))
+            _near=[x for x in (cw,pw,pin) if x and abs(x-to)<pad*0.45]
+            if not _near:
+                axm.text(0.81,to,f" target {to:,.0f}",color=dirc,fontsize=8.5,
+                         va="center",ha="left")
+        axm.set_title("the day on one map — tests bound it, anchor holds it",color="#8b949e",fontsize=9,loc="left",pad=3)
         emit("read",fr)
     dispatch("read",_render_read)
