@@ -5,6 +5,27 @@ Point your streamlit.io app at this file.
 
 CHANGELOG (newest first) — what changed and why, per version
 ─────────────────────────────────────────────────────────────────────────────
+v2.2.1 [INTERPRETABILITY — the actual ask]
+  • Signals verdict banner: one of four explicit states — LEAN LONG / LEAN
+    SHORT (with play + target), SMALL SIZE ONLY, WAIT (with the specific
+    blocker), STAND DOWN. Driven by read_verdict (track=False) so Signals and
+    Read can never disagree; includes confidence and a plain because/flips line.
+  • Every row now carries an inline plain-English interpretation; directional
+    rows are explicitly ▲/▼ (path, PIN magnet, walls ±distance), gate rows say
+    LIVE/OFF instead of implying it; jargon glossed in place (fishbone, snake-
+    oil, K*, flip side). Terminology kept true to VS3D, meaning made explicit.
+v2.2.0 [NIGHT BUILD — signals trust & readability]
+  • Empirical charm lean now uses _book_delta_drift(): the FIXED prior book
+    repriced at both (spot,T) states. Weight growth (volume accumulating) no
+    longer masquerades as hedge flow — the ≈61k minis/5min was contaminated;
+    the ×2/100 e-mini conversion itself audited CORRECT vs the cheat sheet.
+  • Absorption weights book-first (OI, volume fallback) in Signals + Read —
+    absorption is the EXISTING book’s remaining hedge (§5.4), not day flow.
+  • Per-date open straddle persisted at first snapshot (survives Clear); decay
+    gate labels its reference honestly (“open 09:35” vs “open (1st snap)”).
+  • Signals tab rebuilt: grouped sections, aligned columns, status colors,
+    bigger type. Fixed matplotlib mathtext swallowing dollar signs (the
+    “now 18.97·open11.45” cram) — all fig text now mathtext-safe.
 v2.1.9 [IV KILL-SHOT + TRIPWIRE — post-close hardening]
   • _iv_norm_chain(): units decided ONCE per fetched chain from the MEDIAN and
     applied uniformly — closes the per-value leak (a legit 2.8%-IV strike
@@ -1102,7 +1123,23 @@ def _book_delta_0dte(ch, spot, exp, when):
         out+=sgn*(w*bs_delta(spot,K,T,iv,typ=="call")).sum()*100
     return out
 
-def read_verdict(snaps, exps, now):
+def _book_delta_drift(chp0, spot_prev, t_prev, spot_now, t_now, exp):
+    """d(book delta) holding the BOOK FIXED (prev snapshot's strikes/iv/weights),
+    repriced at the two (spot,T) states. Isolates hedge drift (charm + spot move)
+    from WEIGHT GROWTH: volume accumulating between snapshots is new positioning,
+    not decay of the existing book (v2.2.0 — the 61k-minis/5min audit)."""
+    c=chp0.dropna(subset=["strike"]); out=0.0
+    Tn=_T_at(exp,t_now); Tp=_T_at(exp,t_prev)
+    for typ,sgn in (("call",+1),("put",-1)):
+        d=c[c.type==typ]
+        if d.empty: continue
+        K=d["strike"].values.astype(float)
+        iv=np.where(d["iv"].fillna(0).values>0,d["iv"].fillna(0).values,0.15)
+        w=np.where(d["volume"].fillna(0).values>0,d["volume"].fillna(0).values,d["oi"].fillna(0).values)
+        out+=sgn*(w*(bs_delta(spot_now,K,Tn,iv,typ=="call")-bs_delta(spot_prev,K,Tp,iv,typ=="call"))).sum()*100
+    return out
+
+def read_verdict(snaps, exps, now, track=True):
     """Cheat-sheet logic → what happens next. Returns dict of lines + confidence.
     gamma sign (env) × charm lean (direction) = four patterns; gated by charm clock,
     straddle check, VIX regime, fishbone, absorption. All proxy-honest."""
@@ -1112,7 +1149,8 @@ def read_verdict(snaps, exps, now):
     # ---- gamma environment: sign at spot from flip side + magnitude vs trailing
     gsign=+1 if (r["flip"] is None or spot>=r["flip"]) else -1
     K=r["K"]; gnow=float(np.interp(spot,K,np.abs(r["net_gex"])))
-    hh=st.session_state.setdefault("read_gmag",[]); hh.append(gnow); hh[:] = hh[-60:]
+    hh=st.session_state.setdefault("read_gmag",[])
+    if track: hh.append(gnow); hh[:] = hh[-60:]
     pct=float(np.mean(np.array(hh)<=gnow))*100 if len(hh)>2 else 50.0
     env=("HEAVY γ (top decile — saturated, pinned)" if pct>=90 else
          "LIGHT γ (bottom quartile — moves come easier)" if pct<=25 else
@@ -1123,7 +1161,7 @@ def read_verdict(snaps, exps, now):
     if len(snaps)>=2:
         prev=snaps[-2]; chp=prev["chain"]; chp0=chp[chp["expiry"]==prev["exps"][0]] if "expiry" in chp.columns else chp
         hrs=max((latest["ts"]-prev["ts"]).total_seconds()/3600.0,1/60)
-        dbook=(_book_delta_0dte(ch0,spot,e0,now)-_book_delta_0dte(chp0,prev["spot"],prev["exps"][0],prev["ts"].replace(tzinfo=None)))/hrs
+        dbook=_book_delta_drift(chp0,prev["spot"],prev["ts"].replace(tzinfo=None),spot,now,e0)/hrs
         lean=("SELL flow (drift down)" if dbook>0 else "BUY flow (drift up)"); src="empirical Δδ/Δt"
         flow5=abs(dbook)/12.0*(2/100.0)   # ≈ e-mini per 5 min (×−2 per exposure, /100 per contract-δ)
     else:
@@ -1139,9 +1177,14 @@ def read_verdict(snaps, exps, now):
     up=lean.startswith("BUY")
     # ---- gates
     strad_now=terrain_straddle(ch0,spot)
-    first=snaps[0]; chf=first["chain"]; chf0=chf[chf["expiry"]==first["exps"][0]] if "expiry" in chf.columns else chf
-    strad_open=terrain_straddle(chf0,first["spot"])
-    decay=("n/a — need 2nd snapshot" if (len(snaps)<2 or not strad_now or not strad_open) else
+    _so=st.session_state.get("strad_open_"+now.strftime("%Y-%m-%d"))
+    if _so and _so[0]:
+        strad_open=float(_so[0]); open_lbl=f"open {_so[1]}"
+    else:
+        first=snaps[0]; chf=first["chain"]; chf0=chf[chf["expiry"]==first["exps"][0]] if "expiry" in chf.columns else chf
+        strad_open=terrain_straddle(chf0,first["spot"]) if len(snaps)>=2 else None
+        open_lbl="open (1st snap)"
+    decay=("n/a — need open reference" if (not strad_now or not strad_open) else
            "COLLAPSING — very local, pin tightens" if strad_now<0.45*strad_open else
            "DECAYING — charm signal live" if strad_now<0.995*strad_open else
            "FLAT/REPRICING — stand down (snake-oil check)")
@@ -1157,7 +1200,7 @@ def read_verdict(snaps, exps, now):
     fishline=("clean structure" if fish<=4 else "messy — size down" if fish<=8 else "FISHBONE — sit out")
     # absorption vs charm flow toward the lean-side bound (§5.4 / sheet: gamma absorbs charm)
     c=ch0.dropna(subset=["strike","delta"])
-    w=np.where(c["volume"].fillna(0)>0,c["volume"].fillna(0),c["oi"].fillna(0)).astype(float)
+    w=np.where(c["oi"].fillna(0)>0,c["oi"].fillna(0),c["volume"].fillna(0)).astype(float)  # absorption = EXISTING book (v2.2.0)
     dlt=c["delta"].fillna(0).values; Ks=c["strike"].values
     rem=np.abs(np.where(dlt>=0,1-dlt,-1-dlt))*w*100/50.0
     bound=spot+(strad_now or spot*0.004)*(1 if up else -1)
@@ -1197,7 +1240,7 @@ def read_verdict(snaps, exps, now):
     return dict(pat=pat,do=do,env=env,lean=lean+f"  [{src} · ≈{flow5:,.0f} minis/5min proxy]",
                 decay=decay,clock=clock,vix=vixline,fish=f"{fishline} (score {fish})",
                 nxt=nxt,conf=conf,through=through,to=to,spot=spot,wall_up=wall_up,wall_dn=wall_dn,pin=target,
-                strad=f"${strad_now:.2f}" if strad_now else "n/a")
+                strad=f"\\${strad_now:.2f}" if strad_now else "n/a",open_lbl=open_lbl)
 
 def gex_cmap():
     return mcolors.LinearSegmentedColormap.from_list("gex",
@@ -1500,6 +1543,13 @@ def take_snapshot(num_expiries):
     # quote can lag, and a stale LOW during a spike is worse than an honest n/a).
     vix=fetch_vix_live(); vix_src=("tvc" if vix is not None else None)
     ts=now_est()
+    _dk="strad_open_"+ts.strftime("%Y-%m-%d")
+    if _dk not in st.session_state:
+        try:
+            _c0=chain[chain["expiry"]==exps[0]]
+            _s0=terrain_straddle(_c0,spot)
+            if _s0: st.session_state[_dk]=(float(_s0),ts.strftime("%H:%M"))
+        except Exception: pass
     st.session_state.snaps.append(dict(ts=ts,spot=spot,chain=chain,exps=exps,vix=vix,vix_src=vix_src))
     st.session_state.last_ts=ts
     return spot,exps
@@ -1550,7 +1600,7 @@ force=c1.button("📸 Snapshot now",use_container_width=True)
 if c2.button("🗑 Clear",use_container_width=True):
     st.session_state.snaps=[]; st.session_state.last_ts=None; st.rerun()
 st.sidebar.caption("POC · snapshots in-memory (reset on app restart) · "
-                   "sign = dealer calls+/puts− · volume unsigned")
+                   "sign = dealer calls+/puts− · volume unsigned · quotes as-of snapshot (Barchart may lag ~15m)")
 
 # manual data refresh (clears bars cache + forces a fresh snapshot)
 refresh=c2.button("🔄 Refresh data",use_container_width=True)
@@ -1884,14 +1934,19 @@ with tab_sig:
         ch0=latest["chain"][latest["chain"].get("expiry",use_exps[0])==use_exps[0]] \
             if "expiry" in latest["chain"].columns else latest["chain"]
         strad_now=terrain_straddle(ch0,spot)
-        first=snaps[0]; ch0_first=first["chain"][first["chain"].get("expiry",use_exps[0])==first["exps"][0]] \
-            if "expiry" in first["chain"].columns else first["chain"]
-        strad_open=terrain_straddle(ch0_first,first["spot"])
+        _so=st.session_state.get("strad_open_"+now_naive.strftime("%Y-%m-%d"))
+        if _so and _so[0]:
+            strad_open=float(_so[0]); open_lbl=f"{_so[1]}"
+        else:
+            first=snaps[0]; ch0_first=first["chain"][first["chain"].get("expiry",use_exps[0])==first["exps"][0]] \
+                if "expiry" in first["chain"].columns else first["chain"]
+            strad_open=terrain_straddle(ch0_first,first["spot"]) if len(snaps)>1 else None
+            open_lbl="1st snap"
         decaying=None
-        if strad_now and strad_open and len(snaps)>1: decaying=strad_now<strad_open*0.995
+        if strad_now and strad_open: decaying=strad_now<strad_open*0.995
         # gamma absorption toward each straddle bound (§5.4 mental math, futures-equiv)
         c=ch0.dropna(subset=["strike","delta"])
-        w=np.where(c["volume"].fillna(0)>0,c["volume"].fillna(0),c["oi"].fillna(0)).astype(float)
+        w=np.where(c["oi"].fillna(0)>0,c["oi"].fillna(0),c["volume"].fillna(0)).astype(float)  # book-first (v2.2.0)
         dlt=c["delta"].fillna(0).values; K=c["strike"].values
         rem=np.abs(np.where(dlt>=0,1-dlt,-1-dlt))*w*100/50.0   # e-mini equiv remaining hedge
         up=float(rem[(K>spot)&(K<=spot+(strad_now or spot*0.005))].sum())
@@ -1911,22 +1966,111 @@ with tab_sig:
         try: r=pinak_levels(ch0,spot,use_exps[0],now_naive)
         except Exception: r=None
         f=lambda v: f"{v:,.0f}" if isinstance(v,(int,float)) and v is not None else "n/a"
-        L=[f"SPX {spot:,.2f}   {sel_ts:%H:%M:%S} EST   exps fetched {len(use_exps)}","",
-           f"STRADDLE  now {('$%.2f'%strad_now) if strad_now else 'n/a'} · open {('$%.2f'%strad_open) if strad_open else 'n/a'}"
-           f" · decaying? {'YES' if decaying else 'NO' if decaying is False else 'n/a'}",
-           f"RANGE (spot±straddle)  {f(spot-(strad_now or 0))} — {f(spot+(strad_now or 0))}",
-           f"STRUCTURE  fishbone {fish} → {fishtxt}",
-           f"REGIME  {reg or 'building trailing…'}   ·   WINDOW  {win}",
-           f"CHARM GATE  {gate}",
-           f"ABSORPTION to bounds (e-mini equiv)  up {up:,.0f} · down {dn:,.0f}"
-           f"   → path of least resistance: {'DOWN' if up>dn*1.4 else 'UP' if dn>up*1.4 else 'balanced'}",""]
-        if r: L+=[f"PIN {f(r['pin'])} [{r['pin_label']} {r['pin_score']}/100]   FLIP {f(r['flip'])}",
-                  f"CALL WALL {f(r['call_wall'])} · PUT WALL {f(r['put_wall'])} · K* {f(r['kstar'])}",
-                  f"CEIL {f(r['ceiling'])} · FLOOR {f(r['floor'])} · HW up/dn {f(r['up_hw'])}/{f(r['dn_hw'])}"]
-        L+=["","cannot measure: dealer long/short (anchor vs test), MM-on-MM netting, OTC flow."]
-        fs,axs=plt.subplots(figsize=(16,4.6),dpi=80,facecolor=DARK); axs.axis("off"); axs.set_facecolor(DARK)
-        axs.text(0.01,0.98,"SIGNALS — daily workflow\n"+"\n".join(L),transform=axs.transAxes,color=TXT,
-                 va="top",ha="left",family="monospace",fontsize=10.5)
+        _noMath=lambda s: str(s).replace("$","\\$")   # matplotlib treats $…$ as mathtext
+        GRN="#22c55e"; RED="#ef4444"; GLD="#f0a020"; DIM="#8b949e"; WHT="#e6edf3"; CYN="#38bdf8"
+        # ── verdict banner — same engine as the Read tab, so they can never disagree
+        try: v=read_verdict(snaps[:sel_i+1] if sel_i+1<=len(snaps) else snaps, use_exps, now_naive, track=False)
+        except Exception: v=None
+        if v:
+            vup=("LEANS UP" in v["pat"]) or ("BULL" in v["pat"])
+            if v["conf"]<=25 and "FISHBONE" in v["fish"]:
+                ban=("\u26d4 STAND DOWN","no trade — structure is whipsaw (fishbone): hedging flips strike to strike",RED)
+            elif v["conf"]>=60:
+                ban=((("\u25b2 LEAN LONG") if vup else ("\u25bc LEAN SHORT")),
+                     f"{v['do']}  ·  target {v['to']:,.0f}" if v.get("to") else v["do"],(GRN if vup else RED))
+            elif v["conf"]>=40:
+                ban=("\u26a0 SMALL SIZE ONLY",f"{v['do']}  ·  reduced conviction",GLD)
+            else:
+                blocker=("straddle not decaying — charm signal is off" if v["decay"].startswith("FLAT")
+                         else "open-hour external flow — signal not live yet" if v["clock"].startswith("OPEN")
+                         else "VIX high — vanna can steamroll charm" if "HIGH" in v["vix"]
+                         else "no reference yet — need the open straddle" if v["decay"].startswith("n/a")
+                         else "weak/conflicting gates")
+                ban=("\u23f8 WAIT",f"inaction is the trade right now — {blocker}",GLD)
+            why=[]
+            why.append("charm live" if v["decay"].startswith(("DECAYING","COLLAPSING")) else "charm off")
+            why.append("prime window" if "SWEET" in v["clock"] else ("pin hour" if v["clock"].startswith("CLOSE") else ("open hour" if v["clock"].startswith("OPEN") else "midday")))
+            why.append(v["vix"].split(" \u00b7 ")[0])
+            banner_why="because: "+" \u00b7 ".join(why)+"    flips if: straddle reprices \u00b7 VIX spikes \u00b7 a test breaks & holds"
+        path=("DOWN" if up>dn*1.4 else "UP" if dn>up*1.4 else "balanced")
+        d_txt,d_col,d_int=(("YES — charm flow is real today",GRN,"decay drips onto dealer books — the drift is live") if decaying
+                           else ("NO — repricing/flat",RED,"options not bleeding — ignore charm today") if decaying is False
+                           else ("n/a",DIM,"need the open reference"))
+        rows=[("sec","STRADDLE — is the charm signal usable today? (snake-oil check)",CYN),
+              ("kv2","now",(f"${strad_now:.2f}" if strad_now else "n/a"),WHT,
+                     f"open ({open_lbl})",(f"${strad_open:.2f}" if strad_open else "n/a"),WHT,""),
+              ("kv","decaying?",d_txt,d_col,d_int),
+              ("kv","range spot\u00b1straddle",f"{f(spot-(strad_now or 0))} — {f(spot+(strad_now or 0))}",WHT,
+                    "the market's own guess for today's travel"),
+              ("sec","STRUCTURE \u00b7 REGIME \u00b7 CLOCK — can the signal be trusted right now?",CYN),
+              ("kv","fishbone",f"{fish}  \u00b7  {fishtxt}",(GRN if fish<=4 else GLD if fish<=8 else RED),
+                    ("one-sided book = orderly hedging" if fish<=4 else "mixed book = degraded signal" if fish<=8 else "alternating strikes = whipsaw, no edge")),
+              ("kv","gamma regime",reg or "building trailing…",WHT,
+                    ("tight, pinned tape — fade the edges" if reg.startswith("HEAVY") else "moves travel further than usual" if reg.startswith("LOOSE") else "typical range behavior")),
+              ("kv","window",win,(GRN if "SWEET" in win else GLD),
+                    ("prime charm hours" if "SWEET" in win else "pin gravity strongest" if win.startswith("CLOSE") else "external flow dominates — wait" if win.startswith("OPEN") else "signal building")),
+              ("kv","CHARM GATE",gate,(GRN if gate.startswith("OPEN") else RED),
+                    ("all clear — the drift can be leaned on" if gate.startswith("OPEN") else "do NOT trade the charm story while this is closed")),
+              ("sec","DIRECTION — which way is the path of least resistance?",CYN),
+              ("kv","absorption up/down",f"{up:,.0f} / {dn:,.0f} e-mini",WHT,
+                    "hedge supply waiting in each direction — thicker side is harder to cross"),
+              ("kv","path",("\u25bc DOWN" if path=="DOWN" else "\u25b2 UP" if path=="UP" else "\u25c6 balanced"),
+                    (RED if path=="DOWN" else GRN if path=="UP" else GLD),
+                    ("more hedge supply above than below" if path=="DOWN" else "more hedge supply below than above" if path=="UP" else "no edge from absorption")),]
+        if r:
+            _pin,_ps=r["pin"],r["pin_score"]
+            pin_int=("no reliable magnet today — don't lean on the pin" if (_ps or 0)<40 else
+                     ("\u25b2 magnet ABOVE spot — drift-up pull into the close" if _pin and _pin>spot else
+                      "\u25bc magnet BELOW spot — drift-down pull into the close" if _pin and _pin<spot else "at spot — expect stickiness"))
+            flip_side=(r["flip"] is None or spot>=r["flip"])
+            rows+=[("kv","PIN",f"{f(_pin)}  \u00b7  {r['pin_label']} {_ps}/100",GLD,pin_int),
+                   ("kv","FLIP",f"{f(r['flip'])}  \u00b7  spot is {'ABOVE' if flip_side else 'BELOW'}",(CYN if flip_side else RED),
+                        ("+\u03b3 side: chop / mean-revert regime" if flip_side else "\u2212\u03b3 side: trend risk — needs a trigger, never fade the void")),
+                   ("kv2","CALL WALL",f"{f(r['call_wall'])}"+(f"  (resistance {r['call_wall']-spot:+,.0f})" if r["call_wall"] else ""),RED,
+                          "PUT WALL",f"{f(r['put_wall'])}"+(f"  (support {r['put_wall']-spot:+,.0f})" if r["put_wall"] else ""),GRN,""),
+                   ("kv2","K*",f"{f(r['kstar'])}  (implied fair spot)",WHT,"CEIL / FLOOR",f"{f(r['ceiling'])} / {f(r['floor'])}",WHT,"")]
+        rows+=[("foot","cannot measure: dealer long/short (anchor vs test) \u00b7 MM-on-MM netting \u00b7 OTC flow — treat as a weighted coin",DIM)]
+        fs,axs=plt.subplots(figsize=(16,7.4),dpi=80,facecolor=DARK); axs.axis("off"); axs.set_facecolor(DARK)
+        y=0.988
+        axs.text(0.012,y,f"SPX {spot:,.2f}    {sel_ts:%H:%M:%S} EST    expiry {use_exps[0]}    snapshots {len(snaps)}",
+                 transform=axs.transAxes,color=WHT,va="top",ha="left",family="monospace",fontsize=14,fontweight="bold"); y-=0.058
+        if v:
+            import matplotlib.patches as _mp
+            axs.add_patch(_mp.FancyBboxPatch((0.010,y-0.088),0.978,0.086,boxstyle="round,pad=0.004",
+                          transform=axs.transAxes,facecolor=ban[2],alpha=0.13,edgecolor=ban[2],linewidth=1.4))
+            axs.text(0.026,y-0.012,ban[0],transform=axs.transAxes,color=ban[2],va="top",ha="left",
+                     family="monospace",fontsize=16.5,fontweight="bold")
+            axs.text(0.300,y-0.014,_noMath(ban[1]),transform=axs.transAxes,color=WHT,va="top",ha="left",
+                     family="monospace",fontsize=11.5,fontweight="bold")
+            axs.text(0.945,y-0.012,f"{v['conf']}/100",transform=axs.transAxes,color=ban[2],va="top",ha="right",
+                     family="monospace",fontsize=15,fontweight="bold")
+            axs.text(0.026,y-0.056,banner_why,transform=axs.transAxes,color=DIM,va="top",ha="left",
+                     family="monospace",fontsize=9.5)
+            y-=0.118
+        for rw in rows:
+            kind=rw[0]
+            if kind=="sec":
+                y-=0.010
+                axs.text(0.012,y,rw[1],transform=axs.transAxes,color=rw[2],va="top",ha="left",
+                         family="monospace",fontsize=10.5,alpha=.95); y-=0.048
+            elif kind=="kv":
+                axs.text(0.030,y,rw[1],transform=axs.transAxes,color=DIM,va="top",ha="left",family="monospace",fontsize=11)
+                axs.text(0.230,y,_noMath(rw[2]),transform=axs.transAxes,color=rw[3],va="top",ha="left",
+                         family="monospace",fontsize=12,fontweight="bold")
+                if len(rw)>4 and rw[4]:
+                    axs.text(0.565,y,"\u2192 "+rw[4],transform=axs.transAxes,color=DIM,va="top",ha="left",
+                             family="monospace",fontsize=9.5,style="italic")
+                y-=0.046
+            elif kind=="kv2":
+                axs.text(0.030,y,rw[1],transform=axs.transAxes,color=DIM,va="top",ha="left",family="monospace",fontsize=11)
+                axs.text(0.230,y,_noMath(rw[2]),transform=axs.transAxes,color=rw[3],va="top",ha="left",
+                         family="monospace",fontsize=12,fontweight="bold")
+                axs.text(0.565,y,rw[4],transform=axs.transAxes,color=DIM,va="top",ha="left",family="monospace",fontsize=11)
+                axs.text(0.740,y,_noMath(rw[5]),transform=axs.transAxes,color=rw[6],va="top",ha="left",
+                         family="monospace",fontsize=12,fontweight="bold"); y-=0.046
+            else:
+                y-=0.010
+                axs.text(0.012,y,rw[1],transform=axs.transAxes,color=rw[2],va="top",ha="left",family="monospace",fontsize=9.5)
         emit("signals",fs)
     _ssig=repr((sel_ts.isoformat(),int(num_expiries),round(window_pct,5),len(snaps)))
     dispatch("signals",_render_signals,sig=_ssig)
