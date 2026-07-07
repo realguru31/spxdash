@@ -5,6 +5,19 @@ Point your streamlit.io app at this file.
 
 CHANGELOG (newest first) — what changed and why, per version
 ─────────────────────────────────────────────────────────────────────────────
+v2.1.4 [PERF/JIGGLE FIX] Two changes for CPU + screen-shake:
+  • Fixed-size chart rendering (use_container_width off, dpi 80). The jiggle was
+    Streamlit's resize feedback loop: responsive image ↔ scrollbar ↔ container
+    width oscillating on tall pages (Read tab). Fixed-size images end the loop.
+  • Live-render signature cache: each tab re-computes ONLY when its snapshot or
+    its own controls change; otherwise the cached PNG is shown with zero math.
+    Changing the Greek recomputes Terrain alone — Signals/Read stay cached. An
+    idle page now does no per-rerun BS-grid work at all (one benign extra render
+    right after a cap first seeds).
+v2.1.3 [Terrain strike scale] 25-pt price ticks now bright (#9fb0c3, larger) on
+  BOTH sides — left on the main field, right beside the profile histogram (VS3D
+  style) — plus subtle horizontal gridlines across the field so ridges and walls
+  map to strikes at a glance.
 v2.1.2 [Read tab glance graphics] Two cheat-sheet panels under the text:
   left = minimal sketch of the current pattern (chop zigzag with range band for
   +γ; expansion curve with trigger dot for −γ, in direction color); right = 'the
@@ -1595,7 +1608,7 @@ def emit(tab, fig, caption=None, container=None):
     If container is given (e.g. a st.columns() cell), render into it at a sane size."""
     tgt=container if container is not None else st
     if caption: tgt.markdown(caption)
-    tgt.pyplot(fig,use_container_width=True)
+    tgt.pyplot(fig,use_container_width=False)   # fixed size: prevents resize/jiggle feedback loop
     try:
         buf=_io.BytesIO(); fig.savefig(buf,format="png",dpi=85,facecolor=DARK,bbox_inches="tight")
         _EMIT_BUF.setdefault(tab,[]).append(buf.getvalue())
@@ -1603,31 +1616,27 @@ def emit(tab, fig, caption=None, container=None):
     plt.close(fig)
 def emit_caption(tab, text):
     st.caption(text)
-def _replay_show(tab):
-    """Playback mode: show cached PNGs for the selected frame, no recompute."""
-    frame=st.session_state.frames.get(PLAYBACK_TS,{})
+def _replay_show(tab, ts_iso=None):
+    """Show cached PNGs for a frame (playback OR unchanged live view), no recompute."""
+    frame=st.session_state.frames.get(ts_iso or PLAYBACK_TS,{})
     imgs=frame.get(tab,[])
     if not imgs:
         st.info(f"No cached frame for this tab at {PLAYBACK_TS[11:19]}. "
                 "Switch to this tab during a live snapshot to record it."); return
-    if tab=="vs3d":
-        # 2-column grid so panels don't balloon (matches live layout)
-        for i in range(0,len(imgs),2):
-            cols=st.columns(2)
-            for j,png in enumerate(imgs[i:i+2]):
-                cols[j].image(png,use_container_width=True)
-    else:
-        for png in imgs: st.image(png,use_container_width=True)
-def dispatch(tab, render_fn):
-    """Run render_fn live (display+cache) OR replay cached frames."""
+    for png in imgs: st.image(png)   # natural size — no resize feedback loop
+def dispatch(tab, render_fn, sig=None):
+    """PLAYBACK → replay old frame. Live + unchanged (same snapshot & controls)
+    → show cached PNG, ZERO recompute. Live + changed → render, cache, store sig."""
+    ts=sel_ts.isoformat()
     if PLAYBACK:
-        _replay_show(tab)
-    else:
-        _EMIT_BUF[tab]=[]
-        render_fn()
-        # cache this tab's frame for the CURRENT (latest) snapshot ts
-        ts=sel_ts.isoformat()
-        st.session_state.frames.setdefault(ts,{})[tab]=list(_EMIT_BUF.get(tab,[]))
+        _replay_show(tab); return
+    last=st.session_state.setdefault("_livesig",{})
+    if sig is not None and last.get(tab)==sig and st.session_state.frames.get(ts,{}).get(tab):
+        _replay_show(tab, ts); return
+    _EMIT_BUF[tab]=[]
+    render_fn()
+    st.session_state.frames.setdefault(ts,{})[tab]=list(_EMIT_BUF.get(tab,[]))
+    last[tab]=sig
 
 tab_terr,tab_sig,tab_read=st.tabs(["🗺 Terrain (gradient chart)","🧭 Signals (daily workflow)","📖 Read (what happens next)"])
 
@@ -1663,7 +1672,7 @@ with tab_terr:
         cmap=gex_cmap() if t_greek!="Charm" else charm_cmap()
         plotV=V if t_greek!="Charm" else -V   # hedging-effect polarity: dealers-must-SELL renders gold (§7.7)
         x0,x1=session_window()
-        fig=plt.figure(figsize=(16.5,7.6),facecolor=DARK)
+        fig=plt.figure(figsize=(16.5,7.6),dpi=80,facecolor=DARK)
         gs=fig.add_gridspec(1,2,width_ratios=[24,2.2],wspace=0.015)
         ax=fig.add_subplot(gs[0,0]); axp=fig.add_subplot(gs[0,1],sharey=ax)
         ax.set_facecolor(DARK); axp.set_facecolor(DARK)
@@ -1707,16 +1716,29 @@ with tab_terr:
         axp.fill_betweenx(pg,0,np.clip(prof/capv,-1,1),where=prof>=0,color=posc,alpha=.85)
         axp.fill_betweenx(pg,0,np.clip(prof/capv,-1,1),where=prof<0,color=negc,alpha=.85)
         axp.axvline(0,color="#555",lw=.6); axp.axhline(spot,color=WHITE,ls="--",lw=.8,alpha=.8)
-        axp.set_xlim(-1,1); axp.set_xticks([]); plt.setp(axp.get_yticklabels(),visible=False)
+        axp.set_xlim(-1,1); axp.set_xticks([])
         for s_ in ("top","right","left","bottom"): axp.spines[s_].set_color(GRID)
         pol=("green = dealers BUY to arrive hedged (supportive) · red = SELL" if t_greek=="Delta Change"
              else ("green = +γ suppressive · red = −γ amplifying" if t_greek=="Gamma"
              else "gold = dealers must SELL as time passes · blue = must BUY"))
         ax.set_title(f"TERRAIN · {t_greek} · {t_wt} · exps {len(use_exps)} · cap {st.session_state.get(capkey,0):,.0f}"
                      f" · {t_int}({t_pow:g}) · α{t_alpha:.2f}   [{pol}]",color=TXT,fontsize=10.5,loc="left")
+        # strike scale: 25-pt gridlines across the field + bright labels both sides
+        _yt=np.arange(np.ceil(pg[0]/25)*25, pg[-1]+1, 25)
+        for _y in _yt:
+            ax.axhline(_y,color="#1a2330",lw=0.6,zorder=1)
+        ax.set_yticks(_yt)
+        ax.tick_params(axis="y",colors="#9fb0c3",labelsize=10.5,length=3)
+        axp.yaxis.tick_right()
+        axp.set_yticks(_yt)
+        plt.setp(axp.get_yticklabels(),visible=True)
+        axp.tick_params(axis="y",colors="#9fb0c3",labelsize=9,length=2)
         ax.set_ylim(pg[0],pg[-1]); style_time_axis(ax,x0,x1)
         emit("terrain",fig)
-    dispatch("terrain",_render_terrain)
+    _tsig=repr((sel_ts.isoformat(),t_greek,t_wt,t_norm,t_pct,t_int,round(t_pow,3),round(t_alpha,3),
+                t_cont,t_strad,t_lvls,t_voladj,t_simg,int(num_expiries),round(window_pct,5),
+                st.session_state.get(f"terr_cap_{t_greek}_{t_wt}")))
+    dispatch("terrain",_render_terrain,sig=_tsig)
 
 with tab_sig:
     emit_caption("signals","§5.1 daily workflow: straddle range → structure quality → charm gate → absorption. "
@@ -1769,11 +1791,12 @@ with tab_sig:
                   f"CALL WALL {f(r['call_wall'])} · PUT WALL {f(r['put_wall'])} · K* {f(r['kstar'])}",
                   f"CEIL {f(r['ceiling'])} · FLOOR {f(r['floor'])} · HW up/dn {f(r['up_hw'])}/{f(r['dn_hw'])}"]
         L+=["","cannot measure: dealer long/short (anchor vs test), MM-on-MM netting, OTC flow."]
-        fs,axs=plt.subplots(figsize=(16,4.6),facecolor=DARK); axs.axis("off"); axs.set_facecolor(DARK)
+        fs,axs=plt.subplots(figsize=(16,4.6),dpi=80,facecolor=DARK); axs.axis("off"); axs.set_facecolor(DARK)
         axs.text(0.01,0.98,"SIGNALS — daily workflow\n"+"\n".join(L),transform=axs.transAxes,color=TXT,
                  va="top",ha="left",family="monospace",fontsize=10.5)
         emit("signals",fs)
-    dispatch("signals",_render_signals)
+    _ssig=repr((sel_ts.isoformat(),int(num_expiries),round(window_pct,5),len(snaps)))
+    dispatch("signals",_render_signals,sig=_ssig)
 
 with tab_read:
     emit_caption("read","Cheat-sheet decision engine: γ environment × charm lean → one of four day patterns, "
@@ -1818,7 +1841,7 @@ with tab_read:
         lines.append(("breaking AND holding (delta 30→100, new range) · any external trigger",DIM,10.5,False))
         # ---- layout: text block on top, two glance-graphics below (cheat-sheet style)
         textH=sum(l[2] for l in lines)*1.55/72+0.35; gfxH=1.9; H=textH+gfxH
-        fr=plt.figure(figsize=(13.5,H),facecolor=DARK)
+        fr=plt.figure(figsize=(13.5,H),dpi=80,facecolor=DARK)
         axr=fr.add_axes([0.0,gfxH/H,1.0,textH/H]); axr.axis("off"); axr.set_facecolor(DARK)
         y=1.0
         for txt,col,fs,bold in lines:
@@ -1877,4 +1900,5 @@ with tab_read:
                          va="center",ha="left")
         axm.set_title("the day on one map — tests bound it, anchor holds it",color="#8b949e",fontsize=9,loc="left",pad=3)
         emit("read",fr)
-    dispatch("read",_render_read)
+    _rsig=repr((sel_ts.isoformat(),sel_i,len(snaps)))
+    dispatch("read",_render_read,sig=_rsig)
