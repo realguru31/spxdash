@@ -5,6 +5,12 @@ Point your streamlit.io app at this file.
 
 CHANGELOG (newest first) — what changed and why, per version
 ─────────────────────────────────────────────────────────────────────────────
+v2.1.1 [Read tab visual + pin fix] Read card rebuilt: large bold pattern header
+  with ▲/▼ in direction color (green bullish / red bearish vs spot), wrapped NEXT
+  line, colored gate stack (bull/bear/amber semantics; fixed FLOW-contains-LOW
+  substring bug), colored confidence bar. PIN candidates now constrained to ±2.5%
+  of spot — deep-wing OI was dragging pin to absurd levels (e.g. 6825 with spot
+  7537), corrupting the tension note; same class of fix as flip/K* earlier.
 v2.1  [NEW 📖 Read tab — the cheat-sheet as a decision engine] γ environment
   (side of flip + magnitude vs session trailing) × charm lean (empirical Δbook-
   delta/Δt when 2+ snaps, else model charm; hedging-effect: rising book delta =
@@ -823,8 +829,13 @@ def pinak_levels(chain, spot, exp, now):
         w=np.abs(net_gex[mask]); return float((K[mask]*w).sum()/w.sum()) if w.sum()>0 else None
     call_grav=centroid(above) ; put_grav=centroid(below)
     # ---- pin level + confidence ----
-    max_gex_k=float(K[np.argmax(tot_gex)]) if tot_gex.max()>0 else spot
-    max_oi_k =float(K[np.argmax(coi+poi)]) if (coi+poi).max()>0 else spot
+    nb=np.abs(K-spot)<=spot*0.025          # near-spot band: wings can't own the pin
+    if nb.any():
+        tg=np.where(nb,tot_gex,-1); to_=np.where(nb,coi+poi,-1)
+        max_gex_k=float(K[np.argmax(tg)]) if tg.max()>0 else spot
+        max_oi_k =float(K[np.argmax(to_)]) if to_.max()>0 else spot
+    else:
+        max_gex_k=max_oi_k=spot
     in_pos=(flip is not None and spot>flip) or (flip is None and net_gex[np.argmin(np.abs(K-spot))]>0)
     conv=abs(max_gex_k-max_oi_k)
     grav_agree=(call_grav is not None and put_grav is not None and abs(call_grav-put_grav)<spot*0.01)
@@ -1770,25 +1781,41 @@ with tab_read:
         try: v=read_verdict(snaps[:sel_i+1] if sel_i+1<=len(snaps) else snaps, use_exps, now_naive)
         except Exception as ex:
             import traceback; st.error(f"read failed: {ex}"); st.code(traceback.format_exc()); return
-        bar="█"*int(round(v["conf"]/5))+"░"*(20-int(round(v["conf"]/5)))
-        L=[f"SPX {v['spot']:,.2f}   {sel_ts:%H:%M:%S} EST   straddle {v['strad']}","",
-           f"READ        {v['pat']}",
-           f"NEXT        {v['nxt']}",
-           f"STRUCTURE   {v['do']}",
-           ("PLAY        buy through "+(f"{v['through']:,.0f}" if v['through'] else "n/a")
-            +" · sell to "+(f"{v['to']:,.0f}" if v['to'] else "n/a")),
-           "",
-           f"CONFIDENCE  {v['conf']}/100  {bar}","",
-           f"  γ env     {v['env']}",
-           f"  charm     {v['lean']}",
-           f"  straddle  {v['decay']}",
-           f"  clock     {v['clock']}",
-           f"  vix       {v['vix']}",
-           f"  structure {v['fish']}","",
-           "gates that can flip this read: straddle repricing up · VIX spike (vanna over charm) ·",
-           "a test breaking AND holding (delta runs 30→100, new range) · any external trigger."]
-        fr,axr=plt.subplots(figsize=(16,5.6),facecolor=DARK); axr.axis("off"); axr.set_facecolor(DARK)
-        axr.text(0.01,0.98,"\n".join(L),transform=axr.transAxes,color=TXT,va="top",ha="left",
-                 family="monospace",fontsize=11)
+        BULL="#22c55e"; BEAR="#ef4444"; WARN="#f0a020"; DIM="#8b949e"; CYAN="#38bdf8"; WHT="#e6edf3"
+        up="LEANS UP" in v["pat"] or "BULL" in v["pat"]
+        dirc=BULL if up else BEAR
+        def gate_color(txt):
+            t=" "+txt.upper()
+            if any(k in t for k in ["SELL FLOW","FISHBONE","FLAT/REPRICING","VIX HIGH"," HIGH ·","OPEN 9:30","NEGATIVE"]): return BEAR
+            if any(k in t for k in ["BUY FLOW","DECAYING","SWEET"," LOW ·","CLEAN"]): return BULL
+            return WARN
+        import textwrap
+        lines=[]   # (text, color, size, bold)
+        lines.append((f"SPX {v['spot']:,.2f}   {sel_ts:%H:%M:%S} EST   straddle {v['strad']}",WHT,13,False))
+        lines.append(("",WHT,6,False))
+        lines.append((("▲ " if up else "▼ ")+v["pat"],dirc,17,True))
+        for i,w in enumerate(textwrap.wrap("NEXT  "+v["nxt"],96)):
+            lines.append((w if i==0 else "      "+w, dirc if "WARNING" not in w and "tension" not in w else WARN, 12.5,False))
+        lines.append(("STRUCTURE  "+v["do"],CYAN,12.5,False))
+        thr=f"{v['through']:,.0f}" if v['through'] else "n/a"; to=f"{v['to']:,.0f}" if v['to'] else "n/a"
+        lines.append((f"PLAY  buy through {thr} · sell to {to}",CYAN,12.5,True))
+        lines.append(("",WHT,6,False))
+        cc=BULL if v["conf"]>=65 else (WARN if v["conf"]>=40 else BEAR)
+        nb=int(round(v["conf"]/5))
+        lines.append((f"CONFIDENCE {v['conf']}/100  "+"█"*nb+"─"*(20-nb),cc,14,True))
+        lines.append(("",WHT,6,False))
+        for lab,val in [("γ env",v["env"]),("charm",v["lean"]),("straddle",v["decay"]),
+                        ("clock",v["clock"]),("vix",v["vix"]),("structure",v["fish"])]:
+            lines.append((f"  {lab:<10}{val}",gate_color(val),12,False))
+        lines.append(("",WHT,6,False))
+        lines.append(("flips this read: straddle repricing up · VIX spike (vanna over charm) · a test",DIM,10.5,False))
+        lines.append(("breaking AND holding (delta 30→100, new range) · any external trigger",DIM,10.5,False))
+        H=sum(l[2] for l in lines)*1.55/72+0.5
+        fr,axr=plt.subplots(figsize=(13.5,H),facecolor=DARK); axr.axis("off"); axr.set_facecolor(DARK)
+        y=1.0
+        for txt,col,fs,bold in lines:
+            axr.text(0.012,y,txt,transform=axr.transAxes,color=col,va="top",ha="left",
+                     family="monospace",fontsize=fs,fontweight=("bold" if bold else "normal"))
+            y-=fs*1.55/(H*72)
         emit("read",fr)
     dispatch("read",_render_read)
