@@ -5,6 +5,20 @@ Point your streamlit.io app at this file.
 
 CHANGELOG (newest first) — what changed and why, per version
 ─────────────────────────────────────────────────────────────────────────────
+v2.1.8 [IV UNITS ROOT CAUSE + STACKED CHARM — 2026-07-07 midday]
+  • ROOT CAUSE of the flat two-tone terrain: Barchart serves IV percent-style
+    (19.5 = 19.5%) and we consumed it as decimal → every BS greek priced at
+    ~1950% vol → gamma smeared ±700pts → ALL price structure erased (strike
+    banding cv 1.5→0.17 in the harness repro; flat two-tone is the symptom). Proof: a
+    fresh Reset re-seeded cap ≈4.69e9 ≈ the "stale" 4.25e9 (a fresh seed cannot
+    saturate its own frame), and straddle $26.10 @ spot 7486 implies ~19.5% ATM.
+    FIX: _iv_norm() at the fetch_chain ingest point — >3 → ÷100. Snapshot
+    chains are now decimal everywhere downstream (terrain, Delta Change, read
+    lean, pinak vanna, decay/forward surfaces all healed by the one choke point).
+  • STACKED CHARM PANEL (user request): Charm field rendered below the main
+    greek on the Terrain tab, VS3D-style — no dropdown flip-flopping. Own cap
+    (terr_cap_Charm_*), rides the same playback/frame cache (multi-image tabs
+    were already supported), zero-contour + candles + spot for alignment.
 v2.1.7 [LIVE-SESSION FIXES — 2026-07-07 first RTH validation]
   • DEFAULTS: Expiries to aggregate 3→1 (0DTE only — the gradient chart is a
     0DTE tool; multi-expiry background was washing out asymptotic structure).
@@ -424,6 +438,17 @@ def init_session(sym="$SPX"):
 def get_spot(s,h,sym="$SPX"):
     r=s.get(QUOTE_URL,params={"symbols":sym,"fields":"lastPrice","raw":"1"},headers=h,timeout=10); r.raise_for_status()
     d=r.json().get("data",[]); return float(d[0].get("raw",d[0]).get("lastPrice",0))
+def _iv_norm(v):
+    """Barchart serves IV percent-style (e.g. 19.5 = 19.5%). Normalize to decimal
+    at INGEST so every snapshot chain is decimal everywhere downstream. >3 cannot
+    be a real decimal index vol (300%), so the detector is safe either way.
+    v2.1.8 root-cause: BS greeks were priced at ~1950% vol all morning."""
+    try:
+        import math
+        if v is None or (isinstance(v,float) and math.isnan(v)): return v
+        return v/100.0 if v>3.0 else v
+    except Exception: return v
+
 def fetch_chain(s,h,expiry,sym="$SPX"):
     f="strikePrice,bidPrice,askPrice,optionType,volatility,delta,gamma,openInterest,volume"
     for a in range(3):
@@ -438,7 +463,7 @@ def fetch_chain(s,h,expiry,sym="$SPX"):
                         raw=it.get("raw",it)
                         def num(k):
                             v=raw.get(k,None); return float(v) if v not in (None,"") else np.nan
-                        rows.append({"strike":num("strikePrice"),"type":ot.lower(),"iv":num("volatility"),
+                        rows.append({"strike":num("strikePrice"),"type":ot.lower(),"iv":_iv_norm(num("volatility")),
                             "gamma":num("gamma"),"delta":num("delta"),"oi":num("openInterest"),"volume":num("volume"),
                             "bid":num("bidPrice"),"ask":num("askPrice")})
             return pd.DataFrame(rows) if rows else None
@@ -1497,6 +1522,8 @@ with st.sidebar.expander("🗺 Terrain controls", expanded=False):
     t_lvls=st.checkbox("Dealer levels overlay (Pinak)",value=True)
     t_voladj=st.radio("Vol adjust",["0%","+1%"],index=0,horizontal=True)
     t_simg=st.checkbox("Simulated gamma ($5 finite diff, §2.7)",value=False)
+    t_charm2=st.checkbox("Charm panel below (stacked, VS3D-style)",value=True,
+        help="Second field under the main greek — gold = dealers must SELL as time passes · blue = BUY. No more dropdown flip-flopping.")
 auto_on=st.sidebar.toggle("Auto-refresh (5 min)",value=True)
 c1,c2=st.sidebar.columns(2)
 force=c1.button("📸 Snapshot now",use_container_width=True)
@@ -1781,9 +1808,44 @@ with tab_terr:
         axp.tick_params(axis="y",colors="#9fb0c3",labelsize=9,length=2)
         ax.set_ylim(pg[0],pg[-1]); style_time_axis(ax,x0,x1)
         emit("terrain",fig)
+        # ---- stacked Charm panel (v2.1.8, user request): same window/time axis,
+        # hedging-effect polarity (gold = dealers must SELL as clock runs, blue = BUY)
+        if t_charm2 and t_greek!="Charm":
+            try:
+                _,Zc,_=terrain_grid(latest["chain"],spot,use_exps,now_naive,greek="Charm",
+                                    vol_adj=(0.01 if t_voladj=="+1%" else 0.0),
+                                    p_min=p_min,p_max=p_max,weighting=t_wt)
+                ck=f"terr_cap_Charm_{t_wt}"
+                cseed=st.session_state.get(ck)
+                Vc,c_cap=terrain_scale(Zc,t_norm,cseed if t_norm=="Manual (fixed cap)" else None,t_pct)
+                if t_norm=="Manual (fixed cap)" and cseed is None:
+                    st.session_state[ck]=1.2*float(np.percentile(np.abs(Zc),98)); Vc,c_cap=terrain_scale(Zc,t_norm,st.session_state[ck],t_pct)
+                st.session_state.setdefault(f"terr_hist_Charm_{t_wt}",[]).append(float(np.percentile(np.abs(Zc),92)))
+                Vc=terrain_intensity(Vc,t_int,power=t_pow,gain=3.0)
+                fc=plt.figure(figsize=(16.5,4.4),dpi=80,facecolor=DARK)
+                axc=fc.add_subplot(111); axc.set_facecolor(DARK)
+                axc.imshow(-Vc,origin="lower",extent=[x0,x1,pg[0],pg[-1]],aspect="auto",
+                           cmap=charm_cmap(),vmin=-1,vmax=1,interpolation="bilinear",zorder=0,alpha=t_alpha)
+                if t_cont:
+                    try: axc.contour(np.linspace(x0,x1,Zc.shape[1]),pg,Zc,levels=[0.0],
+                                     colors="#e8e8e8",linewidths=1.0,linestyles=(0,(4,3)),alpha=.9,zorder=6)
+                    except Exception: pass
+                draw_candles(axc,bars,x0,x1,pg[0],pg[-1])
+                axc.axhline(spot,color=WHITE,ls="--",lw=1.0,alpha=.9,zorder=7)
+                axc.axvline(mdates.date2num(now_naive),color="#3399dd",ls=":",lw=1.1,zorder=7)
+                for _y in _yt: axc.axhline(_y,color="#1a2330",lw=0.6,zorder=1)
+                axc.set_yticks(_yt); axc.tick_params(axis="y",colors="#9fb0c3",labelsize=10.5,length=3)
+                axc.set_ylim(pg[0],pg[-1]); style_time_axis(axc,x0,x1)
+                axc.set_title(f"CHARM · {t_wt} · cap {st.session_state.get(ck,0):,.0f}   "
+                              f"[gold = dealers must SELL as time passes · blue = must BUY]",
+                              color=TXT,fontsize=10.5,loc="left")
+                emit("terrain",fc)
+            except Exception as ex:
+                st.caption(f"charm panel unavailable: {ex}")
     _tsig=repr((sel_ts.isoformat(),t_greek,t_wt,t_norm,t_pct,t_int,round(t_pow,3),round(t_alpha,3),
-                t_cont,t_strad,t_lvls,t_voladj,t_simg,int(num_expiries),round(window_pct,5),
-                st.session_state.get(f"terr_cap_{t_greek}_{t_wt}")))
+                t_cont,t_strad,t_lvls,t_voladj,t_simg,t_charm2,int(num_expiries),round(window_pct,5),
+                st.session_state.get(f"terr_cap_{t_greek}_{t_wt}"),
+                st.session_state.get(f"terr_cap_Charm_{t_wt}") if t_charm2 else None))
     dispatch("terrain",_render_terrain,sig=_tsig)
 
 with tab_sig:
