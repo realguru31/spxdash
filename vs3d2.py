@@ -5,6 +5,25 @@ Point your streamlit.io app at this file.
 
 CHANGELOG (newest first) — what changed and why, per version
 ─────────────────────────────────────────────────────────────────────────────
+v2.1  [NEW 📖 Read tab — the cheat-sheet as a decision engine] γ environment
+  (side of flip + magnitude vs session trailing) × charm lean (empirical Δbook-
+  delta/Δt when 2+ snaps, else model charm; hedging-effect: rising book delta =
+  dealers SELL = lean down) → one of the four day patterns (chop-up / chop-down /
+  bull expansion / bear flush) with structure suggestion and 'buy what price goes
+  through, sell what price goes to' strikes. Gates: charm clock, straddle check
+  (decaying / flat-repricing / collapsing), VIX regime (now fetched per snapshot),
+  fishbone (hard-caps confidence at 25 — SIT OUT), γ-absorption along the path
+  (§5.4), negative-γ 'needs a trigger' penalty, pin-vs-charm tension flagged when
+  PIN sits against the lean. Confidence 5–95 from the gate stack. Playback key
+  'read'. Proxy-honest footer throughout.
+v2.0.2 [Weighting made explicit + honest] New Terrain control 'Weighting':
+  OI + Volume (default: yesterday's settled book + today's cumulative flow),
+  OI (opening book — static all day, §4.5 'respect the opening position'),
+  Volume (today's flow — cumulative, resets overnight only, counts round-trips),
+  Vol-else-OI (legacy rule; kept, but it under-weights a big-OI strike the moment
+  it prints 2 lots — that discontinuity is why it's no longer default).
+  Nothing is signed; nothing resets intraday; OI cannot change intraday (OCC
+  publishes once daily). Cap seeds/history are per greek+weighting.
 v2.0.1 [FIX — controls now apply instantly] PLAYBACK was engaging whenever ANY
   frame was cached, so after the first snapshot every rerun replayed a frozen PNG
   and sidebar changes (Greek, opacity, cap…) did nothing until the next 5-min
@@ -848,7 +867,8 @@ def pinak_levels(chain, spot, exp, now):
 from scipy.signal import argrelextrema
 
 def terrain_grid(chain, spot, exps, now, greek="Delta Change", vol_adj=0.0,
-                 p_min=None, p_max=None, n_price=170, n_time=84, simulated_gamma=False):
+                 p_min=None, p_max=None, n_price=170, n_time=84, simulated_gamma=False,
+                 weighting="OI + Volume"):
     """Field Z(price,time) for the chosen greek over ALL expiries in `exps`.
     Each expiry decays on its own T(τ) across the 09:30–16:00 axis.
     Sign convention (proxy): calls +, puts − (dealer long/short NOT measured).
@@ -869,7 +889,16 @@ def terrain_grid(chain, spot, exps, now, greek="Delta Change", vol_adj=0.0,
         def arr(df):
             K=df["strike"].values.astype(float)
             iv=np.where(df["iv"].fillna(0).values>0,df["iv"].fillna(0).values,0.15)+vol_adj
-            w=np.where(df["volume"].fillna(0).values>0,df["volume"].fillna(0).values,df["oi"].fillna(0).values)
+            vol=df["volume"].fillna(0).values.astype(float); oi=df["oi"].fillna(0).values.astype(float)
+            # Weighting semantics (all magnitudes — none signed, none reset intraday):
+            #   vol = TODAY'S CUMULATIVE session volume (Barchart resets overnight only;
+            #         counts round-trips and both sides — flow, not positions)
+            #   oi  = YESTERDAY'S settled open interest (OCC, static all session ≈ the
+            #         opening structural book Dan says to respect, §4.5)
+            if weighting=="Volume (today's flow)":      w=vol
+            elif weighting=="OI (opening book)":        w=oi
+            elif weighting=="Vol else OI (legacy)":     w=np.where(vol>0,vol,oi)
+            else:                                       w=oi+vol   # OI + Volume (default)
             return K,iv,w
         Kc,ivc,wc=arr(cc); Kp,ivp,wp=arr(pp)
         Tn=_T_at(es,now)
@@ -962,6 +991,115 @@ def terrain_straddle(chain0, spot):
     v=(0 if np.isnan(cm) else cm)+(0 if np.isnan(pm) else pm)
     return float(v) if v>0 else None
 
+
+
+# ═══════════════ READ — cheat-sheet decision engine (gamma × charm + gates) ═════
+def _book_delta_0dte(ch, spot, exp, when):
+    c=ch.dropna(subset=["strike"]); T=_T_at(exp,when)
+    out=0.0
+    for typ,sgn in (("call",+1),("put",-1)):
+        d=c[c.type==typ]
+        if d.empty: continue
+        K=d["strike"].values.astype(float)
+        iv=np.where(d["iv"].fillna(0).values>0,d["iv"].fillna(0).values,0.15)
+        w=np.where(d["volume"].fillna(0).values>0,d["volume"].fillna(0).values,d["oi"].fillna(0).values)
+        out+=sgn*(w*bs_delta(spot,K,T,iv,typ=="call")).sum()*100
+    return out
+
+def read_verdict(snaps, exps, now):
+    """Cheat-sheet logic → what happens next. Returns dict of lines + confidence.
+    gamma sign (env) × charm lean (direction) = four patterns; gated by charm clock,
+    straddle check, VIX regime, fishbone, absorption. All proxy-honest."""
+    latest=snaps[-1]; spot=latest["spot"]; e0=exps[0]
+    ch=latest["chain"]; ch0=ch[ch["expiry"]==e0] if "expiry" in ch.columns else ch
+    r=pinak_levels(ch0,spot,e0,now)
+    # ---- gamma environment: sign at spot from flip side + magnitude vs trailing
+    gsign=+1 if (r["flip"] is None or spot>=r["flip"]) else -1
+    K=r["K"]; gnow=float(np.interp(spot,K,np.abs(r["net_gex"])))
+    hh=st.session_state.setdefault("read_gmag",[]); hh.append(gnow); hh[:] = hh[-60:]
+    pct=float(np.mean(np.array(hh)<=gnow))*100 if len(hh)>2 else 50.0
+    env=("HEAVY γ (top decile — saturated, pinned)" if pct>=90 else
+         "LIGHT γ (bottom quartile — moves come easier)" if pct<=25 else
+         f"NORMAL γ ({pct:.0f}th pctile of session)")
+    if gsign<0: env="NEGATIVE γ side of flip — dealers chase, trend/expansion"
+    # ---- charm lean: empirical d(book delta)/dt if 2+ snaps, else BS book charm
+    lean=None; src="model"
+    if len(snaps)>=2:
+        prev=snaps[-2]; chp=prev["chain"]; chp0=chp[chp["expiry"]==prev["exps"][0]] if "expiry" in chp.columns else chp
+        hrs=max((latest["ts"]-prev["ts"]).total_seconds()/3600.0,1/60)
+        dbook=(_book_delta_0dte(ch0,spot,e0,now)-_book_delta_0dte(chp0,prev["spot"],prev["exps"][0],prev["ts"].replace(tzinfo=None)))/hrs
+        lean=("SELL flow (drift down)" if dbook>0 else "BUY flow (drift up)"); src="empirical Δδ/Δt"
+        flow5=abs(dbook)/12.0*(2/100.0)   # ≈ e-mini per 5 min (×−2 per exposure, /100 per contract-δ)
+    else:
+        c=ch0.dropna(subset=["strike"]); T=_T_at(e0,now); dbook=0.0
+        for typ,sgn in (("call",+1),("put",-1)):
+            d=c[c.type==typ]
+            if d.empty: continue
+            Kk=d["strike"].values.astype(float)
+            iv=np.where(d["iv"].fillna(0).values>0,d["iv"].fillna(0).values,0.15)
+            w=np.where(d["volume"].fillna(0).values>0,d["volume"].fillna(0).values,d["oi"].fillna(0).values)
+            dbook+=sgn*(w*bs_charm(spot,Kk,T,iv)).sum()*100
+        lean=("SELL flow (drift down)" if dbook>0 else "BUY flow (drift up)"); flow5=abs(dbook)/(365*24*12)*2/100
+    up=lean.startswith("BUY")
+    # ---- gates
+    strad_now=terrain_straddle(ch0,spot)
+    first=snaps[0]; chf=first["chain"]; chf0=chf[chf["expiry"]==first["exps"][0]] if "expiry" in chf.columns else chf
+    strad_open=terrain_straddle(chf0,first["spot"])
+    decay=("n/a — need 2nd snapshot" if (len(snaps)<2 or not strad_now or not strad_open) else
+           "COLLAPSING — very local, pin tightens" if strad_now<0.45*strad_open else
+           "DECAYING — charm signal live" if strad_now<0.995*strad_open else
+           "FLAT/REPRICING — stand down (snake-oil check)")
+    t=now.time()
+    clock=("OPEN 9:30–11 — external flow, avoid charm" if t<dt.time(11,0) else
+           "MIDDAY 11–1:30 — settling, building" if t<dt.time(13,30) else
+           "SWEET SPOT 1:30–3 — best charm window" if t<=dt.time(15,0) else
+           "CLOSE 3–4 — very local, pin resolution")
+    vix=latest.get("vix"); vixline=vs3d_vix_regime(vix)
+    fish=vs3d_fishbone(ch0)
+    fishline=("clean structure" if fish<=4 else "messy — size down" if fish<=8 else "FISHBONE — sit out")
+    # absorption vs charm flow toward the lean-side bound (§5.4 / sheet: gamma absorbs charm)
+    c=ch0.dropna(subset=["strike","delta"])
+    w=np.where(c["volume"].fillna(0)>0,c["volume"].fillna(0),c["oi"].fillna(0)).astype(float)
+    dlt=c["delta"].fillna(0).values; Ks=c["strike"].values
+    rem=np.abs(np.where(dlt>=0,1-dlt,-1-dlt))*w*100/50.0
+    bound=spot+(strad_now or spot*0.004)*(1 if up else -1)
+    mask=(Ks>spot)&(Ks<=bound) if up else (Ks<spot)&(Ks>=bound)
+    absorb=float(rem[mask].sum()); swallowed=absorb>0 and flow5*24>0 and absorb>flow5*24*3
+    # ---- four-pattern verdict
+    if gsign>0 and up:    pat,do=("CHOP, LEANS UP — grind toward resistance, pin near anchor","call flies / spreads · sell the target strike")
+    elif gsign>0:         pat,do=("CHOP, LEANS DOWN — drift lower but contained, fade extremes","put flies / spreads · sell the target strike")
+    elif up:              pat,do=("BULL EXPANSION — squeeze higher, needs a trigger","long calls / single-leg · never fade the void")
+    else:                 pat,do=("BEAR FLUSH — sell-off/expansion, needs a trigger","long puts / put flies · never fade the void")
+    target=r["pin"]; wall_up=r["call_wall"]; wall_dn=r["put_wall"]
+    through=(wall_up if up else wall_dn)          # first wall in the LEAN direction — price must clear it
+    tension=None
+    if target and ((up and target<spot) or ((not up) and target>spot)):
+        tension=f"PIN {target:,.0f} sits {'ABOVE' if target>spot else 'BELOW'} against the charm lean — pin-vs-charm tension, respect the weaker read"
+        to=spot+(strad_now or spot*0.004)*(1 if up else -1)   # lean-side straddle bound instead
+    else:
+        to=target if target else spot+(strad_now or spot*0.004)*(1 if up else -1)
+    # ---- confidence
+    conf=50
+    conf+= 15 if decay.startswith("DECAYING") else (5 if decay.startswith("COLLAPSING") else (-15 if decay.startswith("FLAT") else 0))
+    conf+= 10 if clock.startswith("SWEET") else (5 if clock.startswith("MIDDAY") else (-10 if clock.startswith("OPEN") else 0))
+    conf+= (10 if (vix and vix<16) else -15 if (vix and vix>=20) else 0)
+    conf+= -20 if fish>8 else (-8 if fish>4 else 0)
+    conf+= -12 if swallowed else 0
+    conf+= -10 if gsign<0 else 0     # needs a trigger we cannot see
+    if fish>8: conf=min(conf,25)      # cheat sheet: FISHBONE = SIT OUT — hard cap
+    conf=int(max(5,min(95,conf)))
+    nxt=(f"expect drift {'UP' if up else 'DOWN'} toward {to:,.0f}" if to else f"expect drift {'UP' if up else 'DOWN'}")
+    if gsign>0:
+        rails=[x for x in (wall_up,wall_dn) if x and (not to or abs(x-to)>1)]
+        if rails: nxt+=", repelled near "+" / ".join(f"{x:,.0f}" for x in rails)
+        if target and to and abs(target-to)<=1: nxt+=f", settle ≈ PIN {target:,.0f} into close"
+    if gsign<0: nxt+=" IF a trigger arrives — without one it floats (γ is a multiplier, not a generator)"
+    if swallowed: nxt+=f" · WARNING: ~{absorb:,.0f} minis of γ absorption in path — pin may land short (profile consumes itself)"
+    if tension: nxt+="  ·  "+tension
+    return dict(pat=pat,do=do,env=env,lean=lean+f"  [{src} · ≈{flow5:,.0f} minis/5min proxy]",
+                decay=decay,clock=clock,vix=vixline,fish=f"{fishline} (score {fish})",
+                nxt=nxt,conf=conf,through=through,to=to,spot=spot,
+                strad=f"${strad_now:.2f}" if strad_now else "n/a")
 
 def gex_cmap():
     return mcolors.LinearSegmentedColormap.from_list("gex",
@@ -1246,8 +1384,10 @@ def prep_bars():
 def take_snapshot(num_expiries):
     s,h=init_session("$SPX"); spot=get_spot(s,h)
     exps,chain=discover_expiries(s,h,num_expiries)
+    try: vix=get_spot(s,h,"$VIX")
+    except Exception: vix=None
     ts=now_est()
-    st.session_state.snaps.append(dict(ts=ts,spot=spot,chain=chain,exps=exps))
+    st.session_state.snaps.append(dict(ts=ts,spot=spot,chain=chain,exps=exps,vix=vix))
     st.session_state.last_ts=ts
     return spot,exps
 
@@ -1263,16 +1403,20 @@ smooth_frac=st.sidebar.slider("Gradient smoothing",0.0,5.0,1.0,0.25,
 with st.sidebar.expander("🗺 Terrain controls", expanded=False):
     t_greek=st.selectbox("Greek",["Delta Change","Gamma","Charm"],index=0,
         help="Delta Change (§7.7): futures dealers must trade to arrive hedged at each price/time — combines gamma+charm; path of least resistance.")
+    t_wt=st.selectbox("Weighting",["OI + Volume","OI (opening book)","Volume (today's flow)","Vol else OI (legacy)"],index=0,
+        help="OI = yesterday's settled book (static all day, ≈ the opening position §4.5 says to respect). "
+             "Volume = today's CUMULATIVE session flow (resets overnight only; counts round-trips — flow, not positions). "
+             "OI+Volume = structural book + today's flow (default). Legacy = old per-strike fallback rule.")
     t_norm=st.selectbox("Range",["Manual (fixed cap)","Percentile","Std Dev"],index=0,
         help="Manual (guide §2.4): fixed symmetric cap so a loose day LOOKS loose. Percentile rescales every frame.")
     t_pct=st.slider("Percentile hi",80,99,95) if t_norm=="Percentile" else 95
     cc1,cc2=st.columns(2)
     if cc1.button("Calibrate range",use_container_width=True):
-        for g in ["Delta Change","Gamma","Charm"]:
-            h=st.session_state.get(f"terr_hist_{g}",[])
-            if h: st.session_state[f"terr_cap_{g}"]=1.3*float(np.mean(h[-24:]))
+        for k in [k for k in st.session_state.keys() if k.startswith("terr_hist_")]:
+            h=st.session_state.get(k,[])
+            if h: st.session_state["terr_cap_"+k[len("terr_hist_"):]]=1.3*float(np.mean(h[-24:]))
     if cc2.button("Reset cap",use_container_width=True):
-        for g in ["Delta Change","Gamma","Charm"]: st.session_state.pop(f"terr_cap_{g}",None)
+        for k in [k for k in list(st.session_state.keys()) if k.startswith("terr_cap_")]: st.session_state.pop(k,None)
     t_int=st.selectbox("Intensity",["Power","Sqrt","Arcsinh"],index=0)
     t_pow=st.slider("Power exponent",0.4,1.5,1.0,0.05,
         help="§2.4: ~1 feels most natural. Low values = the 'cartoon setting' Dan warns about.")
@@ -1468,7 +1612,7 @@ def dispatch(tab, render_fn):
         ts=sel_ts.isoformat()
         st.session_state.frames.setdefault(ts,{})[tab]=list(_EMIT_BUF.get(tab,[]))
 
-tab_terr,tab_sig=st.tabs(["🗺 Terrain (gradient chart)","🧭 Signals (daily workflow)"])
+tab_terr,tab_sig,tab_read=st.tabs(["🗺 Terrain (gradient chart)","🧭 Signals (daily workflow)","📖 Read (what happens next)"])
 
 with tab_terr:
     emit_caption("terrain","VS3D Gradient Chart, guide-spec. Field = chosen greek across price×time for the "
@@ -1484,16 +1628,16 @@ with tab_terr:
         try:
             pg,Z,taus=terrain_grid(latest["chain"],spot,use_exps,now_naive,greek=t_greek,
                                    vol_adj=(0.01 if t_voladj=="+1%" else 0.0),
-                                   p_min=p_min,p_max=p_max,simulated_gamma=t_simg)
+                                   p_min=p_min,p_max=p_max,simulated_gamma=t_simg,weighting=t_wt)
         except Exception as ex:
             import traceback; st.error(f"terrain grid failed: {ex}"); st.code(traceback.format_exc()); return
         # fixed-cap scaling (per greek, seeded once; Calibrate button re-seeds)
-        capkey=f"terr_cap_{t_greek}"
+        capkey=f"terr_cap_{t_greek}_{t_wt}"
         seed=st.session_state.get(capkey)
         V,used_cap=terrain_scale(Z,t_norm,seed if t_norm=="Manual (fixed cap)" else None,t_pct)
         if t_norm=="Manual (fixed cap)" and seed is None:
             st.session_state[capkey]=1.2*float(np.percentile(np.abs(Z),98)); V,used_cap=terrain_scale(Z,t_norm,st.session_state[capkey],t_pct)
-        st.session_state.setdefault(f"terr_hist_{t_greek}",[]).append(float(np.percentile(np.abs(Z),92)))
+        st.session_state.setdefault(f"terr_hist_{t_greek}_{t_wt}",[]).append(float(np.percentile(np.abs(Z),92)))
         _t=now_naive.time()
         if _t<dt.time(9,30) or _t>dt.time(16,0):
             st.caption("⏸ off-hours: time-to-expiry ~constant across the session axis → field is nearly "
@@ -1551,7 +1695,7 @@ with tab_terr:
         pol=("green = dealers BUY to arrive hedged (supportive) · red = SELL" if t_greek=="Delta Change"
              else ("green = +γ suppressive · red = −γ amplifying" if t_greek=="Gamma"
              else "gold = dealers must SELL as time passes · blue = must BUY"))
-        ax.set_title(f"TERRAIN · {t_greek} · exps {len(use_exps)} · cap {st.session_state.get(capkey,0):,.0f}"
+        ax.set_title(f"TERRAIN · {t_greek} · {t_wt} · exps {len(use_exps)} · cap {st.session_state.get(capkey,0):,.0f}"
                      f" · {t_int}({t_pow:g}) · α{t_alpha:.2f}   [{pol}]",color=TXT,fontsize=10.5,loc="left")
         ax.set_ylim(pg[0],pg[-1]); style_time_axis(ax,x0,x1)
         emit("terrain",fig)
@@ -1581,7 +1725,8 @@ with tab_sig:
         up=float(rem[(K>spot)&(K<=spot+(strad_now or spot*0.005))].sum())
         dn=float(rem[(K<spot)&(K>=spot-(strad_now or spot*0.005))].sum())
         fish=vs3d_fishbone(ch0); fishtxt="CLEAN — trade" if fish<=4 else("MESSY — size down" if fish<=8 else "FISHBONE — sit out")
-        hist=st.session_state.get(f"terr_hist_Gamma",[]) or st.session_state.get(f"terr_hist_Delta Change",[])
+        _hk=[k for k in st.session_state.keys() if k.startswith("terr_hist_")]
+        hist=st.session_state.get(_hk[0],[]) if _hk else []
         reg=""
         if hist:
             cur=hist[-1]; avg=float(np.mean(hist)) if len(hist)>1 else cur
@@ -1612,3 +1757,38 @@ with tab_sig:
                  va="top",ha="left",family="monospace",fontsize=10.5)
         emit("signals",fs)
     dispatch("signals",_render_signals)
+
+with tab_read:
+    emit_caption("read","Cheat-sheet decision engine: γ environment × charm lean → one of four day patterns, "
+                 "gated by the charm clock, straddle check (snake-oil), VIX/vanna regime, fishbone and γ-absorption. "
+                 "Buy what price goes through, sell what price goes to. Proxy-honest: dealer long/short not measured; "
+                 "with real positioning Dan claims ~65% — treat this as a weighted coin, not an oracle.")
+    def _render_read():
+        now_naive=sel_ts.replace(tzinfo=None) if getattr(sel_ts,'tzinfo',None) else sel_ts
+        use_exps=(latest.get("exps") or [])
+        if not use_exps: st.warning("No data yet."); return
+        try: v=read_verdict(snaps[:sel_i+1] if sel_i+1<=len(snaps) else snaps, use_exps, now_naive)
+        except Exception as ex:
+            import traceback; st.error(f"read failed: {ex}"); st.code(traceback.format_exc()); return
+        bar="█"*int(round(v["conf"]/5))+"░"*(20-int(round(v["conf"]/5)))
+        L=[f"SPX {v['spot']:,.2f}   {sel_ts:%H:%M:%S} EST   straddle {v['strad']}","",
+           f"READ        {v['pat']}",
+           f"NEXT        {v['nxt']}",
+           f"STRUCTURE   {v['do']}",
+           ("PLAY        buy through "+(f"{v['through']:,.0f}" if v['through'] else "n/a")
+            +" · sell to "+(f"{v['to']:,.0f}" if v['to'] else "n/a")),
+           "",
+           f"CONFIDENCE  {v['conf']}/100  {bar}","",
+           f"  γ env     {v['env']}",
+           f"  charm     {v['lean']}",
+           f"  straddle  {v['decay']}",
+           f"  clock     {v['clock']}",
+           f"  vix       {v['vix']}",
+           f"  structure {v['fish']}","",
+           "gates that can flip this read: straddle repricing up · VIX spike (vanna over charm) ·",
+           "a test breaking AND holding (delta runs 30→100, new range) · any external trigger."]
+        fr,axr=plt.subplots(figsize=(16,5.6),facecolor=DARK); axr.axis("off"); axr.set_facecolor(DARK)
+        axr.text(0.01,0.98,"\n".join(L),transform=axr.transAxes,color=TXT,va="top",ha="left",
+                 family="monospace",fontsize=11)
+        emit("read",fr)
+    dispatch("read",_render_read)
