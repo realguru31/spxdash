@@ -5,6 +5,15 @@ Point your streamlit.io app at this file.
 
 CHANGELOG (newest first) — what changed and why, per version
 ─────────────────────────────────────────────────────────────────────────────
+v2.0.1 [FIX — controls now apply instantly] PLAYBACK was engaging whenever ANY
+  frame was cached, so after the first snapshot every rerun replayed a frozen PNG
+  and sidebar changes (Greek, opacity, cap…) did nothing until the next 5-min
+  snapshot. Now: replay ONLY while ▶ playing or scrubbed to an older frame;
+  paused at the latest frame = LIVE render every rerun (cache overwritten so
+  playback stays current). Also: Expiries-to-aggregate default 1→3 (§1.5 whole
+  book), cap seeds at 1.2×p98 (less saturation, more gradient), side histogram
+  scales to its own shape (no more slab), off-hours banner explains the flat
+  pre-market field.
 v2.0  [REBUILD to VS3D guide spec — 7 tabs → 2]
   After a word-by-word read of the VS3D Onboarding Guide (all 7 chapters):
   • 🗺 TERRAIN — the Gradient Chart done right. Multi-expiry book (each expiry
@@ -1247,7 +1256,7 @@ if "snaps" not in st.session_state: st.session_state.snaps=[]
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3d · SPX 0DTE")
-num_expiries=st.sidebar.slider("Expiries to aggregate",1,5,1)
+num_expiries=st.sidebar.slider("Expiries to aggregate",1,5,3,help="Terrain models the whole book (§1.5); 0DTE dominates via asymptotic gamma. 3 = good default.")
 window_pct=st.sidebar.slider("Price window ±%",1.0,5.0,2.5,0.5)/100.0
 smooth_frac=st.sidebar.slider("Gradient smoothing",0.0,5.0,1.0,0.25,
     help="0 = raw per-strike detail (bumpy, like vols3d), higher = smoother density")/100.0
@@ -1367,18 +1376,23 @@ else:
         st.session_state.pb_idx=(st.session_state.pb_idx+1)%_nframes
         st.sidebar.progress((st.session_state.pb_idx+1)/_nframes)
     elif _nframes>1:
-        # paused: manual scrub (only when there's more than one frame)
-        st.session_state.pb_idx=st.sidebar.slider("Frame",0,_nframes-1,
-            min(st.session_state.pb_idx,_nframes-1))
+        # paused: manual scrub. Defaults to the LATEST frame; scrubbing back replays,
+        # sitting at the latest keeps the view LIVE so sidebar controls apply instantly.
+        st.session_state.pb_idx=st.sidebar.slider("Frame",0,_nframes-1,_nframes-1)
     else:
         st.session_state.pb_idx=0
         st.sidebar.caption("1 frame cached — more appear each snapshot.")
     st.session_state.pb_idx=min(st.session_state.pb_idx,_nframes-1)
     _cur=_frame_ts[st.session_state.pb_idx]
-    st.sidebar.caption(f"Frame {st.session_state.pb_idx+1}/{_nframes} · {_cur:%H:%M:%S} EST"
-                       + (" · ▶ playing" if st.session_state.pb_play else " · ⏸ paused"))
-    PLAYBACK=True
-    PLAYBACK_TS=_frame_ts[st.session_state.pb_idx].isoformat()
+    # REPLAY only while playing or scrubbed to an older frame. Paused at the latest
+    # frame = LIVE (control changes recompute and overwrite that frame's cache).
+    PLAYBACK=st.session_state.pb_play or (st.session_state.pb_idx<_nframes-1)
+    if PLAYBACK:
+        PLAYBACK_TS=_frame_ts[st.session_state.pb_idx].isoformat()
+        st.sidebar.caption(f"Frame {st.session_state.pb_idx+1}/{_nframes} · {_cur:%H:%M:%S} EST"
+                           + (" · ▶ playing" if st.session_state.pb_play else " · ⏸ replay"))
+    else:
+        st.sidebar.caption(f"Frame {st.session_state.pb_idx+1}/{_nframes} · {_cur:%H:%M:%S} EST · live")
 if _nframes==0: PLAYBACK=False
 
 latest=snaps[sel_i]; spot=latest["spot"]; exps=latest["exps"]
@@ -1478,8 +1492,12 @@ with tab_terr:
         seed=st.session_state.get(capkey)
         V,used_cap=terrain_scale(Z,t_norm,seed if t_norm=="Manual (fixed cap)" else None,t_pct)
         if t_norm=="Manual (fixed cap)" and seed is None:
-            st.session_state[capkey]=used_cap*1.3; V,used_cap=terrain_scale(Z,t_norm,st.session_state[capkey],t_pct)
+            st.session_state[capkey]=1.2*float(np.percentile(np.abs(Z),98)); V,used_cap=terrain_scale(Z,t_norm,st.session_state[capkey],t_pct)
         st.session_state.setdefault(f"terr_hist_{t_greek}",[]).append(float(np.percentile(np.abs(Z),92)))
+        _t=now_naive.time()
+        if _t<dt.time(9,30) or _t>dt.time(16,0):
+            st.caption("⏸ off-hours: time-to-expiry ~constant across the session axis → field is nearly "
+                       "time-flat and candles are absent. Structure appears live during RTH on 0DTE.")
         V=terrain_intensity(V,t_int,power=t_pow,gain=3.0)
         cmap=gex_cmap() if t_greek!="Charm" else charm_cmap()
         plotV=V if t_greek!="Charm" else -V   # hedging-effect polarity: dealers-must-SELL renders gold (§7.7)
@@ -1523,7 +1541,7 @@ with tab_terr:
             except Exception: pass
         # side profile histogram — the current-time column (real VS3D right-edge panel)
         jnow=int(np.clip(round((mdates.date2num(now_naive)-x0)/(x1-x0)*(Z.shape[1]-1)),0,Z.shape[1]-1))
-        prof=Z[:,jnow]; capv=st.session_state.get(capkey) or (np.abs(prof).max() or 1)
+        prof=Z[:,jnow]; capv=float(np.percentile(np.abs(prof),98)) or 1.0   # local shape scale
         posc,negc=(("#d9a90b","#3399dd") if t_greek=="Charm" else ("#22b14c","#d13438"))
         axp.fill_betweenx(pg,0,np.clip(prof/capv,-1,1),where=prof>=0,color=posc,alpha=.85)
         axp.fill_betweenx(pg,0,np.clip(prof/capv,-1,1),where=prof<0,color=negc,alpha=.85)
