@@ -5,6 +5,27 @@ Point your streamlit.io app at this file.
 
 CHANGELOG (newest first) — what changed and why, per version
 ─────────────────────────────────────────────────────────────────────────────
+v2.1.7 [LIVE-SESSION FIXES — 2026-07-07 first RTH validation]
+  • DEFAULTS: Expiries to aggregate 3→1 (0DTE only — the gradient chart is a
+    0DTE tool; multi-expiry background was washing out asymptotic structure).
+    Price window ±2.5%→±1.5% (comparable zoom to the VS3D reference).
+  • Calibrate range / Reset cap moved OUT of the collapsed Terrain expander to
+    top-level sidebar — mid-session scale fixes must be one click away.
+  • Stale-cap banner: if the live p92 exceeds 3× the fixed cap, the app says so
+    (today the field sat saturated for ~90 min before anyone noticed).
+  • K* parity band tightened ±3%→±1%: stale-but-uncrossed quotes 160 pts out
+    won K* (7330 @ spot 7490). Near-spot parity only.
+v2.1.6 [VIX = TVC ONLY] Barchart $VIX fallback REMOVED per user rule — VIX now
+  comes exclusively from TradingView TVC:VIX (fetch_vix_live). If the TVC pull
+  fails, the gate shows "VIX n/a · TVC feed unavailable" (zero confidence
+  effect) instead of silently regressing to a possibly-delayed quote.
+v2.1.5 [LIVE VIX] VIX regime gate now sourced from TradingView TVC:VIX (live)
+  via the existing tvdatafeed dependency — fetch_vix_live(), last 1-min close,
+  sanity band 5–200. Barchart $VIX kept as automatic fallback (its free index
+  quote may be delayed; a stale VIX matters most exactly during a spike, when
+  the vanna gate should flip). Snapshot stores vix_src ("tvc"/"bc"); the Read
+  tab's VIX line shows the source so live validation can confirm which fed it.
+  No greek math touched — VIX is regime gate + confidence only.
 v2.1.4 [PERF/JIGGLE FIX] Two changes for CPU + screen-shake:
   • Fixed-size chart rendering (use_container_width off, dpi 80). The jiggle was
     Streamlit's resize feedback loop: responsive image ↔ scrollbar ↔ container
@@ -867,7 +888,7 @@ def pinak_levels(chain, spot, exp, now):
     label=("STRONG PIN" if score>=75 else "MODERATE PIN" if score>=50 else "WEAK PIN" if score>=25 else "NO PIN")
     # ---- K*: put-call parity forward vs no-arb band (near-spot, valid quotes only) ----
     cask=col(cc,"ask"); pask=col(pp,"ask")
-    kstar=None; best=1e18; band=spot*0.03
+    kstar=None; best=1e18; band=spot*0.01   # ±1% (was 3%): live 2026-07-07 a stale 7330 won at spot 7490
     for i,k in enumerate(K):
         if abs(k-spot)>band: continue                      # near-spot only
         if cpx[i]<=0 or ppx[i]<=0: continue                # need two-sided
@@ -1085,6 +1106,8 @@ def read_verdict(snaps, exps, now):
            "SWEET SPOT 1:30–3 — best charm window" if t<=dt.time(15,0) else
            "CLOSE 3–4 — very local, pin resolution")
     vix=latest.get("vix"); vixline=vs3d_vix_regime(vix)
+    vixline+=(" · live (TVC)" if latest.get("vix_src")=="tvc" else
+              (" · TVC feed unavailable" if latest.get("vix") is None else ""))
     fish=vs3d_fishbone(ch0)
     fishline=("clean structure" if fish<=4 else "messy — size down" if fish<=8 else "FISHBONE — sit out")
     # absorption vs charm flow toward the lean-side bound (§5.4 / sheet: gamma absorbs charm)
@@ -1411,13 +1434,28 @@ def prep_bars():
     return bars,msg
 
 # ════════════════════════════ snapshot taking ═══════════════════════════════
+def fetch_vix_live():
+    """VIX from TradingView TVC:VIX via tvdatafeed — the ONLY VIX source
+    (user rule: never Barchart $VIX). Last 1-min close; None on any failure,
+    which the Read tab reports as “TVC feed unavailable”. 5–200 sanity band."""
+    try:
+        from tvDatafeed import TvDatafeed, Interval
+        tv=TvDatafeed()
+        df=tv.get_hist(symbol="VIX",exchange="TVC",interval=Interval.in_1_minute,n_bars=2)
+        if df is not None and len(df):
+            v=float(df["close"].iloc[-1])
+            if 5.0<v<200.0: return v
+    except Exception: pass
+    return None
+
 def take_snapshot(num_expiries):
     s,h=init_session("$SPX"); spot=get_spot(s,h)
     exps,chain=discover_expiries(s,h,num_expiries)
-    try: vix=get_spot(s,h,"$VIX")
-    except Exception: vix=None
+    # VIX: TradingView TVC:VIX ONLY (user rule — never Barchart $VIX; its free
+    # quote can lag, and a stale LOW during a spike is worse than an honest n/a).
+    vix=fetch_vix_live(); vix_src=("tvc" if vix is not None else None)
     ts=now_est()
-    st.session_state.snaps.append(dict(ts=ts,spot=spot,chain=chain,exps=exps,vix=vix))
+    st.session_state.snaps.append(dict(ts=ts,spot=spot,chain=chain,exps=exps,vix=vix,vix_src=vix_src))
     st.session_state.last_ts=ts
     return spot,exps
 
@@ -1426,10 +1464,20 @@ if "snaps" not in st.session_state: st.session_state.snaps=[]
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3d · SPX 0DTE")
-num_expiries=st.sidebar.slider("Expiries to aggregate",1,5,3,help="Terrain models the whole book (§1.5); 0DTE dominates via asymptotic gamma. 3 = good default.")
-window_pct=st.sidebar.slider("Price window ±%",1.0,5.0,2.5,0.5)/100.0
+num_expiries=st.sidebar.slider("Expiries to aggregate",1,5,1,help="1 = 0DTE only (default — the gradient chart is a 0DTE tool; asymptotics own the field). Raise to model the whole book (§1.5).")
+window_pct=st.sidebar.slider("Price window ±%",1.0,5.0,1.5,0.5)/100.0
 smooth_frac=st.sidebar.slider("Gradient smoothing",0.0,5.0,1.0,0.25,
     help="0 = raw per-strike detail (bumpy, like vols3d), higher = smoother density")/100.0
+# field scale controls — TOP LEVEL on purpose (v2.1.7): mid-session you must not
+# have to dig through a collapsed drawer to fix a saturated cap.
+capc1,capc2=st.sidebar.columns(2)
+if capc1.button("Calibrate range",use_container_width=True):
+    for k in [k for k in st.session_state.keys() if k.startswith("terr_hist_")]:
+        h=st.session_state.get(k,[])
+        if h: st.session_state["terr_cap_"+k[len("terr_hist_"):]]=1.3*float(np.mean(h[-24:]))
+if capc2.button("Reset cap",use_container_width=True):
+    for k in [k for k in list(st.session_state.keys()) if k.startswith("terr_cap_")]: st.session_state.pop(k,None)
+st.sidebar.caption("Field scale (§2.4 fixed cap) — Reset at the open · Calibrate after 2–3 snapshots.")
 with st.sidebar.expander("🗺 Terrain controls", expanded=False):
     t_greek=st.selectbox("Greek",["Delta Change","Gamma","Charm"],index=0,
         help="Delta Change (§7.7): futures dealers must trade to arrive hedged at each price/time — combines gamma+charm; path of least resistance.")
@@ -1440,13 +1488,6 @@ with st.sidebar.expander("🗺 Terrain controls", expanded=False):
     t_norm=st.selectbox("Range",["Manual (fixed cap)","Percentile","Std Dev"],index=0,
         help="Manual (guide §2.4): fixed symmetric cap so a loose day LOOKS loose. Percentile rescales every frame.")
     t_pct=st.slider("Percentile hi",80,99,95) if t_norm=="Percentile" else 95
-    cc1,cc2=st.columns(2)
-    if cc1.button("Calibrate range",use_container_width=True):
-        for k in [k for k in st.session_state.keys() if k.startswith("terr_hist_")]:
-            h=st.session_state.get(k,[])
-            if h: st.session_state["terr_cap_"+k[len("terr_hist_"):]]=1.3*float(np.mean(h[-24:]))
-    if cc2.button("Reset cap",use_container_width=True):
-        for k in [k for k in list(st.session_state.keys()) if k.startswith("terr_cap_")]: st.session_state.pop(k,None)
     t_int=st.selectbox("Intensity",["Power","Sqrt","Arcsinh"],index=0)
     t_pow=st.slider("Power exponent",0.4,1.5,1.0,0.05,
         help="§2.4: ~1 feels most natural. Low values = the 'cartoon setting' Dan warns about.")
@@ -1663,7 +1704,12 @@ with tab_terr:
         V,used_cap=terrain_scale(Z,t_norm,seed if t_norm=="Manual (fixed cap)" else None,t_pct)
         if t_norm=="Manual (fixed cap)" and seed is None:
             st.session_state[capkey]=1.2*float(np.percentile(np.abs(Z),98)); V,used_cap=terrain_scale(Z,t_norm,st.session_state[capkey],t_pct)
-        st.session_state.setdefault(f"terr_hist_{t_greek}_{t_wt}",[]).append(float(np.percentile(np.abs(Z),92)))
+        _p92=float(np.percentile(np.abs(Z),92))
+        st.session_state.setdefault(f"terr_hist_{t_greek}_{t_wt}",[]).append(_p92)
+        if t_norm=="Manual (fixed cap)" and used_cap and _p92>3.0*used_cap:
+            st.warning(f"⚠ Cap stale — current p92 ({_p92:,.0f}) is {_p92/used_cap:.1f}× the cap "
+                       f"({used_cap:,.0f}); the field is saturating into flat color blocks. "
+                       f"Press Reset cap, then Calibrate after 2–3 snapshots.")
         _t=now_naive.time()
         if _t<dt.time(9,30) or _t>dt.time(16,0):
             st.caption("⏸ off-hours: time-to-expiry ~constant across the session axis → field is nearly "
