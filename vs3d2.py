@@ -5,6 +5,24 @@ Point your streamlit.io app at this file.
 
 CHANGELOG (newest first) — what changed and why, per version
 ─────────────────────────────────────────────────────────────────────────────
+v2.2.2 [ENGINE NIGHT-BUILD — built midday 07-08, deploy pre-open 07-09]
+  • PLAYBACK rebuilt: frame advance driven by the autorefresh TICK COUNTER —
+    extra reruns (button/component handshakes) can no longer skip frames;
+    Rewind→Play now shows frame 1 first; Pause HOLDS position (slider no
+    longer snaps to latest); Play works with the auto toggle off.
+  • _due() respects the Auto-refresh toggle — no surprise Barchart pulls when
+    scrubbing in manual mode (the 'back-step didn\u2019t load' spinner mystery).
+  • DAY-STATE PERSISTENCE: snaps/frames/open-straddle/caps pickled to /tmp
+    after every snapshot; restored automatically on an empty session. A browser
+    reload now costs NOTHING (twice-burned 07-07/07-08). Clear deletes the file.
+  • ATM IV tripwire FIXED — it had never rendered: NameError (use_exps before
+    definition) swallowed by its own silent except since v2.1.9. New rule:
+    tripwires fail loud (shows 'ATM IV unavailable (Type)' instead of nothing).
+  • Banner because-line names the BINDING constraint (fishbone cap) first.
+  • Two new Greek views: 'Gamma |Γ| (heaviness)' — single-hue magnitude, the
+    honest unsigned map (direction blank by design) — and 'Gamma Decay (color)'
+    — Γ(P,τ+30m)−Γ(P,τ), where pin energy is BUILDING. Own caps, own
+    legends, ride all existing cache/playback machinery.
 v2.2.1 [INTERPRETABILITY — the actual ask]
   • Signals verdict banner: one of four explicit states — LEAN LONG / LEAN
     SHORT (with play + target), SMALL SIZE ONLY, WAIT (with the specific
@@ -1250,6 +1268,25 @@ def charm_cmap():
     return mcolors.LinearSegmentedColormap.from_list("charm",
         [(0.0,(0.42,0.24,0)),(0.34,(0.86,0.58,0.02)),(0.47,(0.10,0.06,0)),
          (0.50,(0,0,0)),(0.53,(0,0.05,0.12)),(0.66,(0.12,0.52,0.95)),(1.0,(0.02,0.22,0.58))])
+def heat_cmap():
+    """|Γ| heaviness (v2.2.2): single hue — bright = heavy book, direction UNKNOWN by design."""
+    return mcolors.LinearSegmentedColormap.from_list("vs3dheat",
+        [(0.0,(0.05,0.07,0.09)),(0.30,(0.05,0.22,0.26)),(0.60,(0.10,0.50,0.55)),
+         (0.85,(0.22,0.82,0.85)),(1.0,(0.85,0.99,1.0))])
+def decay_cmap():
+    """Gamma Decay / 'color' (v2.2.2): orange = gamma BUILDING as the clock runs · purple = fading."""
+    return mcolors.LinearSegmentedColormap.from_list("vs3ddecay",
+        [(0.0,(0.42,0.20,0.75)),(0.42,(0.09,0.05,0.14)),(0.50,(0,0,0)),
+         (0.58,(0.16,0.10,0.03)),(1.0,(1.0,0.62,0.20))])
+def _decay_shift(Z,taus,mins=30):
+    """Γ(P,τ+Δ)−Γ(P,τ): where the book's gamma is BUILDING as time passes — the
+    'color' greek made explicit (v2.2.2). Positive = pin energy accumulating."""
+    n=Z.shape[1]
+    if n<3: return np.zeros_like(Z)
+    span_min=max((taus[-1]-taus[0]).total_seconds()/60.0,1.0)
+    step=max(1,int(round(mins/(span_min/max(n-1,1)))))
+    j2=np.minimum(np.arange(n)+step,n-1)
+    return Z[:,j2]-Z
 DARK="#0d1117";TXT="#c9d1d9";GRID="#222a35";WHITE="#e6edf3"
 UP="#ffffff";DOWN="#000000";WICKFX=[pe.Stroke(linewidth=1.7,foreground="#6b7280"),pe.Normal()]
 def _place_labels(ax, levels, p_min, p_max, x=0.012, min_gap=0.045, fs=9.5):
@@ -1552,10 +1589,46 @@ def take_snapshot(num_expiries):
         except Exception: pass
     st.session_state.snaps.append(dict(ts=ts,spot=spot,chain=chain,exps=exps,vix=vix,vix_src=vix_src))
     st.session_state.last_ts=ts
+    save_day_state()
     return spot,exps
+
+# ── day-state persistence (v2.2.2): a browser reload must cost NOTHING ───────
+import os as _os, pickle as _pickle, glob as _glob
+def _state_path(d=None):
+    return f"/tmp/vs3d_state_{d or now_est().strftime('%Y-%m-%d')}.pkl"
+def save_day_state():
+    """Write snaps/frames/day-keys to /tmp after each snapshot. Survives F5 and new
+    tabs; dies only with the container. Fails LOUD-ish (sidebar note), never silent."""
+    try:
+        ss=st.session_state
+        blob={"snaps":ss.get("snaps",[]),"frames":ss.get("frames",{}),"last_ts":ss.get("last_ts"),
+              "keys":{k:ss[k] for k in list(ss.keys())
+                      if str(k).startswith(("strad_open_","terr_cap_","terr_hist_","read_gmag"))}}
+        with open(_state_path(),"wb") as f: _pickle.dump(blob,f,protocol=4)
+        for _old in _glob.glob("/tmp/vs3d_state_*.pkl"):
+            if _old!=_state_path() and _os.path.getmtime(_old)<_time.time()-2*86400:
+                try: _os.remove(_old)
+                except Exception: pass
+    except Exception as ex:
+        st.sidebar.caption(f"⚠ state save failed: {type(ex).__name__}: {ex}")
+def load_day_state():
+    try:
+        p=_state_path()
+        if not _os.path.exists(p): return 0
+        with open(p,"rb") as f: blob=_pickle.load(f)
+        if not blob.get("snaps"): return 0
+        st.session_state.snaps=blob["snaps"]; st.session_state.frames=blob.get("frames",{})
+        st.session_state.last_ts=blob.get("last_ts")
+        for k,v in blob.get("keys",{}).items(): st.session_state[k]=v
+        return len(st.session_state.snaps)
+    except Exception as ex:
+        st.sidebar.caption(f"⚠ state restore failed: {type(ex).__name__}: {ex}"); return 0
 
 # ════════════════════════════ UI ════════════════════════════════════════════
 if "snaps" not in st.session_state: st.session_state.snaps=[]
+if not st.session_state.snaps:
+    _n=load_day_state()
+    if _n: st.sidebar.success(f"🔁 restored {_n} snapshots from disk (reload-proof since v2.2.2)")
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3d · SPX 0DTE")
@@ -1574,7 +1647,7 @@ if capc2.button("Reset cap",use_container_width=True):
     for k in [k for k in list(st.session_state.keys()) if k.startswith("terr_cap_")]: st.session_state.pop(k,None)
 st.sidebar.caption("Field scale (§2.4 fixed cap) — Reset at the open · Calibrate after 2–3 snapshots.")
 with st.sidebar.expander("🗺 Terrain controls", expanded=False):
-    t_greek=st.selectbox("Greek",["Delta Change","Gamma","Charm"],index=0,
+    t_greek=st.selectbox("Greek",["Delta Change","Gamma","Charm","Gamma |Γ| (heaviness)","Gamma Decay (color)"],index=0,
         help="Delta Change (§7.7): futures dealers must trade to arrive hedged at each price/time — combines gamma+charm; path of least resistance.")
     t_wt=st.selectbox("Weighting",["OI + Volume","OI (opening book)","Volume (today's flow)","Vol else OI (legacy)"],index=0,
         help="OI = yesterday's settled book (static all day, ≈ the opening position §4.5 says to respect). "
@@ -1598,7 +1671,10 @@ auto_on=st.sidebar.toggle("Auto-refresh (5 min)",value=True)
 c1,c2=st.sidebar.columns(2)
 force=c1.button("📸 Snapshot now",use_container_width=True)
 if c2.button("🗑 Clear",use_container_width=True):
-    st.session_state.snaps=[]; st.session_state.last_ts=None; st.rerun()
+    st.session_state.snaps=[]; st.session_state.last_ts=None; st.session_state.frames={}
+    try: _os.remove(_state_path())
+    except Exception: pass
+    st.rerun()
 st.sidebar.caption("POC · snapshots in-memory (reset on app restart) · "
                    "sign = dealer calls+/puts− · volume unsigned · quotes as-of snapshot (Barchart may lag ~15m)")
 
@@ -1609,25 +1685,29 @@ if refresh:
 
 # auto-refresh: component rerun preserves session_state (a meta-refresh would wipe it).
 # st.fragment(run_every=) is the dependency-free fallback if the package is absent.
-_AUTOREFRESH_OK=False
-if auto_on:
-    try:
-        from streamlit_autorefresh import st_autorefresh
-        # During Play, refresh at the chosen speed to advance frames; else 5-min live.
-        if st.session_state.get("pb_play") and st.session_state.get("frames"):
-            _iv=int(st.session_state.get("pb_speed",2.0)*1000)
-            _tick=st_autorefresh(interval=_iv,key="pb_tick")
-        else:
-            st_autorefresh(interval=5*60*1000, key="auto5min")
+_AUTOREFRESH_OK=False; _tick=None
+try:
+    from streamlit_autorefresh import st_autorefresh
+    # During Play, tick at the chosen speed REGARDLESS of the auto toggle (v2.2.2 —
+    # playback used to silently require auto-refresh ON); else 5-min live if auto.
+    if st.session_state.get("pb_play") and st.session_state.get("frames"):
+        _iv=int(st.session_state.get("pb_speed",2.0)*1000)
+        _tick=st_autorefresh(interval=_iv,key="pb_tick")
         _AUTOREFRESH_OK=True
-    except Exception:
-        _AUTOREFRESH_OK=False
+    elif auto_on:
+        st_autorefresh(interval=5*60*1000, key="auto5min")
+        _AUTOREFRESH_OK=True
+    else:
+        _AUTOREFRESH_OK=True   # nothing to install in manual mode; not an error
+except Exception:
+    _AUTOREFRESH_OK=False
 
 # advance playback frame on each fast tick while playing (handled after controls below)
 
 
 def _due():
     if st.session_state.get("pb_play"): return False   # don't pull live during playback
+    if not auto_on: return False   # manual mode: only 📸/🔄 pull data (v2.2.2 — no surprise fetch on scrub)
     if not st.session_state.snaps: return True
     return (now_est()-st.session_state.last_ts).total_seconds() >= 5*60-5
 
@@ -1668,6 +1748,7 @@ if sel_i!=len(snaps)-1:
 if "frames" not in st.session_state: st.session_state.frames={}   # {ts_iso: {tab:[png,...]}}
 if "pb_play" not in st.session_state: st.session_state.pb_play=False
 if "pb_idx"  not in st.session_state: st.session_state.pb_idx=0
+if "pb_follow" not in st.session_state: st.session_state.pb_follow=True   # at latest = follow new frames live (v2.2.2)
 if "pb_speed" not in st.session_state: st.session_state.pb_speed=2.0
 st.sidebar.markdown("---"); st.sidebar.markdown("**▶ Playback (recorded snapshots)**")
 _frame_ts=[s["ts"] for s in snaps if s["ts"].isoformat() in st.session_state.frames]
@@ -1678,19 +1759,34 @@ if _nframes==0:
 else:
     pbc1,pbc2=st.sidebar.columns(2)
     if pbc1.button("▶ Play" if not st.session_state.pb_play else "⏸ Pause",use_container_width=True):
-        st.session_state.pb_play=(not st.session_state.pb_play) and _nframes>1; st.rerun()
+        _was=st.session_state.pb_play
+        st.session_state.pb_play=(not _was) and _nframes>1
+        st.session_state.pb_last_tick=None   # first tick SHOWS the current frame, no advance (v2.2.2)
+        if _was: st.session_state.pb_follow=(st.session_state.pb_idx>=_nframes-1)  # pausing mid-film holds
+        st.rerun()
     if pbc2.button("⏮ Rewind",use_container_width=True):
-        st.session_state.pb_idx=0; st.session_state.pb_play=False; st.rerun()
+        st.session_state.pb_idx=0; st.session_state.pb_play=False
+        st.session_state.pb_follow=(_nframes<=1)
+        st.rerun()
     st.session_state.pb_speed=st.sidebar.radio("Speed (sec/frame)",[1.0,2.0,4.0],
         index=[1.0,2.0,4.0].index(st.session_state.pb_speed),horizontal=True)
     if st.session_state.pb_play:
-        # auto-advance: this rerun was triggered by the fast tick
-        st.session_state.pb_idx=(st.session_state.pb_idx+1)%_nframes
+        # advance ONLY on a genuine timer tick — extra reruns (button handshakes,
+        # component mounts, widget touches) can no longer skip frames (v2.2.2)
+        _lt=st.session_state.get("pb_last_tick")
+        if _tick is not None and _tick!=_lt:
+            if _lt is not None:
+                st.session_state.pb_idx=(st.session_state.pb_idx+1)%_nframes
+            st.session_state.pb_last_tick=_tick
         st.sidebar.progress((st.session_state.pb_idx+1)/_nframes)
     elif _nframes>1:
-        # paused: manual scrub. Defaults to the LATEST frame; scrubbing back replays,
-        # sitting at the latest keeps the view LIVE so sidebar controls apply instantly.
-        st.session_state.pb_idx=st.sidebar.slider("Frame",0,_nframes-1,_nframes-1)
+        # paused: if you were FOLLOWING (at the latest frame), new frames keep you
+        # live; if you scrubbed back, your position HOLDS even as frames arrive.
+        # Drag to the right edge to re-follow live. (v2.2.2)
+        _def=(_nframes-1 if st.session_state.get("pb_follow",True)
+              else int(min(st.session_state.get("pb_idx",_nframes-1),_nframes-1)))
+        st.session_state.pb_idx=st.sidebar.slider("Frame",0,_nframes-1,_def)
+        st.session_state.pb_follow=(st.session_state.pb_idx>=_nframes-1)
     else:
         st.session_state.pb_idx=0
         st.sidebar.caption("1 frame cached — more appear each snapshot.")
@@ -1712,10 +1808,11 @@ sel_ts=latest["ts"]
 exp_date=dt.datetime.strptime(exps[0],"%Y-%m-%d").date()
 bars,bars_msg=prep_bars()
 try:  # ATM IV tripwire (v2.1.9): a units regression must be humanly visible
-    _c0=latest["chain"]; _c0=_c0[_c0["expiry"]==use_exps[0]]
+    _c0=latest["chain"]; _c0=_c0[_c0["expiry"]==exps[0]] if "expiry" in latest["chain"].columns else latest["chain"]
     _aiv=float(_c0.iloc[(_c0["strike"]-spot).abs().argsort()[:2]]["iv"].median())
     _atmiv_txt=f"  ·  ATM IV {100*_aiv:.1f}%" if _aiv==_aiv else ""
-except Exception: _atmiv_txt=""
+except Exception as _ex:                      # tripwires FAIL LOUD (v2.2.2 rule)
+    _atmiv_txt=f"  ·  ATM IV unavailable ({type(_ex).__name__})"
 
 # Y-AXIS = spot ± window_pct, FULL STOP. Bars never influence the range, so no
 # stray feed value can ever collapse or blow out the axis. Widen the window % in
@@ -1794,10 +1891,14 @@ with tab_terr:
         use_exps=(latest.get("exps") or [])[:max(1,int(num_expiries))]
         if not use_exps:
             st.warning("No expiries in this snapshot yet."); return
+        _GHEAVY="Gamma |Γ| (heaviness)"; _GDECAY="Gamma Decay (color)"
+        _base_greek="Gamma" if t_greek in (_GHEAVY,_GDECAY) else t_greek
         try:
-            pg,Z,taus=terrain_grid(latest["chain"],spot,use_exps,now_naive,greek=t_greek,
+            pg,Z,taus=terrain_grid(latest["chain"],spot,use_exps,now_naive,greek=_base_greek,
                                    vol_adj=(0.01 if t_voladj=="+1%" else 0.0),
                                    p_min=p_min,p_max=p_max,simulated_gamma=t_simg,weighting=t_wt)
+            if t_greek==_GHEAVY: Z=np.abs(Z)
+            elif t_greek==_GDECAY: Z=_decay_shift(Z,taus)
         except Exception as ex:
             import traceback; st.error(f"terrain grid failed: {ex}"); st.code(traceback.format_exc()); return
         # fixed-cap scaling (per greek, seeded once; Calibrate button re-seeds)
@@ -1817,15 +1918,17 @@ with tab_terr:
             st.caption("⏸ off-hours: time-to-expiry ~constant across the session axis → field is nearly "
                        "time-flat and candles are absent. Structure appears live during RTH on 0DTE.")
         V=terrain_intensity(V,t_int,power=t_pow,gain=3.0)
-        cmap=gex_cmap() if t_greek!="Charm" else charm_cmap()
-        plotV=V if t_greek!="Charm" else -V   # hedging-effect polarity: dealers-must-SELL renders gold (§7.7)
+        cmap=(charm_cmap() if t_greek=="Charm" else heat_cmap() if t_greek==_GHEAVY
+              else decay_cmap() if t_greek==_GDECAY else gex_cmap())
+        plotV=(-V if t_greek=="Charm" else V)   # hedging-effect polarity: dealers-must-SELL renders gold (§7.7)
+        _vmin=(0.0 if t_greek==_GHEAVY else -1.0)
         x0,x1=session_window()
         fig=plt.figure(figsize=(16.5,7.6),dpi=80,facecolor=DARK)
         gs=fig.add_gridspec(1,2,width_ratios=[24,2.2],wspace=0.015)
         ax=fig.add_subplot(gs[0,0]); axp=fig.add_subplot(gs[0,1],sharey=ax)
         ax.set_facecolor(DARK); axp.set_facecolor(DARK)
         ax.imshow(plotV,origin="lower",extent=[x0,x1,pg[0],pg[-1]],aspect="auto",cmap=cmap,
-                  vmin=-1,vmax=1,interpolation="bilinear",zorder=0,alpha=t_alpha)
+                  vmin=_vmin,vmax=1,interpolation="bilinear",zorder=0,alpha=t_alpha)
         if t_cont: terrain_contours(ax,Z,x0,x1,pg,st.session_state.get(capkey))
         draw_candles(ax,bars,x0,x1,pg[0],pg[-1])
         ax.axhline(spot,color=WHITE,ls="--",lw=1.0,alpha=.9,zorder=7)
@@ -1860,15 +1963,20 @@ with tab_terr:
         # side profile histogram — the current-time column (real VS3D right-edge panel)
         jnow=int(np.clip(round((mdates.date2num(now_naive)-x0)/(x1-x0)*(Z.shape[1]-1)),0,Z.shape[1]-1))
         prof=Z[:,jnow]; capv=float(np.percentile(np.abs(prof),98)) or 1.0   # local shape scale
-        posc,negc=(("#d9a90b","#3399dd") if t_greek=="Charm" else ("#22b14c","#d13438"))
+        posc,negc=(("#d9a90b","#3399dd") if t_greek=="Charm"
+                   else ("#39d0d8","#39d0d8") if t_greek==_GHEAVY
+                   else ("#ff9f43","#7a3fd0") if t_greek==_GDECAY
+                   else ("#22b14c","#d13438"))
         axp.fill_betweenx(pg,0,np.clip(prof/capv,-1,1),where=prof>=0,color=posc,alpha=.85)
         axp.fill_betweenx(pg,0,np.clip(prof/capv,-1,1),where=prof<0,color=negc,alpha=.85)
         axp.axvline(0,color="#555",lw=.6); axp.axhline(spot,color=WHITE,ls="--",lw=.8,alpha=.8)
         axp.set_xlim(-1,1); axp.set_xticks([])
         for s_ in ("top","right","left","bottom"): axp.spines[s_].set_color(GRID)
         pol=("green = dealers BUY to arrive hedged (supportive) · red = SELL" if t_greek=="Delta Change"
-             else ("green = +γ suppressive · red = −γ amplifying" if t_greek=="Gamma"
-             else "gold = dealers must SELL as time passes · blue = must BUY"))
+             else "green = +γ suppressive · red = −γ amplifying" if t_greek=="Gamma"
+             else "bright = heavy book · direction UNKNOWN by design (roles come from behavior)" if t_greek==_GHEAVY
+             else "orange = γ BUILDING into the close (pin energy) · purple = fading" if t_greek==_GDECAY
+             else "gold = dealers must SELL as time passes · blue = must BUY")
         ax.set_title(f"TERRAIN · {t_greek} · {t_wt} · exps {len(use_exps)} · cap {st.session_state.get(capkey,0):,.0f}"
                      f" · {t_int}({t_pow:g}) · α{t_alpha:.2f}   [{pol}]",color=TXT,fontsize=10.5,loc="left")
         # strike scale: 25-pt gridlines across the field + bright labels both sides
@@ -1988,6 +2096,8 @@ with tab_sig:
                          else "weak/conflicting gates")
                 ban=("\u23f8 WAIT",f"inaction is the trade right now — {blocker}",GLD)
             why=[]
+            if v["conf"]<=25 and "FISHBONE" in v["fish"]:
+                why.append("fishbone structure (BINDING — caps everything else)")
             why.append("charm live" if v["decay"].startswith(("DECAYING","COLLAPSING")) else "charm off")
             why.append("prime window" if "SWEET" in v["clock"] else ("pin hour" if v["clock"].startswith("CLOSE") else ("open hour" if v["clock"].startswith("OPEN") else "midday")))
             why.append(v["vix"].split(" \u00b7 ")[0])
