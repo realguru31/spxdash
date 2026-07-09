@@ -1,5 +1,15 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.5.1
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.6
+
+vGBT-0.6 [NET_DRIFT LIVE SIGNS + VOLUME GATE — promoted on same-day evidence]
+  • live sign refresh now uses net_drift (official ask−bid aggressor semantics;
+    agreed with our side-stats 100%/91%/100% across three checks today) — one
+    call per strike covers both legs; parsing is one column-sum, not 5 buckets
+  • VOLUME GATE: per-strike traded volume rides the NET_VOLUME heat we already
+    fetch — a strike's sign is only re-pulled when its volume actually changed
+    (≥ max(50 lots, 2%)). Quiet strikes cost ZERO calls. Budget cap 12/snapshot.
+  • SEED UNCHANGED: side-stats on yesterday's session + today's expiry is the
+    probe-4-proven path; net_drift was never tested on that combo (rule 1).
 
 vGBT-0.5.1 [AUDIT FIXES — from the pre-read code re-check]
   • ORDER BUG: ♻ Re-run took its snapshot BEFORE GBT_SIGNED existed in the run →
@@ -1738,7 +1748,34 @@ def _gbt_side_stats(exp,strike,session_date=None):
     p={"dataMode":"VOLUME","tickers":["SPX"],"expirationDates":[exp],"strikePrices":[float(strike)]}
     if session_date: p["sessionDate"]=session_date
     _,df=_gbt_post("contract_trade_side_statistics",p); return df
-def gbt_dsign_map(exp,strikes,spot):
+def _vol_gate(vnow,vlast,floor=50.0,frac=0.02):
+    """True → refresh this strike. New strike, or traded volume moved by
+    ≥ max(floor lots, frac of current) since the last sign pull."""
+    if vlast is None: return True
+    try: return abs(float(vnow)-float(vlast))>=max(floor,frac*float(vnow))
+    except Exception: return True
+def _nd_net(df):
+    """{type: net customer initiative} from a net_drift frame (sum of buckets).
+    Doc + 3× today's cross-check: netVolume = ask-aggressor − bid-aggressor."""
+    out={}
+    if df is None or getattr(df,"empty",True): return out
+    for typ,cn in (("call","netCallVolume"),("put","netPutVolume")):
+        if cn in df.columns:
+            out[typ]=float(pd.to_numeric(df[cn],errors="coerce").fillna(0).sum())
+    return out
+def _nd_live(exp,strike,vol_call=None,vol_put=None):
+    """vGBT-0.6 live sign source: ONE net_drift call, both legs. Returns
+    {type:(net,total)} in the seed's shape; totals from the free NET_VOLUME
+    heat (per leg), floored at |net| so confidence stays in [0,1]."""
+    _,df=_gbt_post("net_drift",{"tickers":["SPX"],"expirationDates":[exp],
+        "strikePrices":[float(strike)],"aggregationPeriod":"FIVE_MINUTE"})
+    out={}
+    for typ,net in _nd_net(df).items():
+        vh=float((vol_call if typ=="call" else vol_put) or 0.0)
+        tot=max(abs(net),vh)
+        if tot>0: out[typ]=(net,tot)
+    return out
+def gbt_dsign_map(exp,strikes,spot,nvol=None):
     """{(strike,type): dsign in [-1,1]} — dealer direction × confidence.
     Seed fetched ONCE per day (yesterday is immutable; server caches 24h; paced
     inside the 30/min budget — the FIRST snapshot of the day takes ~1-2 min) and
@@ -1772,14 +1809,31 @@ def gbt_dsign_map(exp,strikes,spot):
                                   "n":len(seed),"errs":_errs[-3:]}
         save_day_state()
     live=ss.get(livek,{})
+    vk="gbt_live_vol_"+exp; lastvol=ss.get(vk,{})
     def _wt(k):
         d=seed.get(float(k),{}); return sum(t for _,t in d.values()) if d else 0.0
     hot=sorted(strikes,key=_wt,reverse=True)[:10]
     atm=sorted(strikes,key=lambda k:abs(float(k)-spot))[:4]
+    _vc,_vp={},{}
+    try:
+        if nvol is not None and len(nvol):
+            for _r in nvol.itertuples():
+                _vc[float(_r.strikePrice)]=abs(float(getattr(_r,"callValue",0) or 0))
+                _vp[float(_r.strikePrice)]=abs(float(getattr(_r,"putValue",0) or 0))
+    except Exception: _vc,_vp={},{}
+    _budget=12
     for k in dict.fromkeys([*hot,*atm]):
-        try: live[float(k)]=_side_net_total(_gbt_side_stats(exp,k))
+        kf=float(k)
+        vnow=(_vc.get(kf,0.0)+_vp.get(kf,0.0)) if (kf in _vc or kf in _vp) else None
+        if kf in live and vnow is not None and not _vol_gate(vnow,lastvol.get(kf)):
+            continue                       # tape didn't print → sign can't have moved
+        if _budget<=0: break
+        try:
+            live[kf]=_nd_live(exp,kf,_vc.get(kf),_vp.get(kf)); _budget-=1
+            if vnow is not None: lastvol[kf]=vnow
+            _time.sleep(0.4)
         except Exception: pass
-    ss[livek]=live
+    ss[livek]=live; ss[vk]=lastvol
     _m=ss.get("gbt_seed_meta_"+exp,{}); _m["live"]=len(live); ss["gbt_seed_meta_"+exp]=_m
     out={}
     for k in strikes:
@@ -1809,7 +1863,7 @@ def gbt_snapshot_frame(window_pct):
     bk=bk[(bk["strike"]>=lo)&(bk["strike"]<=hi)][["strike","call_pd","put_pd"]].reset_index(drop=True)
     try:
         if GBT_SIGNED:
-            _dm=gbt_dsign_map(exp,sorted(chain["strike"].unique().tolist()),spot)
+            _dm=gbt_dsign_map(exp,sorted(chain["strike"].unique().tolist()),spot,frames.get("nvol"))
             chain["dsign"]=[_dm.get((float(t.strike),t.type),np.nan) for t in chain.itertuples()]
     except Exception as _sx:
         try: st.sidebar.caption(f"⚠ signed inference degraded → naive this frame: {type(_sx).__name__}")
@@ -1916,7 +1970,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.5.1 · GBT data · flow-signed · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.6 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
