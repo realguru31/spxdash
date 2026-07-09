@@ -1879,6 +1879,12 @@ if capc1.button("Calibrate range",use_container_width=True):
 if capc2.button("Reset cap",use_container_width=True):
     for k in [k for k in list(st.session_state.keys()) if k.startswith("terr_cap_")]: st.session_state.pop(k,None)
 st.sidebar.caption("Field scale (§2.4 fixed cap) — Reset at the open · Calibrate after 2–3 snapshots.")
+if st.sidebar.button("♻ Re-run signed seed",
+        help="Discards the persisted flow-seed and re-sweeps yesterday's flow on today's expiry (~2 min, paced). Use if the seed badge shows failures or the start looked broken."):
+    for _k in [k for k in list(st.session_state.keys()) if str(k).startswith(("gbt_seed_","gbt_live_"))]:
+        st.session_state.pop(_k,None)
+    save_day_state()
+    st.sidebar.success("seed cleared — press 📸 Snapshot now to re-seed (~2 min)")
 GBT_SIGNED=st.sidebar.checkbox("Signed dealer inference (flow-seeded)",value=True,
     help="Dealer signs from aggressor flow: yesterday's flow on today's expiry seeds the book pre-open; today's flow updates it live. Drives the gradient AND the Book bars. OFF = naive calls+/puts−.")
 try:
@@ -1897,7 +1903,7 @@ with st.sidebar.expander("📊 Book controls", expanded=False):
     b_dots=st.checkbox("Comparison dots (prev + open)",value=True)
     b_strad=st.checkbox("1× straddle lines",value=True)
 with st.sidebar.expander("🗺 Terrain controls", expanded=False):
-    t_greek=st.selectbox("Greek",["Delta Change","Gamma","Charm","Gamma |Γ| (heaviness)","Gamma Decay (color)"],index=0,
+    t_greek=st.selectbox("Greek",["Delta Change","Gamma","Charm","Gamma |Γ| (heaviness)","Gamma Decay (color)"],index=1,   # default = Gamma (standing user preference)
         help="Delta Change (§7.7): futures dealers must trade to arrive hedged at each price/time — combines gamma+charm; path of least resistance.")
     t_wt=st.selectbox("Weighting",["OI + Volume","OI (opening book)","Volume (today's flow)","Vol else OI (legacy)"],index=0,
         help="OI = yesterday's settled book (static all day, ≈ the opening position §4.5 says to respect). "
@@ -2270,12 +2276,16 @@ with tab_terr:
         axp.axvline(0,color="#555",lw=.6); axp.axhline(spot,color=WHITE,ls="--",lw=.8,alpha=.8)
         axp.set_xlim(-1,1); axp.set_xticks([])
         for s_ in ("top","right","left","bottom"): axp.spines[s_].set_color(GRID)
+        try:
+            _ch0=latest["chain"]
+            _sgmode="SIGNED·flow" if (GBT_SIGNED and "dsign" in _ch0.columns and _ch0["dsign"].notna().any()) else "naive±"
+        except Exception: _sgmode="naive±"
         pol=("green = dealers BUY to arrive hedged (supportive) · red = SELL" if t_greek=="Delta Change"
              else "green = +γ suppressive · red = −γ amplifying" if t_greek=="Gamma"
              else "bright = heavy book · direction UNKNOWN by design (roles come from behavior)" if t_greek==_GHEAVY
              else "orange = γ BUILDING into the close (pin energy) · purple = fading" if t_greek==_GDECAY
              else "gold = dealers must SELL as time passes · blue = must BUY")
-        ax.set_title(f"TERRAIN · {t_greek} · {t_wt} · exps {len(use_exps)} · cap {st.session_state.get(capkey,0):,.0f}"
+        ax.set_title(f"TERRAIN · {t_greek} · {t_wt} · {_sgmode} · exps {len(use_exps)} · cap {st.session_state.get(capkey,0):,.0f}"
                      f" · {t_int}({t_pow:g}) · α{t_alpha:.2f}   [{pol}]",color=TXT,fontsize=10.5,loc="left")
         # strike scale: 25-pt gridlines across the field + bright labels both sides
         _yt=np.arange(np.ceil(pg[0]/25)*25, pg[-1]+1, 25)
@@ -2317,7 +2327,7 @@ with tab_terr:
                 for _y in _yt: axc.axhline(_y,color="#1a2330",lw=0.6,zorder=1)
                 axc.set_yticks(_yt); axc.tick_params(axis="y",colors="#9fb0c3",labelsize=10.5,length=3)
                 axc.set_ylim(pg[0],pg[-1]); style_time_axis(axc,x0,x1)
-                axc.set_title(f"CHARM · {t_wt} · cap {st.session_state.get(ck,0):,.0f}   "
+                axc.set_title(f"CHARM · {t_wt} · {_sgmode} · cap {st.session_state.get(ck,0):,.0f}   "
                               f"[gold = dealers must SELL as time passes · blue = must BUY]",
                               color=TXT,fontsize=10.5,loc="left")
                 emit("terrain",fc)
