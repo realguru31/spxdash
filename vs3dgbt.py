@@ -1,5 +1,8 @@
 """
-vs3d3_v2.0.py — SPX Dealer Terrain (VS3D guide-spec rebuild) (Streamlit POC)
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.3.1
+(lineage: cloned from vs3d2 v2.2.2, which grew from the vs3d3_v2.0 baseline)
+
+vGBT-0.3.1 [file identity fix — header now names THIS file; no functional change]
 =================================================
 Point your streamlit.io app at this file.
 
@@ -1867,7 +1870,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.3 · GBT data · flow-signed · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.3.1 · GBT data · flow-signed · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
