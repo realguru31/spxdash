@@ -5,6 +5,12 @@ Point your streamlit.io app at this file.
 
 CHANGELOG (newest first) — what changed and why, per version
 ─────────────────────────────────────────────────────────────────────────────
+vGBT-0.3 [DEPLOY-PROOFING + BOOK UX — √ scale, version stamp, all 0.2.x fixes rolled up]
+  • sidebar stamp vGBT-0.3: if the running app says 0.2, the repo has a stale file
+  • Book: √ display scale (default ON, matches the reference chart) so the 7475/7500
+    towers stop flattening every other strike; Price window ±% slider = the zoom
+  • rolled up: NULLs fix · Gamma default · SIGNED·flow title badge · re-seed button ·
+    seed coverage badge · budget-safe pacing
 vGBT-0.2 [SIGNED INFERENCE — same morning · flow-seeded dealer signs EVERYWHERE]
   • dealer sign per leg inferred from aggressor flow: seed = YESTERDAY's session flow on
     TODAY's expiry (net customer initiative = (above_ask+ask)−(bid+below_bid); dealer =
@@ -1707,12 +1713,16 @@ def gbt_dsign_map(exp,strikes,spot):
     seedk=f"gbt_seed_{exp}"; livek=f"gbt_live_{exp}"
     seed=ss.get(seedk)
     if seed is None:
-        seed={}
+        seed={}; _errs=[]
         for k in strikes:
             try: seed[float(k)]=_side_net_total(_gbt_side_stats(exp,k,_gbt_prev_session()))
-            except Exception: seed[float(k)]={}
-            _time.sleep(1.6)
-        ss[seedk]=seed; save_day_state()
+            except Exception as _se:
+                seed[float(k)]={}; _errs.append(f"{k:g}: {type(_se).__name__}")
+            _time.sleep(2.3)                      # ≤26/min — inside the documented 30/min budget
+        ss[seedk]=seed
+        ss["gbt_seed_meta_"+exp]={"ok":sum(1 for v in seed.values() if v),
+                                  "n":len(seed),"errs":_errs[-3:]}
+        save_day_state()
     live=ss.get(livek,{})
     def _wt(k):
         d=seed.get(float(k),{}); return sum(t for _,t in d.values()) if d else 0.0
@@ -1722,6 +1732,7 @@ def gbt_dsign_map(exp,strikes,spot):
         try: live[float(k)]=_side_net_total(_gbt_side_stats(exp,k))
         except Exception: pass
     ss[livek]=live
+    _m=ss.get("gbt_seed_meta_"+exp,{}); _m["live"]=len(live); ss["gbt_seed_meta_"+exp]=_m
     out={}
     for k in strikes:
         kf=float(k); s=seed.get(kf,{}); l=live.get(kf,{})
@@ -1756,18 +1767,19 @@ def gbt_snapshot_frame(window_pct):
         try: st.sidebar.caption(f"⚠ signed inference degraded → naive this frame: {type(_sx).__name__}")
         except Exception: pass
     return spot,chain,bk,exp
-def book_figure(book,spot,straddle,lo,hi,side="Total",prev=None,openb=None,signed=None):
+def book_figure(book,spot,straddle,lo,hi,side="Total",prev=None,openb=None,signed=None,sqrt_scale=False):
+    def _tx(v): return np.sign(v)*np.sqrt(np.abs(v)) if sqrt_scale else v
     """VS3D 'Positions by Strike' analogue. Bars in e-minis per $1 (per-$1 ÷ 50).
     NAIVE calls+/puts− convention — measured signing arrives with the flow ledger."""
     fig,ax=plt.subplots(figsize=(6.5,9)); fig.patch.set_facecolor("#0e1117"); ax.set_facecolor("#0e1117")
     if signed is not None and len(signed):
         sg=signed[(signed["strike"]>=lo)&(signed["strike"]<=hi)].reset_index(drop=True)
         for _,r in sg.iterrows():
-            v=float(r["signed_pct"])/1e6
+            v=_tx(float(r["signed_pct"])/1e6)
             ax.barh(float(r["strike"]),v,height=3.6,zorder=3,
                     color=("#26a69a" if v>=0 else "#ef5350"),
                     alpha=0.35+0.6*min(1.0,float(r.get("conf",0.5))))
-        ax.set_xlabel("dealer GEX $M per 1% — MM-inferred (flow-signed · opacity = confidence)",color="#aaa",fontsize=8)
+        ax.set_xlabel(("√" if sqrt_scale else "")+"dealer GEX $M per 1% — MM-inferred (flow-signed · opacity = confidence)",color="#aaa",fontsize=8)
         prev=openb=None
     else:
         b=book.copy(); b=b[(b["strike"]>=lo)&(b["strike"]<=hi)]
@@ -1775,13 +1787,13 @@ def book_figure(book,spot,straddle,lo,hi,side="Total",prev=None,openb=None,signe
         if side=="Calls": vals=c.values; cols=["#26a69a"]*len(ks)
         elif side=="Puts": vals=p.values; cols=["#ef5350"]*len(ks)
         else: vals=(c+p).values; cols=["#26a69a" if v>=0 else "#ef5350" for v in vals]
-        ax.barh(ks,vals,height=3.6,color=cols,alpha=0.9,zorder=3)
+        ax.barh(ks,_tx(np.asarray(vals,float)),height=3.6,color=cols,alpha=0.9,zorder=3)
     def _dots(src,color,lbl):
         if src is None or getattr(src,"empty",True): return
         s2=src[(src["strike"]>=lo)&(src["strike"]<=hi)]
         c2=s2["call_pd"].fillna(0)/50.0; p2=s2["put_pd"].fillna(0)/50.0
         v2=c2.values if side=="Calls" else (p2.values if side=="Puts" else (c2+p2).values)
-        ax.scatter(v2,s2["strike"].values,s=14,color=color,zorder=4,label=lbl)
+        ax.scatter(_tx(np.asarray(v2,float)),s2["strike"].values,s=14,color=color,zorder=4,label=lbl)
     _dots(prev,"#e0e0e0","prev snap"); _dots(openb,"#6f9bd1","market open")
     ax.axhline(spot,color="w",lw=0.9,ls="--",alpha=0.8)
     ax.text(ax.get_xlim()[1],spot,f" {spot:.2f}",color="w",va="center",fontsize=8)
@@ -1790,8 +1802,9 @@ def book_figure(book,spot,straddle,lo,hi,side="Total",prev=None,openb=None,signe
             ax.axhline(yy,color="#c084fc",lw=0.9,ls=":",alpha=0.9)
             ax.text(ax.get_xlim()[1],yy,f" {yy:.2f} ({tag})",color="#c084fc",va="center",fontsize=7)
     ax.axvline(0,color="#666",lw=0.8)
-    ax.set_xlabel("e-minis per $1 (naive calls+ / puts−)",color="#aaa",fontsize=8)
-    ax.tick_params(colors="#aaa",labelsize=7); [s.set_color("#333") for s in ax.spines.values()]
+    ax.set_xlabel(("√" if sqrt_scale else "")+"e-minis per $1 (naive calls+ / puts−)",color="#aaa",fontsize=8)
+    ax.tick_params(colors="#aaa",labelsize=7)
+    for _sp in ax.spines.values(): _sp.set_color("#333")
     if prev is not None or openb is not None: ax.legend(loc="lower right",fontsize=7,facecolor="#0e1117",labelcolor="#ccc")
     ax.set_ylim(lo,hi); fig.tight_layout(); return fig
 
@@ -1854,7 +1867,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.2 · GBT data · flow-signed · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.3 · GBT data · flow-signed · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -1873,17 +1886,33 @@ if capc1.button("Calibrate range",use_container_width=True):
 if capc2.button("Reset cap",use_container_width=True):
     for k in [k for k in list(st.session_state.keys()) if k.startswith("terr_cap_")]: st.session_state.pop(k,None)
 st.sidebar.caption("Field scale (§2.4 fixed cap) — Reset at the open · Calibrate after 2–3 snapshots.")
+if st.sidebar.button("♻ Re-run signed seed",
+        help="Discards the persisted flow-seed and re-sweeps yesterday's flow on today's expiry (~2 min, paced). Use if the seed badge shows failures or the start looked broken."):
+    for _k in [k for k in list(st.session_state.keys()) if str(k).startswith(("gbt_seed_","gbt_live_"))]:
+        st.session_state.pop(_k,None)
+    save_day_state()
+    st.sidebar.success("seed cleared — press 📸 Snapshot now to re-seed (~2 min)")
 GBT_SIGNED=st.sidebar.checkbox("Signed dealer inference (flow-seeded)",value=True,
     help="Dealer signs from aggressor flow: yesterday's flow on today's expiry seeds the book pre-open; today's flow updates it live. Drives the gradient AND the Book bars. OFF = naive calls+/puts−.")
+try:
+    _gm=[v for k,v in st.session_state.items() if str(k).startswith("gbt_seed_meta_")]
+    if _gm:
+        _g=_gm[0]
+        _cov=f"🧬 signed seed {_g.get('ok','?')}/{_g.get('n','?')} strikes · live {_g.get('live',0)}"
+        if _g.get("errs"): _cov+=f" · ⚠ {len(_g['errs'])}+ failed (last: {_g['errs'][-1]})"
+        (st.sidebar.warning if _g.get("ok",0)<0.5*max(1,_g.get("n",1)) else st.sidebar.caption)(_cov)
+except Exception: pass
 book_on=st.sidebar.checkbox("Book panel (by strike)",value=True,
     help="GBT dealer book per 5-pt strike — VS3D 'Positions by Strike' analogue. NAIVE calls+/puts− (measured signing arrives with the flow ledger).")
 with st.sidebar.expander("📊 Book controls", expanded=False):
     b_mode=st.radio("Bars",["MM-inferred (signed)","Naive calls+/puts−"],index=0)
+    b_sqrt=st.checkbox("√ scale (compress towers)",value=True,
+        help="sign(v)·√|v| — the 7475/7500 monsters stop flattening every other strike. Same trick as the reference chart.")
     b_side=st.radio("Show (naive mode)",["Total","Calls","Puts"],index=0,horizontal=True)
     b_dots=st.checkbox("Comparison dots (prev + open)",value=True)
     b_strad=st.checkbox("1× straddle lines",value=True)
 with st.sidebar.expander("🗺 Terrain controls", expanded=False):
-    t_greek=st.selectbox("Greek",["Delta Change","Gamma","Charm","Gamma |Γ| (heaviness)","Gamma Decay (color)"],index=0,
+    t_greek=st.selectbox("Greek",["Delta Change","Gamma","Charm","Gamma |Γ| (heaviness)","Gamma Decay (color)"],index=1,   # default = Gamma (standing user preference)
         help="Delta Change (§7.7): futures dealers must trade to arrive hedged at each price/time — combines gamma+charm; path of least resistance.")
     t_wt=st.selectbox("Weighting",["OI + Volume","OI (opening book)","Volume (today's flow)","Vol else OI (legacy)"],index=0,
         help="OI = yesterday's settled book (static all day, ≈ the opening position §4.5 says to respect). "
@@ -2117,10 +2146,10 @@ def dispatch(tab, render_fn, sig=None):
 tab_book,tab_terr,tab_sig,tab_read=st.tabs(["📊 Book (by strike)","🗺 Terrain (gradient chart)","🧭 Signals (daily workflow)","📖 Read (what happens next)"])
 
 with tab_book:
-    emit_caption("book","GBT dealer book by 5-pt strike — VS3D 'Positions by Strike' analogue, rebuilt each "
-        "snapshot from live exposure. Bars = e-minis per $1. Dots: white = previous snapshot · blue = market "
-        "open. Convention is NAIVE calls+/puts− (dealer long/short NOT measured — the flow ledger, Phase C, "
-        "earns the signs); locations & magnitudes are the signal, green-below-spot is the proxy's tell.")
+    emit_caption("book","GBT dealer book by 5-pt strike — VS3D 'Positions by Strike' analogue. "
+        "MM-inferred mode: $M per 1%, signs from aggressor flow (yesterday's flow on today's expiry seeds "
+        "pre-open; live flow updates top strikes), opacity = sign confidence. Naive mode: e-minis per $1, "
+        "calls+/puts−, with comparison dots (white = prev snapshot · blue = market open).")
     def _render_book():
         bk=latest.get("book")
         if bk is None or getattr(bk,"empty",True):
@@ -2152,10 +2181,15 @@ with tab_book:
                     _sg=g[["strike","signed_pct","conf"]]
                 else: st.caption("no signed data in this frame — naive bars shown")
             except Exception as _bx: st.caption(f"signed book unavailable this frame: {type(_bx).__name__}")
-        fig=book_figure(bk,latest["spot"],_strv,lo,hi,side=b_side,prev=prevb,openb=openb,signed=_sg)
+        try:
+            _gm2=[v for k,v in st.session_state.items() if str(k).startswith("gbt_seed_meta_")]
+            if _gm2 and _sg is not None:
+                st.caption(f"signed coverage: seed {_gm2[0].get('ok','?')}/{_gm2[0].get('n','?')} strikes · live-refreshed {_gm2[0].get('live',0)}")
+        except Exception: pass
+        fig=book_figure(bk,latest["spot"],_strv,lo,hi,side=b_side,prev=prevb,openb=openb,signed=_sg,sqrt_scale=bool(b_sqrt))
         emit("book",fig)
     if book_on:
-        _bsig=repr((sel_ts.isoformat(),b_side,bool(b_dots),bool(b_strad),round(window_pct,5),len(st.session_state.snaps)))
+        _bsig=repr((sel_ts.isoformat(),b_mode,b_side,bool(b_dots),bool(b_strad),bool(b_sqrt),bool(GBT_SIGNED),round(window_pct,5),len(st.session_state.snaps)))
         dispatch("book",_render_book,sig=_bsig)
 
 
@@ -2251,12 +2285,16 @@ with tab_terr:
         axp.axvline(0,color="#555",lw=.6); axp.axhline(spot,color=WHITE,ls="--",lw=.8,alpha=.8)
         axp.set_xlim(-1,1); axp.set_xticks([])
         for s_ in ("top","right","left","bottom"): axp.spines[s_].set_color(GRID)
+        try:
+            _ch0=latest["chain"]
+            _sgmode="SIGNED·flow" if (GBT_SIGNED and "dsign" in _ch0.columns and _ch0["dsign"].notna().any()) else "naive±"
+        except Exception: _sgmode="naive±"
         pol=("green = dealers BUY to arrive hedged (supportive) · red = SELL" if t_greek=="Delta Change"
              else "green = +γ suppressive · red = −γ amplifying" if t_greek=="Gamma"
              else "bright = heavy book · direction UNKNOWN by design (roles come from behavior)" if t_greek==_GHEAVY
              else "orange = γ BUILDING into the close (pin energy) · purple = fading" if t_greek==_GDECAY
              else "gold = dealers must SELL as time passes · blue = must BUY")
-        ax.set_title(f"TERRAIN · {t_greek} · {t_wt} · exps {len(use_exps)} · cap {st.session_state.get(capkey,0):,.0f}"
+        ax.set_title(f"TERRAIN · {t_greek} · {t_wt} · {_sgmode} · exps {len(use_exps)} · cap {st.session_state.get(capkey,0):,.0f}"
                      f" · {t_int}({t_pow:g}) · α{t_alpha:.2f}   [{pol}]",color=TXT,fontsize=10.5,loc="left")
         # strike scale: 25-pt gridlines across the field + bright labels both sides
         _yt=np.arange(np.ceil(pg[0]/25)*25, pg[-1]+1, 25)
@@ -2298,14 +2336,14 @@ with tab_terr:
                 for _y in _yt: axc.axhline(_y,color="#1a2330",lw=0.6,zorder=1)
                 axc.set_yticks(_yt); axc.tick_params(axis="y",colors="#9fb0c3",labelsize=10.5,length=3)
                 axc.set_ylim(pg[0],pg[-1]); style_time_axis(axc,x0,x1)
-                axc.set_title(f"CHARM · {t_wt} · cap {st.session_state.get(ck,0):,.0f}   "
+                axc.set_title(f"CHARM · {t_wt} · {_sgmode} · cap {st.session_state.get(ck,0):,.0f}   "
                               f"[gold = dealers must SELL as time passes · blue = must BUY]",
                               color=TXT,fontsize=10.5,loc="left")
                 emit("terrain",fc)
             except Exception as ex:
                 st.caption(f"charm panel unavailable: {ex}")
     _tsig=repr((sel_ts.isoformat(),t_greek,t_wt,t_norm,t_pct,t_int,round(t_pow,3),round(t_alpha,3),
-                t_cont,t_strad,t_lvls,t_voladj,t_simg,t_charm2,int(num_expiries),round(window_pct,5),
+                t_cont,t_strad,t_lvls,t_voladj,t_simg,t_charm2,bool(GBT_SIGNED),int(num_expiries),round(window_pct,5),
                 st.session_state.get(f"terr_cap_{t_greek}_{t_wt}"),
                 st.session_state.get(f"terr_cap_Charm_{t_wt}") if t_charm2 else None))
     dispatch("terrain",_render_terrain,sig=_tsig)
