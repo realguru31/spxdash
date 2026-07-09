@@ -1,5 +1,21 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.3.1
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.4.1
+
+vGBT-0.4.1 [BOOK RESPONDS TO THE MASTER TOGGLE + STABLE FIGURE SIZE]
+  • Signed-inference checkbox now flips the Book too (was: only terrain + future
+    snapshots; the Book kept using the stored dsign column either way)
+  • cached frames are saved at the figure's own dpi with no tight-crop → a frame
+    renders pixel-identical whether live or replayed (no more small/long jumping)
+
+vGBT-0.4 [BOOK ZOOM + SEED ANCHOR — user-spec'd method]
+  • Book zoom: ➕/➖/reset buttons (display-only sub-window of the fetched range) and a
+    range caption that states EXACTLY what was fetched, shown, and seeded — no guessing
+  • seed universe re-anchored: YESTERDAY's RTH close ±2% (union live window) — the
+    session that built the book defines the sweep; intraday drift can't orphan strikes
+  • ♻ Re-run signed seed = ONE click: clears seed+live, re-sweeps, takes a fresh
+    snapshot (~2-2.5 min with spinner)
+  • Price window default 1.5% → 2.0% (user spec) · FIX: signed Book no longer gets its
+    x-label overwritten by the naive one
 (lineage: cloned from vs3d2 v2.2.2, which grew from the vs3d3_v2.0 baseline)
 
 vGBT-0.3.1 [file identity fix — header now names THIS file; no functional change]
@@ -1716,6 +1732,19 @@ def gbt_dsign_map(exp,strikes,spot):
     seedk=f"gbt_seed_{exp}"; livek=f"gbt_live_{exp}"
     seed=ss.get(seedk)
     if seed is None:
+        # anchor the sweep to YESTERDAY's close ±2% (the session that built this book),
+        # union the live window's strikes — intraday drift can't orphan a strike
+        try:
+            _pc=ss.get("gbt_seed_prevclose")
+            if _pc is None:
+                _,_pb=_gbt_post("stock_price_over_time",{"ticker":"SPX",
+                        "aggregationPeriod":"FIVE_MINUTE","sessionDate":_gbt_prev_session()})
+                _pc=float(_pb.iloc[-1]["closePrice"]) if _pb is not None and len(_pb) else float(spot)
+                ss["gbt_seed_prevclose"]=_pc
+        except Exception: _pc=float(spot)
+        _g0,_g1=round(_pc*0.98/5)*5,round(_pc*1.02/5)*5
+        strikes=sorted(set([float(k) for k in strikes])|
+                       set(float(_g0+i*5) for i in range(int((_g1-_g0)/5)+1)))
         seed={}; _errs=[]
         for k in strikes:
             try: seed[float(k)]=_side_net_total(_gbt_side_stats(exp,k,_gbt_prev_session()))
@@ -1805,7 +1834,8 @@ def book_figure(book,spot,straddle,lo,hi,side="Total",prev=None,openb=None,signe
             ax.axhline(yy,color="#c084fc",lw=0.9,ls=":",alpha=0.9)
             ax.text(ax.get_xlim()[1],yy,f" {yy:.2f} ({tag})",color="#c084fc",va="center",fontsize=7)
     ax.axvline(0,color="#666",lw=0.8)
-    ax.set_xlabel(("√" if sqrt_scale else "")+"e-minis per $1 (naive calls+ / puts−)",color="#aaa",fontsize=8)
+    if signed is None or not len(signed):
+        ax.set_xlabel(("√" if sqrt_scale else "")+"e-minis per $1 (naive calls+ / puts−)",color="#aaa",fontsize=8)
     ax.tick_params(colors="#aaa",labelsize=7)
     for _sp in ax.spines.values(): _sp.set_color("#333")
     if prev is not None or openb is not None: ax.legend(loc="lower right",fontsize=7,facecolor="#0e1117",labelcolor="#ccc")
@@ -1870,13 +1900,13 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.3.1 · GBT data · flow-signed · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.4.1 · GBT data · flow-signed · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
 except Exception: pass
 num_expiries=st.sidebar.slider("Expiries to aggregate",1,5,1,help="1 = 0DTE only (default — the gradient chart is a 0DTE tool; asymptotics own the field). Raise to model the whole book (§1.5).")
-window_pct=st.sidebar.slider("Price window ±%",1.0,5.0,1.5,0.5)/100.0
+window_pct=st.sidebar.slider("Price window ±%",1.0,5.0,2.0,0.5)/100.0
 smooth_frac=st.sidebar.slider("Gradient smoothing",0.0,5.0,1.0,0.25,
     help="0 = raw per-strike detail (bumpy, like vols3d), higher = smoother density")/100.0
 # field scale controls — TOP LEVEL on purpose (v2.1.7): mid-session you must not
@@ -1894,7 +1924,10 @@ if st.sidebar.button("♻ Re-run signed seed",
     for _k in [k for k in list(st.session_state.keys()) if str(k).startswith(("gbt_seed_","gbt_live_"))]:
         st.session_state.pop(_k,None)
     save_day_state()
-    st.sidebar.success("seed cleared — press 📸 Snapshot now to re-seed (~2 min)")
+    with st.spinner("re-sweeping yesterday's flow + fresh snapshot (~2-2.5 min)..."):
+        try: take_snapshot(num_expiries)
+        except Exception as _rx: st.sidebar.error(f"re-seed failed: {type(_rx).__name__}: {_rx}")
+    st.sidebar.success("book re-seeded + fresh snapshot taken")
 GBT_SIGNED=st.sidebar.checkbox("Signed dealer inference (flow-seeded)",value=True,
     help="Dealer signs from aggressor flow: yesterday's flow on today's expiry seeds the book pre-open; today's flow updates it live. Drives the gradient AND the Book bars. OFF = naive calls+/puts−.")
 try:
@@ -1909,6 +1942,9 @@ book_on=st.sidebar.checkbox("Book panel (by strike)",value=True,
     help="GBT dealer book per 5-pt strike — VS3D 'Positions by Strike' analogue. NAIVE calls+/puts− (measured signing arrives with the flow ledger).")
 with st.sidebar.expander("📊 Book controls", expanded=False):
     b_mode=st.radio("Bars",["MM-inferred (signed)","Naive calls+/puts−"],index=0)
+    if st.button("➕ zoom in (strikes)"):  st.session_state["book_zoom"]=max(0.25,st.session_state.get("book_zoom",1.0)*0.7)
+    if st.button("➖ zoom out (strikes)"): st.session_state["book_zoom"]=min(1.0,st.session_state.get("book_zoom",1.0)/0.7)
+    if st.button("↔ full fetched range"):  st.session_state["book_zoom"]=1.0
     b_sqrt=st.checkbox("√ scale (compress towers)",value=True,
         help="sign(v)·√|v| — the 7475/7500 monsters stop flattening every other strike. Same trick as the reference chart.")
     b_side=st.radio("Show (naive mode)",["Total","Calls","Puts"],index=0,horizontal=True)
@@ -2118,7 +2154,7 @@ def emit(tab, fig, caption=None, container=None):
     if caption: tgt.markdown(caption)
     tgt.pyplot(fig,use_container_width=False)   # fixed size: prevents resize/jiggle feedback loop
     try:
-        buf=_io.BytesIO(); fig.savefig(buf,format="png",dpi=85,facecolor=DARK,bbox_inches="tight")
+        buf=_io.BytesIO(); fig.savefig(buf,format="png",dpi=fig.dpi,facecolor=DARK)   # == st.pyplot pixel size: live and cached render identically
         _EMIT_BUF.setdefault(tab,[]).append(buf.getvalue())
     except Exception: pass
     plt.close(fig)
@@ -2131,7 +2167,7 @@ def _replay_show(tab, ts_iso=None):
     if not imgs:
         st.info(f"No cached frame for this tab at {PLAYBACK_TS[11:19]}. "
                 "Switch to this tab during a live snapshot to record it."); return
-    for png in imgs: st.image(png)   # natural size — no resize feedback loop
+    for png in imgs: st.image(png)   # natural size == live pyplot size (same dpi, no crop)
 def dispatch(tab, render_fn, sig=None):
     """PLAYBACK → replay old frame. Live + unchanged (same snapshot & controls)
     → show cached PNG, ZERO recompute. Live + changed → render, cache, store sig."""
@@ -2170,7 +2206,9 @@ with tab_book:
             try: _strv=terrain_straddle(latest["chain"],latest["spot"])
             except Exception: _strv=None
         _sg=None
-        if b_mode.startswith("MM"):
+        if b_mode.startswith("MM") and not GBT_SIGNED:
+            st.caption("Signed dealer inference is OFF (sidebar toggle) — naive bars shown")
+        elif b_mode.startswith("MM"):
             try:
                 ch=latest["chain"]
                 if "dsign" in ch.columns and ch["dsign"].notna().any():
@@ -2184,15 +2222,18 @@ with tab_book:
                     _sg=g[["strike","signed_pct","conf"]]
                 else: st.caption("no signed data in this frame — naive bars shown")
             except Exception as _bx: st.caption(f"signed book unavailable this frame: {type(_bx).__name__}")
+        _z=float(st.session_state.get("book_zoom",1.0))
+        _sp=float(latest["spot"]); _half=_sp*window_pct*_z
+        _lo2,_hi2=max(lo,_sp-_half),min(hi,_sp+_half)
         try:
             _gm2=[v for k,v in st.session_state.items() if str(k).startswith("gbt_seed_meta_")]
-            if _gm2 and _sg is not None:
-                st.caption(f"signed coverage: seed {_gm2[0].get('ok','?')}/{_gm2[0].get('n','?')} strikes · live-refreshed {_gm2[0].get('live',0)}")
-        except Exception: pass
-        fig=book_figure(bk,latest["spot"],_strv,lo,hi,side=b_side,prev=prevb,openb=openb,signed=_sg,sqrt_scale=bool(b_sqrt))
+            _cv=f" · seeded {_gm2[0].get('ok','?')}/{_gm2[0].get('n','?')} · live {_gm2[0].get('live',0)}" if (_gm2 and _sg is not None) else ""
+        except Exception: _cv=""
+        st.caption(f"showing {int(_lo2)}–{int(_hi2)} · fetched {int(lo)}–{int(hi)} (spot {_sp:.2f} ±{window_pct*100:.1f}%) · zoom ×{_z:.2f}{_cv}")
+        fig=book_figure(bk,latest["spot"],_strv,_lo2,_hi2,side=b_side,prev=prevb,openb=openb,signed=_sg,sqrt_scale=bool(b_sqrt))
         emit("book",fig)
     if book_on:
-        _bsig=repr((sel_ts.isoformat(),b_mode,b_side,bool(b_dots),bool(b_strad),bool(b_sqrt),bool(GBT_SIGNED),round(window_pct,5),len(st.session_state.snaps)))
+        _bsig=repr((sel_ts.isoformat(),b_mode,b_side,bool(b_dots),bool(b_strad),bool(b_sqrt),bool(GBT_SIGNED),round(float(st.session_state.get("book_zoom",1.0)),3),round(window_pct,5),len(st.session_state.snaps)))
         dispatch("book",_render_book,sig=_bsig)
 
 
