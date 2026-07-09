@@ -1,5 +1,29 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.6.1
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.7
+
+vGBT-0.7 [RECORDER FIXES + BOOK×SPOT VIEW — from the first full-day review]
+  • CANONICAL PAIR CACHE: every snapshot now caches a Gamma+Charm terrain pair
+    ("vs3d_std") no matter where the greek dropdown sits. Today's lesson: the
+    dropdown was on Decay all day → zero Gamma history. Never again.
+  • Combined tab: stacked FULL-WIDTH (taller, not wider) and reads the
+    canonical pair first.
+  • BOOK × SPOT PATH (default ON): white intraday SPX line over the signed book
+    on a shared strike axis (time on top), labeled walls at the right edge —
+    the classic profile+path view. Cached per frame, so playback shows the
+    path GROWING instead of a static centered spot.
+  • Ops lesson recorded: /tmp state (incl. panel cache) dies on every deploy —
+    3 mid-session deploys today erased the morning. Hotfix before open or
+    after close.
+
+vGBT-0.6.2 [INTENSITY: STOP THE SEA-OF-COLOR]
+  • Power exponent default 1.00 → 0.40 (√-like, same rationale as the Book's √
+    scale): gamma fields span 10-100× between wings and ATM — linear mapping
+    renders them as clipped slabs. Slider unchanged; 1.0 = guide-spec linear.
+  • stale-cap tripwire TIGHTENED: old trigger (p92 > 3× cap) slept through a
+    morning where the OI+Volume field grew ~2× past the 09:35 cap and 60-80%
+    of ATM cells clipped flat. New trigger: p92 > 1.5× cap OR >35% of cells
+    clipped. Manual-cap philosophy (§2.4 comparability) retained — we warn
+    loudly instead of silently rescaling.
 
 vGBT-0.6.1 [SMOOTHING WAS EATING THE POCKETS]
   • default Gradient smoothing 1.00 → 0.25. At 1.00 the kernel spans ~1% of price
@@ -1977,7 +2001,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.6.1 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.7 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -2031,6 +2055,8 @@ with st.sidebar.expander("📊 Book controls", expanded=False):
     b_side=st.radio("Show (naive mode)",["Total","Calls","Puts"],index=0,horizontal=True)
     b_dots=st.checkbox("Comparison dots (prev + open)",value=True)
     b_strad=st.checkbox("1× straddle lines",value=True)
+    b_spot=st.checkbox("Spot-path overlay (VS3D view)",value=True,
+        help="White intraday SPX line across the book on a shared strike axis — playback shows it grow.")
 with st.sidebar.expander("🗺 Terrain controls", expanded=False):
     if st.button("➕ zoom in (terrain)"):  st.session_state["terr_zoom"]=max(0.25,st.session_state.get("terr_zoom",1.0)*0.7)
     if st.button("➖ zoom out (terrain)"): st.session_state["terr_zoom"]=min(1.0,st.session_state.get("terr_zoom",1.0)/0.7)
@@ -2045,7 +2071,7 @@ with st.sidebar.expander("🗺 Terrain controls", expanded=False):
         help="Manual (guide §2.4): fixed symmetric cap so a loose day LOOKS loose. Percentile rescales every frame.")
     t_pct=st.slider("Percentile hi",80,99,95) if t_norm=="Percentile" else 95
     t_int=st.selectbox("Intensity",["Power","Sqrt","Arcsinh"],index=0)
-    t_pow=st.slider("Power exponent",0.4,1.5,1.0,0.05,
+    t_pow=st.slider("Power exponent",0.4,1.5,0.40,0.05,   # 0.40 default: fields span decades; linear = clipped slabs
         help="§2.4: ~1 feels most natural. Low values = the 'cartoon setting' Dan warns about.")
     t_alpha=st.slider("Field opacity",0.15,1.0,0.38,0.01,help="Dan uses ~35% — field behind price.")
     t_cont=st.checkbox("Contours (zero + ridges/troughs)",value=True)
@@ -2231,9 +2257,17 @@ else:
 # ── frame emit / replay helpers ──────────────────────────────────────────────
 import io as _io
 _EMIT_BUF={}   # tab -> list of png bytes, filled during a live render pass
+_EMIT_REDIRECT={}; _EMIT_SILENT={}
 def emit(tab, fig, caption=None, container=None):
     """Live mode: display the figure AND stash its PNG for playback caching.
     If container is given (e.g. a st.columns() cell), render into it at a sane size."""
+    tab=_EMIT_REDIRECT.get(tab,tab)
+    if _EMIT_SILENT.get("on"):
+        try:
+            buf=_io.BytesIO(); fig.savefig(buf,format="png",dpi=fig.dpi,facecolor=DARK)
+            _EMIT_BUF.setdefault(tab,[]).append(buf.getvalue())
+        except Exception: pass
+        plt.close(fig); return
     tgt=container if container is not None else st
     if caption: tgt.markdown(caption)
     tgt.pyplot(fig,use_container_width=False)   # fixed size: prevents resize/jiggle feedback loop
@@ -2272,19 +2306,54 @@ tab_combo,tab_book,tab_terr,tab_sig,tab_read=st.tabs(["🖥 VS3D (combined)","�
 with tab_combo:
     if combo_on:
         _frc=st.session_state.frames.get(sel_ts.isoformat() if hasattr(sel_ts,"isoformat") else str(sel_ts),{})
-        _bp,_tp=_frc.get("book",[]),_frc.get("terrain",[])
+        _bp=_frc.get("book",[])
+        _tp=_frc.get("vs3d_std") or _frc.get("terrain",[])
         if not _bp and not _tp:
             st.info("No cached panels for this frame yet — take a 📸 snapshot (panels cache automatically).")
         else:
-            _c1,_c2=st.columns([1.0,1.55])
-            with _c1:
-                st.caption("Positions (Book)")
-                for _p in _bp: st.image(_p,use_container_width=True)
-            with _c2:
-                st.caption("Gamma + Charm terrain")
-                for _p in _tp: st.image(_p,use_container_width=True)
+            st.caption("Positions — Book × spot path")
+            for _p in _bp: st.image(_p,use_container_width=True)
+            st.caption("Gamma + Charm terrain (canonical pair — cached every snapshot)")
+            for _p in _tp: st.image(_p,use_container_width=True)
     else:
         st.caption("Enable '🖥 Combined VS3D layout' in the sidebar to compose Book + Gamma + Charm here.")
+
+def _book_spot_overlay(fig, bars, lo, hi, chain=None, spot=None, exp=None, nowv=None):
+    """VS3D-style Book×Spot: white intraday spot path over the signed book —
+    shared strike/price y-axis, session time along the top. Levels labeled at
+    the right edge. Cached per snapshot, so playback shows the path growing."""
+    try:
+        import matplotlib.dates as _md, matplotlib.transforms as _mt
+        ax=fig.axes[0]; fig.set_size_inches(11.0,12.0)
+        ax2=ax.twiny(); ax2.set_ylim(ax.get_ylim()); ax2.set_facecolor("none")
+        if bars is not None and len(bars):
+            t=pd.to_datetime(bars["t"]); c=pd.to_numeric(bars["c"],errors="coerce")
+            ax2.plot(t,c,color="white",lw=1.5,alpha=0.95,zorder=6)
+            try: x0,x1=session_window()
+            except Exception: x0,x1=t.min(),t.max()
+            ax2.set_xlim(x0,x1)
+            ax2.xaxis.set_major_formatter(_md.DateFormatter("%H:%M"))
+            ax2.tick_params(colors="#8a93a6",labelsize=8)
+            for s in ax2.spines.values(): s.set_visible(False)
+        try:
+            lv=pinak_levels(chain,spot,exp,nowv) if chain is not None else None
+            tr=_mt.blended_transform_factory(ax.transAxes,ax.transData)
+            def _line(y,lab,col,ls):
+                try: y=float(y)
+                except Exception: return
+                if y and lo<y<hi:
+                    ax.axhline(y,color=col,lw=1.0,ls=ls,alpha=0.85,zorder=5)
+                    ax.text(0.995,y,f"{lab} {y:,.0f}",transform=tr,ha="right",va="bottom",
+                            fontsize=8,color=col,zorder=7,
+                            bbox=dict(fc="#0e1117",ec=col,lw=0.6,pad=1.5))
+            if isinstance(lv,dict):
+                _line(lv.get("call_wall"),"Call wall","#ef5350",(0,(5,3)))
+                _line(lv.get("put_wall"),"Put wall","#26a69a",(0,(5,3)))
+                _line(lv.get("flip") or lv.get("vol_trigger"),"Flip","#d9a90b",(0,(1,2)))
+                _line(lv.get("pin"),"PIN","#6f9bd1",(0,(1,2)))
+        except Exception: pass
+    except Exception: pass
+    return fig
 
 with tab_book:
     emit_caption("book","GBT dealer book by 5-pt strike — VS3D 'Positions by Strike' analogue. "
@@ -2333,9 +2402,15 @@ with tab_book:
         except Exception: _cv=""
         st.caption(f"showing {int(_lo2)}–{int(_hi2)} · fetched {int(lo)}–{int(hi)} (spot {_sp:.2f} ±{window_pct*100:.1f}%) · zoom ×{_z:.2f}{_cv}")
         fig=book_figure(bk,latest["spot"],_strv,_lo2,_hi2,side=b_side,prev=prevb,openb=openb,signed=_sg,sqrt_scale=bool(b_sqrt))
+        if b_spot:
+            try:
+                _ch0=latest["chain"]; _ch0=_ch0[_ch0["expiry"]==exps[0]] if "expiry" in _ch0.columns else _ch0
+                fig=_book_spot_overlay(fig,bars,_lo2,_hi2,chain=_ch0,spot=float(latest["spot"]),exp=exps[0],nowv=now_naive)
+            except Exception as _ox:
+                st.caption(f"spot-path overlay unavailable: {type(_ox).__name__}")
         emit("book",fig)
     if book_on:
-        _bsig=repr((sel_ts.isoformat(),b_mode,b_side,bool(b_dots),bool(b_strad),bool(b_sqrt),bool(GBT_SIGNED),round(float(st.session_state.get("book_zoom",1.0)),3),round(window_pct,5),len(st.session_state.snaps)))
+        _bsig=repr((sel_ts.isoformat(),b_mode,b_side,bool(b_dots),bool(b_strad),bool(b_sqrt),bool(b_spot),int(len(bars) if bars is not None else 0),bool(GBT_SIGNED),round(float(st.session_state.get("book_zoom",1.0)),3),round(window_pct,5),len(st.session_state.snaps)))
         dispatch("book",_render_book,sig=_bsig)
 
 
@@ -2368,7 +2443,7 @@ with tab_terr:
             st.session_state[capkey]=1.2*float(np.percentile(np.abs(Z),98)); V,used_cap=terrain_scale(Z,t_norm,st.session_state[capkey],t_pct)
         _p92=float(np.percentile(np.abs(Z),92))
         st.session_state.setdefault(f"terr_hist_{t_greek}_{t_wt}",[]).append(_p92)
-        if t_norm=="Manual (fixed cap)" and used_cap and _p92>3.0*used_cap:
+        if t_norm=="Manual (fixed cap)" and used_cap and (_p92>1.5*used_cap or float((np.abs(Z)>=0.999*used_cap).mean())>0.35):
             st.warning(f"⚠ Cap stale — current p92 ({_p92:,.0f}) is {_p92/used_cap:.1f}× the cap "
                        f"({used_cap:,.0f}); the field is saturating into flat color blocks. "
                        f"Press Reset cap, then Calibrate after 2–3 snapshots.")
@@ -2498,6 +2573,24 @@ with tab_terr:
                 st.session_state.get(f"terr_cap_{t_greek}_{t_wt}"),
                 st.session_state.get(f"terr_cap_Charm_{t_wt}") if t_charm2 else None))
     dispatch("terrain",_render_terrain,sig=_tsig)
+    # canonical VS3D pair: Gamma+Charm cached EVERY snapshot, dropdown-proof
+    try:
+        _cts=sel_ts.isoformat()
+        _fr0=st.session_state.frames.setdefault(_cts,{})
+        if (not PLAYBACK) and st.session_state.get("snaps") and not _fr0.get("vs3d_std"):
+            if t_greek=="Gamma":
+                if _fr0.get("terrain"): _fr0["vs3d_std"]=list(_fr0["terrain"])
+            else:
+                _tg0=t_greek; t_greek="Gamma"
+                _EMIT_REDIRECT["terrain"]="vs3d_std"; _EMIT_SILENT["on"]=True
+                _EMIT_BUF["vs3d_std"]=[]
+                try: _render_terrain()
+                finally:
+                    t_greek=_tg0; _EMIT_REDIRECT.pop("terrain",None); _EMIT_SILENT.pop("on",None)
+                _fr0["vs3d_std"]=list(_EMIT_BUF.get("vs3d_std",[]))
+                save_day_state()
+    except Exception as _cx:
+        st.sidebar.caption(f"canonical cache skipped: {type(_cx).__name__}")
 
 with tab_sig:
     emit_caption("signals","§5.1 daily workflow: straddle range → structure quality → charm gate → absorption. "
