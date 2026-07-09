@@ -5,27 +5,8 @@ Point your streamlit.io app at this file.
 
 CHANGELOG (newest first) — what changed and why, per version
 ─────────────────────────────────────────────────────────────────────────────
-vGBT-0.3 [DEPLOY-PROOFING + BOOK UX — √ scale, version stamp, all 0.2.x fixes rolled up]
-  • sidebar stamp vGBT-0.3: if the running app says 0.2, the repo has a stale file
-  • Book: √ display scale (default ON, matches the reference chart) so the 7475/7500
-    towers stop flattening every other strike; Price window ±% slider = the zoom
-  • rolled up: NULLs fix · Gamma default · SIGNED·flow title badge · re-seed button ·
-    seed coverage badge · budget-safe pacing
-vGBT-0.2 [SIGNED INFERENCE — same morning · flow-seeded dealer signs EVERYWHERE]
-  • dealer sign per leg inferred from aggressor flow: seed = YESTERDAY's session flow on
-    TODAY's expiry (net customer initiative = (above_ask+ask)−(bid+below_bid); dealer =
-    minus that; confidence = |net|/total). Live cumulative refresh for top-OI strikes.
-  • signed mode drives BOTH the gradient (Gamma & Charm & Delta-Change fields) and the
-    Book tab (MM-inferred $/1% bars, opacity = confidence). Toggle OFF = naive.
-  • token: st.secrets["GBT_TOKEN"] or sidebar input — NO token in the repo.
-vGBT-0.1 [GBT MIGRATION — first light 07-09 · clone of v2.2.2, ingestion swapped]
-  • data: GroupBuyTrading API, SPX native, ~9 calls/snapshot (1 exposure + 8 heat)
-  • chain rebuilt per strike from heat_map IV/Δ/Γ + NET_OI/NET_VOL; bid=ask=BS-mid so
-    the ENTIRE v2.2.2 stack (terrain, pinak, verdict, playback, persistence) runs unchanged
-  • NEW first tab 📊 Book (by strike): VS3D 'Positions' analogue — naive calls+/puts−
-    convention (honest label), comparison dots (prev + market open), 1× straddle lines
-  • staged for vGBT-0.2+: GBT candles/true straddle/vanna/color panels · Phase C signed flow ledger
 v2.2.2 [ENGINE NIGHT-BUILD — built midday 07-08, deploy pre-open 07-09]
+  · v2.2.2b (07-09 pre-open): default Terrain greek = Gamma (standing user preference)
   • PLAYBACK rebuilt: frame advance driven by the autorefresh TICK COUNTER —
     extra reruns (button/component handshakes) can no longer skip frames;
     Rewind→Play now shows frame 1 first; Pause HOLDS position (slider no
@@ -485,7 +466,7 @@ def now_est():            # current time, EST, naive (tz stripped for arithmetic
 def today_est():
     return now_est().date()
 
-st.set_page_config(page_title="vs3dGBT · SPX 0DTE (GBT data)", layout="wide")
+st.set_page_config(page_title="vs3d · SPX 0DTE Gamma/Charm", layout="wide")
 
 # ════════════════════════════ Barchart ══════════════════════════════════════
 _UA=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -583,23 +564,12 @@ def weight_for(c, method):
 # Net signed GEX per strike (calls +, puts −) is aggregated, then turned into a SMOOTH
 # DENSITY across price (gamma magnitude tailing off across strikes) — NOT discrete
 # per-strike bumps. NO Black-Scholes anywhere.
-def _dealer_sign(c):
-    """vGBT-0.2: per-leg dealer sign. Signed mode → flow-inferred dsign in [-1,1]
-    (confidence-weighted); falls back to naive calls+/puts− when the toggle is off
-    or the column is absent (harness/synthetic frames)."""
-    nv=np.where(c["type"].values=="call",1.0,-1.0)
-    try:
-        if GBT_SIGNED and "dsign" in c.columns:
-            d=c["dsign"].values.astype(float)
-            return np.where(np.isfinite(d),d,nv)
-    except Exception: pass
-    return nv
 def _gex_profile_barchart(c, pg, mult=100, smooth_frac=0.01):
     """Net dealer GEX as a density vs price level pg, from Barchart per-strike gamma.
     Net signed GEX per strike (calls +, puts −) is interpolated onto the price grid,
     then smoothed by smooth_frac (0 = raw per-strike detail, higher = smoother)."""
     if c.empty: return np.zeros_like(pg)
-    sign=_dealer_sign(c)
+    sign=np.where(c["type"].values=="call",1.0,-1.0)
     per=pd.Series(sign*c["gamma"].fillna(0).values*c["w"].values,
                   index=c["strike"].values).groupby(level=0).sum().sort_index()
     if per.empty: return np.zeros_like(pg)
@@ -739,7 +709,7 @@ def zero_crossings(pg, vals):
 def compute_walls(c, spot, mult=100):
     # walls from BARCHART per-strike gamma (same source as the gradient), not BS.
     g=c["gamma"].fillna(0).values if "gamma" in c else np.zeros(len(c))
-    sign=_dealer_sign(c)
+    sign=np.where(c["type"].values=="call",1.0,-1.0)
     per=pd.Series(g*c["w"].values*sign*mult*spot,index=c["strike"].values).groupby(level=0).sum()
     if per.empty: return None,None
     return float(per.idxmax()),float(per.idxmin())
@@ -761,7 +731,7 @@ def vs3d_profiles(chain, spot, p_min, p_max, prev_chain=None, dt_hours=None, n_p
     c=chain.dropna(subset=["strike","gamma"]).copy()
     c=c[(c["strike"]>=p_min)&(c["strike"]<=p_max)]
     pg=np.linspace(p_min,p_max,n_price)
-    st=c["strike"].values; sign=_dealer_sign(c)
+    st=c["strike"].values; sign=np.where(c["type"].values=="call",1.0,-1.0)
     g=c["gamma"].fillna(0).values; oi=c["oi"].fillna(0).values; vol=c["volume"].fillna(0).values
     w=np.where(vol>0,vol,oi)
     gex=_vs3d_density(_vs3d_per(st,sign*g*w),pg,smooth)*100*spot      # net exposure (convention)
@@ -789,7 +759,7 @@ def vs3d_straddle(c, spot):
     if cm<=0 or pm<=0: return None
     return float(cm+pm)
 def vs3d_fishbone(c):
-    sign=_dealer_sign(c)
+    sign=np.where(c["type"].values=="call",1.0,-1.0)
     net=pd.Series(sign*c["gamma"].fillna(0).values*np.where(c["volume"].fillna(0)>0,c["volume"].fillna(0),c["oi"].fillna(0)),
                   index=c["strike"].values).groupby(level=0).sum().sort_index()
     v=net.values
@@ -845,7 +815,7 @@ def forward_sim_grid(chain, spot, exp, now, model, prev_chain=None, p_min=None, 
     pg=np.linspace(p_min,p_max,n_price)
     open_=dt.datetime.combine(now.date(),dt.time(9,30)); close=dt.datetime.combine(now.date(),dt.time(16,0))
     taus=[open_+dt.timedelta(seconds=t) for t in np.linspace(0,(close-open_).total_seconds(),n_time)]
-    K=c["strike"].values; iv=c["iv"].values; sgn=_dealer_sign(c)
+    K=c["strike"].values; iv=c["iv"].values; sgn=np.where(c["type"].values=="call",1.0,-1.0)
     w=_fwd_weight(c,model,prev_chain)
     Zg=np.zeros((n_price,n_time)); Zc=np.zeros((n_price,n_time))
     for j,tau in enumerate(taus):
@@ -1604,214 +1574,9 @@ def fetch_vix_live():
     except Exception: pass
     return None
 
-
-# ════════════════════ GBT ingestion (vGBT-0.1) ═══════════════════════════════
-# Conventions verified by probe rounds 1-3 (07-09): CSV-in-JSON envelope; epoch-ms;
-# IV percent-style; exposure calls>=0/puts<=0 BY CONSTRUCTION (naive); PER_$1 = RAW×spot;
-# snapshotTime/startTime SERVER-BROKEN (502) — hard-blocked below.
-GBT_BASE="https://api.groupbuytrading.com/v1"
-def _gbt_token():
-    tok=""
-    try: tok=str(st.secrets.get("GBT_TOKEN","")).strip()
-    except Exception: tok=""
-    if not tok:
-        try: tok=str(st.session_state.get("gbt_tok_input","")).strip()
-        except Exception: tok=""
-    return tok
-import io as _io
-def _gbt_post(ep,payload,retries=2):
-    assert "snapshotTime" not in payload and "startTime" not in payload, "server-broken params (502)"
-    err=None
-    for a in range(retries+1):
-        try:
-            _tok=_gbt_token()
-            if not _tok: raise RuntimeError("GBT token missing — add GBT_TOKEN to app Secrets (see deploy guide) or paste it in the sidebar")
-            r=requests.post(f"{GBT_BASE}/{ep}",json=payload,timeout=25,
-                headers={"Authorization":f"Bearer {_tok}","Content-Type":"application/json"})
-            if r.status_code==200:
-                j=r.json(); raw=j.get("data","") or ""
-                meta={}; lines=raw.split("\n"); i=0
-                while i<len(lines) and ("=" in lines[i] or lines[i].strip()==""):
-                    s2=lines[i].strip()
-                    if s2 and "=" in s2:
-                        k,_,v=s2.partition("="); meta[k.strip()]=v.strip()
-                    i+=1
-                body="\n".join(lines[i:]).strip()
-                df=pd.read_csv(_io.StringIO(body)) if body else pd.DataFrame()
-                return meta,df
-            err=f"HTTP {r.status_code}"
-            if r.status_code==429: _time.sleep(6.0*(a+1)); continue   # documented budget: back off
-        except Exception as ex: err=f"{type(ex).__name__}: {ex}"
-        _time.sleep(1.0+a)
-    raise RuntimeError(f"GBT {ep} failed: {err}")
-def _pct_iv(s):
-    s=pd.Series(s,dtype=float); med=s.dropna().median()
-    return s/100.0 if (med==med and med>3.0) else s
-def _bs_price(S,K,T,sig,cp):
-    T=max(T,1e-9); sig=max(sig,1e-4)
-    d1=(np.log(S/K)+0.5*sig*sig*T)/(sig*np.sqrt(T)); d2=d1-sig*np.sqrt(T)
-    if cp=="call": return S*norm.cdf(d1)-K*norm.cdf(d2)
-    return K*norm.cdf(-d2)-S*norm.cdf(-d1)
-def assemble_gbt_chain(frames,spot,exp,now):
-    """Per-strike 2-row chain from GBT heat frames — SAME schema as fetch_chain, so the
-    whole v2.2.2 stack runs unchanged. bid=ask=BS-mid (terrain_straddle reads mids)."""
-    T=_T_at(exp,now)
-    def _m(df,col="value"): return df.set_index("strikePrice")[col].to_dict() if df is not None and len(df) else {}
-    civ,piv=_pct_iv(frames["civ"].set_index("strikePrice")["value"]),_pct_iv(frames["piv"].set_index("strikePrice")["value"])
-    cde,pde=_m(frames["cdelta"]),_m(frames["pdelta"]); cga,pga=_m(frames["cgamma"]),_m(frames["pgamma"])
-    noi,nvl=frames["noi"].set_index("strikePrice"),frames["nvol"].set_index("strikePrice")
-    def _guard_delta(d,put=False):
-        s=pd.Series(d,dtype=float)
-        if len(s.dropna()) and s.abs().median()>1.5: s=s/100.0
-        if put and len(s.dropna()) and s.median()>0: s=-s
-        return s.to_dict()
-    cde,pde=_guard_delta(cde),_guard_delta(pde,put=True)
-    rows=[]
-    for k in sorted(set(civ.index)|set(piv.index)):
-        for typ,ivs,des,gas,side in (("call",civ,cde,cga,"callValue"),("put",piv,pde,pga,"putValue")):
-            iv=float(ivs.get(k,np.nan))
-            if not (iv==iv) or iv<0.005: continue          # dead quote (0.0477% wings)
-            ga=float(gas.get(k,np.nan))
-            if ga==ga and abs(ga)>1.0: ga=ga/100.0
-            mid=_bs_price(spot,float(k),T,iv,typ)
-            rows.append(dict(strike=float(k),type=typ,iv=iv,gamma=ga,
-                delta=float(des.get(k,np.nan)),
-                oi=abs(float(noi[side].get(k,0) or 0)),volume=abs(float(nvl[side].get(k,0) or 0)),
-                bid=mid,ask=mid,expiry=exp))
-    ch=pd.DataFrame(rows)
-    if ch.empty: raise RuntimeError("GBT chain empty — all quotes dead?")
-    if not ch["iv"].dropna().empty:
-        _am=float(ch["iv"].dropna().median())
-        assert 0.005<_am<3.0, f"GBT IV units suspicious after normalization: median {_am}"
-    return ch
-# ── vGBT-0.2: flow-inferred dealer signs (seed = YESTERDAY's flow on TODAY's expiry) ─
-def _gbt_prev_session(d=None):
-    dd=(d or today_est())-dt.timedelta(days=1)
-    while dd.weekday()>=5: dd-=dt.timedelta(days=1)
-    return dd.strftime("%Y-%m-%d")
-def _side_net_total(df):
-    """{type:(net customer initiative, total)} from a side-stats frame.
-    net=(ABOVE_ASK+ASK)-(BID+BELOW_BID); MID is direction-ambiguous by design."""
-    out={}
-    if df is None or getattr(df,"empty",True): return out
-    for typ,g in df.groupby("contractType"):
-        m=dict(zip(g["tradeSideCode"],g["value"]))
-        net=(m.get("ABOVE_ASK",0)+m.get("ASK",0))-(m.get("BID",0)+m.get("BELOW_BID",0))
-        out[str(typ).lower()]=(float(net),float(sum(m.values())))
-    return out
-def _gbt_side_stats(exp,strike,session_date=None):
-    p={"dataMode":"VOLUME","tickers":["SPX"],"expirationDates":[exp],"strikePrices":[float(strike)]}
-    if session_date: p["sessionDate"]=session_date
-    _,df=_gbt_post("contract_trade_side_statistics",p); return df
-def gbt_dsign_map(exp,strikes,spot):
-    """{(strike,type): dsign in [-1,1]} — dealer direction × confidence.
-    Seed fetched ONCE per day (yesterday is immutable; server caches 24h; paced
-    inside the 30/min budget — the FIRST snapshot of the day takes ~1-2 min) and
-    persisted to disk; today's CUMULATIVE side stats refreshed each snapshot for
-    the 10 top-OI + 4 nearest-ATM strikes."""
-    ss=st.session_state
-    seedk=f"gbt_seed_{exp}"; livek=f"gbt_live_{exp}"
-    seed=ss.get(seedk)
-    if seed is None:
-        seed={}; _errs=[]
-        for k in strikes:
-            try: seed[float(k)]=_side_net_total(_gbt_side_stats(exp,k,_gbt_prev_session()))
-            except Exception as _se:
-                seed[float(k)]={}; _errs.append(f"{k:g}: {type(_se).__name__}")
-            _time.sleep(2.3)                      # ≤26/min — inside the documented 30/min budget
-        ss[seedk]=seed
-        ss["gbt_seed_meta_"+exp]={"ok":sum(1 for v in seed.values() if v),
-                                  "n":len(seed),"errs":_errs[-3:]}
-        save_day_state()
-    live=ss.get(livek,{})
-    def _wt(k):
-        d=seed.get(float(k),{}); return sum(t for _,t in d.values()) if d else 0.0
-    hot=sorted(strikes,key=_wt,reverse=True)[:10]
-    atm=sorted(strikes,key=lambda k:abs(float(k)-spot))[:4]
-    for k in dict.fromkeys([*hot,*atm]):
-        try: live[float(k)]=_side_net_total(_gbt_side_stats(exp,k))
-        except Exception: pass
-    ss[livek]=live
-    _m=ss.get("gbt_seed_meta_"+exp,{}); _m["live"]=len(live); ss["gbt_seed_meta_"+exp]=_m
-    out={}
-    for k in strikes:
-        kf=float(k); s=seed.get(kf,{}); l=live.get(kf,{})
-        for typ in ("call","put"):
-            n1,t1=s.get(typ,(0.0,0.0)); n2,t2=l.get(typ,(0.0,0.0))
-            net,tot=n1+n2,t1+t2
-            if tot>0: out[(kf,typ)]=float(np.clip(-net/tot,-1.0,1.0))
-    return out
-
-def gbt_snapshot_frame(window_pct):
-    """One snapshot: wide exposure (spot from preamble + Book bars) then 8 heat calls."""
-    meta,expo=_gbt_post("exposure_by_strike",{"greekMode":"GAMMA","representationMode":"PER_ONE_DOLLAR_MOVE",
-        "ticker":"SPX","expirationDates":[today_est().strftime("%Y-%m-%d")],
-        "strikePriceRange":{"min":5000,"max":9500}})
-    spot=float(meta.get("SPX.stockPrice") or 0.0)
-    if not spot: raise RuntimeError("GBT spot missing from exposure preamble")
-    exp=today_est().strftime("%Y-%m-%d")
-    lo,hi=round(spot*(1-window_pct)/5)*5,round(spot*(1+window_pct)/5)*5
-    H=lambda m:_gbt_post("heat_map",{"dataMode":m,"ticker":"SPX","expirationDates":[exp],
-        "strikePriceRange":{"min":lo,"max":hi}})[1]
-    frames=dict(civ=H("CALL_IMPLIED_VOLATILITY"),piv=H("PUT_IMPLIED_VOLATILITY"),
-        cdelta=H("CALL_DELTA"),pdelta=H("PUT_DELTA"),cgamma=H("CALL_GAMMA"),pgamma=H("PUT_GAMMA"),
-        noi=H("NET_OPEN_INTEREST"),nvol=H("NET_VOLUME"))
-    chain=assemble_gbt_chain(frames,spot,exp,now_est())
-    bk=expo.rename(columns={"strikePrice":"strike","callExposureSum":"call_pd","putExposureSum":"put_pd"})
-    bk=bk[(bk["strike"]>=lo)&(bk["strike"]<=hi)][["strike","call_pd","put_pd"]].reset_index(drop=True)
-    try:
-        if GBT_SIGNED:
-            _dm=gbt_dsign_map(exp,sorted(chain["strike"].unique().tolist()),spot)
-            chain["dsign"]=[_dm.get((float(t.strike),t.type),np.nan) for t in chain.itertuples()]
-    except Exception as _sx:
-        try: st.sidebar.caption(f"⚠ signed inference degraded → naive this frame: {type(_sx).__name__}")
-        except Exception: pass
-    return spot,chain,bk,exp
-def book_figure(book,spot,straddle,lo,hi,side="Total",prev=None,openb=None,signed=None,sqrt_scale=False):
-    def _tx(v): return np.sign(v)*np.sqrt(np.abs(v)) if sqrt_scale else v
-    """VS3D 'Positions by Strike' analogue. Bars in e-minis per $1 (per-$1 ÷ 50).
-    NAIVE calls+/puts− convention — measured signing arrives with the flow ledger."""
-    fig,ax=plt.subplots(figsize=(6.5,9)); fig.patch.set_facecolor("#0e1117"); ax.set_facecolor("#0e1117")
-    if signed is not None and len(signed):
-        sg=signed[(signed["strike"]>=lo)&(signed["strike"]<=hi)].reset_index(drop=True)
-        for _,r in sg.iterrows():
-            v=_tx(float(r["signed_pct"])/1e6)
-            ax.barh(float(r["strike"]),v,height=3.6,zorder=3,
-                    color=("#26a69a" if v>=0 else "#ef5350"),
-                    alpha=0.35+0.6*min(1.0,float(r.get("conf",0.5))))
-        ax.set_xlabel(("√" if sqrt_scale else "")+"dealer GEX $M per 1% — MM-inferred (flow-signed · opacity = confidence)",color="#aaa",fontsize=8)
-        prev=openb=None
-    else:
-        b=book.copy(); b=b[(b["strike"]>=lo)&(b["strike"]<=hi)]
-        c=b["call_pd"].fillna(0)/50.0; p=b["put_pd"].fillna(0)/50.0; ks=b["strike"].values
-        if side=="Calls": vals=c.values; cols=["#26a69a"]*len(ks)
-        elif side=="Puts": vals=p.values; cols=["#ef5350"]*len(ks)
-        else: vals=(c+p).values; cols=["#26a69a" if v>=0 else "#ef5350" for v in vals]
-        ax.barh(ks,_tx(np.asarray(vals,float)),height=3.6,color=cols,alpha=0.9,zorder=3)
-    def _dots(src,color,lbl):
-        if src is None or getattr(src,"empty",True): return
-        s2=src[(src["strike"]>=lo)&(src["strike"]<=hi)]
-        c2=s2["call_pd"].fillna(0)/50.0; p2=s2["put_pd"].fillna(0)/50.0
-        v2=c2.values if side=="Calls" else (p2.values if side=="Puts" else (c2+p2).values)
-        ax.scatter(_tx(np.asarray(v2,float)),s2["strike"].values,s=14,color=color,zorder=4,label=lbl)
-    _dots(prev,"#e0e0e0","prev snap"); _dots(openb,"#6f9bd1","market open")
-    ax.axhline(spot,color="w",lw=0.9,ls="--",alpha=0.8)
-    ax.text(ax.get_xlim()[1],spot,f" {spot:.2f}",color="w",va="center",fontsize=8)
-    if straddle:
-        for yy,tag in ((spot+straddle,f"+{straddle:.2f}"),(spot-straddle,f"-{straddle:.2f}")):
-            ax.axhline(yy,color="#c084fc",lw=0.9,ls=":",alpha=0.9)
-            ax.text(ax.get_xlim()[1],yy,f" {yy:.2f} ({tag})",color="#c084fc",va="center",fontsize=7)
-    ax.axvline(0,color="#666",lw=0.8)
-    ax.set_xlabel(("√" if sqrt_scale else "")+"e-minis per $1 (naive calls+ / puts−)",color="#aaa",fontsize=8)
-    ax.tick_params(colors="#aaa",labelsize=7)
-    for _sp in ax.spines.values(): _sp.set_color("#333")
-    if prev is not None or openb is not None: ax.legend(loc="lower right",fontsize=7,facecolor="#0e1117",labelcolor="#ccc")
-    ax.set_ylim(lo,hi); fig.tight_layout(); return fig
-
 def take_snapshot(num_expiries):
-    # vGBT-0.1: GBT is the chain source; num_expiries kept for UI compat (0DTE only).
-    spot,chain,book,exp=gbt_snapshot_frame(window_pct)
-    exps=[exp]
+    s,h=init_session("$SPX"); spot=get_spot(s,h)
+    exps,chain=discover_expiries(s,h,num_expiries)
     # VIX: TradingView TVC:VIX ONLY (user rule — never Barchart $VIX; its free
     # quote can lag, and a stale LOW during a spike is worse than an honest n/a).
     vix=fetch_vix_live(); vix_src=("tvc" if vix is not None else None)
@@ -1819,10 +1584,11 @@ def take_snapshot(num_expiries):
     _dk="strad_open_"+ts.strftime("%Y-%m-%d")
     if _dk not in st.session_state:
         try:
-            _s0=terrain_straddle(chain,spot)
+            _c0=chain[chain["expiry"]==exps[0]]
+            _s0=terrain_straddle(_c0,spot)
             if _s0: st.session_state[_dk]=(float(_s0),ts.strftime("%H:%M"))
         except Exception: pass
-    st.session_state.snaps.append(dict(ts=ts,spot=spot,chain=chain,exps=exps,vix=vix,vix_src=vix_src,book=book))
+    st.session_state.snaps.append(dict(ts=ts,spot=spot,chain=chain,exps=exps,vix=vix,vix_src=vix_src))
     st.session_state.last_ts=ts
     save_day_state()
     return spot,exps
@@ -1830,7 +1596,7 @@ def take_snapshot(num_expiries):
 # ── day-state persistence (v2.2.2): a browser reload must cost NOTHING ───────
 import os as _os, pickle as _pickle, glob as _glob
 def _state_path(d=None):
-    return f"/tmp/vs3dgbt_state_{d or now_est().strftime('%Y-%m-%d')}.pkl"
+    return f"/tmp/vs3d_state_{d or now_est().strftime('%Y-%m-%d')}.pkl"
 def save_day_state():
     """Write snaps/frames/day-keys to /tmp after each snapshot. Survives F5 and new
     tabs; dies only with the container. Fails LOUD-ish (sidebar note), never silent."""
@@ -1838,9 +1604,9 @@ def save_day_state():
         ss=st.session_state
         blob={"snaps":ss.get("snaps",[]),"frames":ss.get("frames",{}),"last_ts":ss.get("last_ts"),
               "keys":{k:ss[k] for k in list(ss.keys())
-                      if str(k).startswith(("strad_open_","terr_cap_","terr_hist_","read_gmag","gbt_seed_","gbt_live_"))}}
+                      if str(k).startswith(("strad_open_","terr_cap_","terr_hist_","read_gmag"))}}
         with open(_state_path(),"wb") as f: _pickle.dump(blob,f,protocol=4)
-        for _old in _glob.glob("/tmp/vs3dgbt_state_*.pkl"):
+        for _old in _glob.glob("/tmp/vs3d_state_*.pkl"):
             if _old!=_state_path() and _os.path.getmtime(_old)<_time.time()-2*86400:
                 try: _os.remove(_old)
                 except Exception: pass
@@ -1866,12 +1632,7 @@ if not st.session_state.snaps:
     if _n: st.sidebar.success(f"🔁 restored {_n} snapshots from disk (reload-proof since v2.2.2)")
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
-st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.3 · GBT data · flow-signed · engine = v2.2.2")
-try:
-    if not _gbt_token():
-        st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
-except Exception: pass
+st.sidebar.title("vs3d · SPX 0DTE")
 num_expiries=st.sidebar.slider("Expiries to aggregate",1,5,1,help="1 = 0DTE only (default — the gradient chart is a 0DTE tool; asymptotics own the field). Raise to model the whole book (§1.5).")
 window_pct=st.sidebar.slider("Price window ±%",1.0,5.0,1.5,0.5)/100.0
 smooth_frac=st.sidebar.slider("Gradient smoothing",0.0,5.0,1.0,0.25,
@@ -1886,31 +1647,6 @@ if capc1.button("Calibrate range",use_container_width=True):
 if capc2.button("Reset cap",use_container_width=True):
     for k in [k for k in list(st.session_state.keys()) if k.startswith("terr_cap_")]: st.session_state.pop(k,None)
 st.sidebar.caption("Field scale (§2.4 fixed cap) — Reset at the open · Calibrate after 2–3 snapshots.")
-if st.sidebar.button("♻ Re-run signed seed",
-        help="Discards the persisted flow-seed and re-sweeps yesterday's flow on today's expiry (~2 min, paced). Use if the seed badge shows failures or the start looked broken."):
-    for _k in [k for k in list(st.session_state.keys()) if str(k).startswith(("gbt_seed_","gbt_live_"))]:
-        st.session_state.pop(_k,None)
-    save_day_state()
-    st.sidebar.success("seed cleared — press 📸 Snapshot now to re-seed (~2 min)")
-GBT_SIGNED=st.sidebar.checkbox("Signed dealer inference (flow-seeded)",value=True,
-    help="Dealer signs from aggressor flow: yesterday's flow on today's expiry seeds the book pre-open; today's flow updates it live. Drives the gradient AND the Book bars. OFF = naive calls+/puts−.")
-try:
-    _gm=[v for k,v in st.session_state.items() if str(k).startswith("gbt_seed_meta_")]
-    if _gm:
-        _g=_gm[0]
-        _cov=f"🧬 signed seed {_g.get('ok','?')}/{_g.get('n','?')} strikes · live {_g.get('live',0)}"
-        if _g.get("errs"): _cov+=f" · ⚠ {len(_g['errs'])}+ failed (last: {_g['errs'][-1]})"
-        (st.sidebar.warning if _g.get("ok",0)<0.5*max(1,_g.get("n",1)) else st.sidebar.caption)(_cov)
-except Exception: pass
-book_on=st.sidebar.checkbox("Book panel (by strike)",value=True,
-    help="GBT dealer book per 5-pt strike — VS3D 'Positions by Strike' analogue. NAIVE calls+/puts− (measured signing arrives with the flow ledger).")
-with st.sidebar.expander("📊 Book controls", expanded=False):
-    b_mode=st.radio("Bars",["MM-inferred (signed)","Naive calls+/puts−"],index=0)
-    b_sqrt=st.checkbox("√ scale (compress towers)",value=True,
-        help="sign(v)·√|v| — the 7475/7500 monsters stop flattening every other strike. Same trick as the reference chart.")
-    b_side=st.radio("Show (naive mode)",["Total","Calls","Puts"],index=0,horizontal=True)
-    b_dots=st.checkbox("Comparison dots (prev + open)",value=True)
-    b_strad=st.checkbox("1× straddle lines",value=True)
 with st.sidebar.expander("🗺 Terrain controls", expanded=False):
     t_greek=st.selectbox("Greek",["Delta Change","Gamma","Charm","Gamma |Γ| (heaviness)","Gamma Decay (color)"],index=1,   # default = Gamma (standing user preference)
         help="Delta Change (§7.7): futures dealers must trade to arrive hedged at each price/time — combines gamma+charm; path of least resistance.")
@@ -2143,62 +1879,14 @@ def dispatch(tab, render_fn, sig=None):
     st.session_state.frames.setdefault(ts,{})[tab]=list(_EMIT_BUF.get(tab,[]))
     last[tab]=sig
 
-tab_book,tab_terr,tab_sig,tab_read=st.tabs(["📊 Book (by strike)","🗺 Terrain (gradient chart)","🧭 Signals (daily workflow)","📖 Read (what happens next)"])
-
-with tab_book:
-    emit_caption("book","GBT dealer book by 5-pt strike — VS3D 'Positions by Strike' analogue. "
-        "MM-inferred mode: $M per 1%, signs from aggressor flow (yesterday's flow on today's expiry seeds "
-        "pre-open; live flow updates top strikes), opacity = sign confidence. Naive mode: e-minis per $1, "
-        "calls+/puts−, with comparison dots (white = prev snapshot · blue = market open).")
-    def _render_book():
-        bk=latest.get("book")
-        if bk is None or getattr(bk,"empty",True):
-            st.info("No book frame in this snapshot (pre-GBT or synthetic)."); return
-        prevb=openb=None
-        if b_dots:
-            try:
-                _sl=st.session_state.snaps
-                _i=[i for i,s in enumerate(_sl) if s["ts"]==latest["ts"]][0]
-                if _i>0: prevb=_sl[_i-1].get("book")
-                if _i>0: openb=_sl[0].get("book")
-            except Exception: pass
-        _strv=None
-        if b_strad:
-            try: _strv=terrain_straddle(latest["chain"],latest["spot"])
-            except Exception: _strv=None
-        _sg=None
-        if b_mode.startswith("MM"):
-            try:
-                ch=latest["chain"]
-                if "dsign" in ch.columns and ch["dsign"].notna().any():
-                    cc=ch.copy(); sp=float(latest["spot"])
-                    nv=np.where(cc["type"].values=="call",1.0,-1.0)
-                    eff=cc["dsign"].where(cc["dsign"].notna(),pd.Series(nv,index=cc.index))
-                    cc["_v"]=eff*cc["gamma"].fillna(0)*cc["oi"].fillna(0)*100.0*sp*sp/10000.0
-                    cc["_w"]=cc["oi"].fillna(0); cc["_a"]=cc["dsign"].abs().fillna(0)*cc["_w"]
-                    g=cc.groupby("strike",as_index=False).agg(signed_pct=("_v","sum"),_w=("_w","sum"),_a=("_a","sum"))
-                    g["conf"]=(g["_a"]/g["_w"].replace(0,np.nan)).fillna(0.0)
-                    _sg=g[["strike","signed_pct","conf"]]
-                else: st.caption("no signed data in this frame — naive bars shown")
-            except Exception as _bx: st.caption(f"signed book unavailable this frame: {type(_bx).__name__}")
-        try:
-            _gm2=[v for k,v in st.session_state.items() if str(k).startswith("gbt_seed_meta_")]
-            if _gm2 and _sg is not None:
-                st.caption(f"signed coverage: seed {_gm2[0].get('ok','?')}/{_gm2[0].get('n','?')} strikes · live-refreshed {_gm2[0].get('live',0)}")
-        except Exception: pass
-        fig=book_figure(bk,latest["spot"],_strv,lo,hi,side=b_side,prev=prevb,openb=openb,signed=_sg,sqrt_scale=bool(b_sqrt))
-        emit("book",fig)
-    if book_on:
-        _bsig=repr((sel_ts.isoformat(),b_mode,b_side,bool(b_dots),bool(b_strad),bool(b_sqrt),bool(GBT_SIGNED),round(window_pct,5),len(st.session_state.snaps)))
-        dispatch("book",_render_book,sig=_bsig)
-
+tab_terr,tab_sig,tab_read=st.tabs(["🗺 Terrain (gradient chart)","🧭 Signals (daily workflow)","📖 Read (what happens next)"])
 
 with tab_terr:
     emit_caption("terrain","VS3D Gradient Chart, guide-spec. Field = chosen greek across price×time for the "
         "WHOLE fetched book (each expiry decays on its own clock; 0DTE dominates via asymptotic gamma). "
         "Manual symmetric range (a loose day looks loose) · near-linear intensity · field behind price. "
         "Contours: dotted = zero boundary · red = ridge (local max) · blue = trough. Sign is the "
-        "calls+/puts− convention when Signed inference is OFF; when ON, per-leg signs are aggressor-flow inferred (seeded from yesterday's flow on today's expiry, refreshed live).")
+        "calls+/puts− CONVENTION — dealer long/short not measured; clean split is the proxy's tell.")
     def _render_terrain():
         now_naive=sel_ts.replace(tzinfo=None) if getattr(sel_ts,'tzinfo',None) else sel_ts
         use_exps=(latest.get("exps") or [])[:max(1,int(num_expiries))]
@@ -2285,16 +1973,12 @@ with tab_terr:
         axp.axvline(0,color="#555",lw=.6); axp.axhline(spot,color=WHITE,ls="--",lw=.8,alpha=.8)
         axp.set_xlim(-1,1); axp.set_xticks([])
         for s_ in ("top","right","left","bottom"): axp.spines[s_].set_color(GRID)
-        try:
-            _ch0=latest["chain"]
-            _sgmode="SIGNED·flow" if (GBT_SIGNED and "dsign" in _ch0.columns and _ch0["dsign"].notna().any()) else "naive±"
-        except Exception: _sgmode="naive±"
         pol=("green = dealers BUY to arrive hedged (supportive) · red = SELL" if t_greek=="Delta Change"
              else "green = +γ suppressive · red = −γ amplifying" if t_greek=="Gamma"
              else "bright = heavy book · direction UNKNOWN by design (roles come from behavior)" if t_greek==_GHEAVY
              else "orange = γ BUILDING into the close (pin energy) · purple = fading" if t_greek==_GDECAY
              else "gold = dealers must SELL as time passes · blue = must BUY")
-        ax.set_title(f"TERRAIN · {t_greek} · {t_wt} · {_sgmode} · exps {len(use_exps)} · cap {st.session_state.get(capkey,0):,.0f}"
+        ax.set_title(f"TERRAIN · {t_greek} · {t_wt} · exps {len(use_exps)} · cap {st.session_state.get(capkey,0):,.0f}"
                      f" · {t_int}({t_pow:g}) · α{t_alpha:.2f}   [{pol}]",color=TXT,fontsize=10.5,loc="left")
         # strike scale: 25-pt gridlines across the field + bright labels both sides
         _yt=np.arange(np.ceil(pg[0]/25)*25, pg[-1]+1, 25)
@@ -2336,14 +2020,14 @@ with tab_terr:
                 for _y in _yt: axc.axhline(_y,color="#1a2330",lw=0.6,zorder=1)
                 axc.set_yticks(_yt); axc.tick_params(axis="y",colors="#9fb0c3",labelsize=10.5,length=3)
                 axc.set_ylim(pg[0],pg[-1]); style_time_axis(axc,x0,x1)
-                axc.set_title(f"CHARM · {t_wt} · {_sgmode} · cap {st.session_state.get(ck,0):,.0f}   "
+                axc.set_title(f"CHARM · {t_wt} · cap {st.session_state.get(ck,0):,.0f}   "
                               f"[gold = dealers must SELL as time passes · blue = must BUY]",
                               color=TXT,fontsize=10.5,loc="left")
                 emit("terrain",fc)
             except Exception as ex:
                 st.caption(f"charm panel unavailable: {ex}")
     _tsig=repr((sel_ts.isoformat(),t_greek,t_wt,t_norm,t_pct,t_int,round(t_pow,3),round(t_alpha,3),
-                t_cont,t_strad,t_lvls,t_voladj,t_simg,t_charm2,bool(GBT_SIGNED),int(num_expiries),round(window_pct,5),
+                t_cont,t_strad,t_lvls,t_voladj,t_simg,t_charm2,int(num_expiries),round(window_pct,5),
                 st.session_state.get(f"terr_cap_{t_greek}_{t_wt}"),
                 st.session_state.get(f"terr_cap_Charm_{t_wt}") if t_charm2 else None))
     dispatch("terrain",_render_terrain,sig=_tsig)
