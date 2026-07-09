@@ -1,5 +1,13 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.4.1
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.5
+
+vGBT-0.5 [VS3D PARITY — combined page + terrain zoom]
+  • 🖥 VS3D tab: Book + Gamma + Charm on ONE page, assembled from the current
+    frame's PNG cache (zero recompute) — sidebar checkbox to enable
+  • Terrain ➕/➖/reset strike-zoom (display-only, like the Book's; matches the
+    range controls on real VS3D) — applied to Gamma, Charm and side profile
+  • sign convention audited & unchanged: bid/below-bid = customer SELLS = dealer
+    LONG; ask/above-ask = customer BUYS = dealer SHORT; mid excluded; conf = |net|/total
 
 vGBT-0.4.1 [BOOK RESPONDS TO THE MASTER TOGGLE + STABLE FIGURE SIZE]
   • Signed-inference checkbox now flips the Book too (was: only terrain + future
@@ -1900,7 +1908,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.4.1 · GBT data · flow-signed · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.5 · GBT data · flow-signed · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -1951,6 +1959,9 @@ with st.sidebar.expander("📊 Book controls", expanded=False):
     b_dots=st.checkbox("Comparison dots (prev + open)",value=True)
     b_strad=st.checkbox("1× straddle lines",value=True)
 with st.sidebar.expander("🗺 Terrain controls", expanded=False):
+    if st.button("➕ zoom in (terrain)"):  st.session_state["terr_zoom"]=max(0.25,st.session_state.get("terr_zoom",1.0)*0.7)
+    if st.button("➖ zoom out (terrain)"): st.session_state["terr_zoom"]=min(1.0,st.session_state.get("terr_zoom",1.0)/0.7)
+    if st.button("↔ full range (terrain)"): st.session_state["terr_zoom"]=1.0
     t_greek=st.selectbox("Greek",["Delta Change","Gamma","Charm","Gamma |Γ| (heaviness)","Gamma Decay (color)"],index=1,   # default = Gamma (standing user preference)
         help="Delta Change (§7.7): futures dealers must trade to arrive hedged at each price/time — combines gamma+charm; path of least resistance.")
     t_wt=st.selectbox("Weighting",["OI + Volume","OI (opening book)","Volume (today's flow)","Vol else OI (legacy)"],index=0,
@@ -2182,7 +2193,25 @@ def dispatch(tab, render_fn, sig=None):
     st.session_state.frames.setdefault(ts,{})[tab]=list(_EMIT_BUF.get(tab,[]))
     last[tab]=sig
 
-tab_book,tab_terr,tab_sig,tab_read=st.tabs(["📊 Book (by strike)","🗺 Terrain (gradient chart)","🧭 Signals (daily workflow)","📖 Read (what happens next)"])
+combo_on=st.sidebar.checkbox("🖥 Combined VS3D layout",value=False,
+    help="Book + Gamma + Charm on one page, composed from the current frame's cached panels — zero recompute.")
+tab_combo,tab_book,tab_terr,tab_sig,tab_read=st.tabs(["🖥 VS3D (combined)","📊 Book (by strike)","🗺 Terrain (gradient chart)","🧭 Signals (daily workflow)","📖 Read (what happens next)"])
+with tab_combo:
+    if combo_on:
+        _frc=st.session_state.frames.get(sel_ts.isoformat() if hasattr(sel_ts,"isoformat") else str(sel_ts),{})
+        _bp,_tp=_frc.get("book",[]),_frc.get("terrain",[])
+        if not _bp and not _tp:
+            st.info("No cached panels for this frame yet — take a 📸 snapshot (panels cache automatically).")
+        else:
+            _c1,_c2=st.columns([1.0,1.55])
+            with _c1:
+                st.caption("Positions (Book)")
+                for _p in _bp: st.image(_p,use_container_width=True)
+            with _c2:
+                st.caption("Gamma + Charm terrain")
+                for _p in _tp: st.image(_p,use_container_width=True)
+    else:
+        st.caption("Enable '🖥 Combined VS3D layout' in the sidebar to compose Book + Gamma + Charm here.")
 
 with tab_book:
     emit_caption("book","GBT dealer book by 5-pt strike — VS3D 'Positions by Strike' analogue. "
@@ -2350,7 +2379,12 @@ with tab_terr:
         axp.set_yticks(_yt)
         plt.setp(axp.get_yticklabels(),visible=True)
         axp.tick_params(axis="y",colors="#9fb0c3",labelsize=9,length=2)
-        ax.set_ylim(pg[0],pg[-1]); style_time_axis(ax,x0,x1)
+        _tz=float(st.session_state.get("terr_zoom",1.0))
+        _zl,_zh=pg[0],pg[-1]
+        if _tz<0.999:
+            _hz=(pg[-1]-pg[0])*_tz/2.0; _zc=float(spot)
+            _zl,_zh=max(pg[0],_zc-_hz),min(pg[-1],_zc+_hz)
+        ax.set_ylim(_zl,_zh); axp.set_ylim(_zl,_zh); style_time_axis(ax,x0,x1)
         emit("terrain",fig)
         # ---- stacked Charm panel (v2.1.8, user request): same window/time axis,
         # hedging-effect polarity (gold = dealers must SELL as clock runs, blue = BUY)
@@ -2379,7 +2413,7 @@ with tab_terr:
                 axc.axvline(mdates.date2num(now_naive),color="#3399dd",ls=":",lw=1.1,zorder=7)
                 for _y in _yt: axc.axhline(_y,color="#1a2330",lw=0.6,zorder=1)
                 axc.set_yticks(_yt); axc.tick_params(axis="y",colors="#9fb0c3",labelsize=10.5,length=3)
-                axc.set_ylim(pg[0],pg[-1]); style_time_axis(axc,x0,x1)
+                axc.set_ylim(_zl,_zh); style_time_axis(axc,x0,x1)
                 axc.set_title(f"CHARM · {t_wt} · {_sgmode} · cap {st.session_state.get(ck,0):,.0f}   "
                               f"[gold = dealers must SELL as time passes · blue = must BUY]",
                               color=TXT,fontsize=10.5,loc="left")
@@ -2387,7 +2421,7 @@ with tab_terr:
             except Exception as ex:
                 st.caption(f"charm panel unavailable: {ex}")
     _tsig=repr((sel_ts.isoformat(),t_greek,t_wt,t_norm,t_pct,t_int,round(t_pow,3),round(t_alpha,3),
-                t_cont,t_strad,t_lvls,t_voladj,t_simg,t_charm2,bool(GBT_SIGNED),int(num_expiries),round(window_pct,5),
+                t_cont,t_strad,t_lvls,t_voladj,t_simg,t_charm2,bool(GBT_SIGNED),round(float(st.session_state.get("terr_zoom",1.0)),3),int(num_expiries),round(window_pct,5),
                 st.session_state.get(f"terr_cap_{t_greek}_{t_wt}"),
                 st.session_state.get(f"terr_cap_Charm_{t_wt}") if t_charm2 else None))
     dispatch("terrain",_render_terrain,sig=_tsig)
