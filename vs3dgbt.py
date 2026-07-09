@@ -1,5 +1,11 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.5
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.5.1
+
+vGBT-0.5.1 [AUDIT FIXES — from the pre-read code re-check]
+  • ORDER BUG: ♻ Re-run took its snapshot BEFORE GBT_SIGNED existed in the run →
+    NameError → silently-naive frame + no re-sweep. Checkbox now defined first.
+  • SCALE BUG: unseeded legs entered at naive ±1.0 vs measured ±0.05-0.25 →
+    unknowns dominated the signed field 5-20×. Now naive sign × 0.2 (GBT_UNSEEDED_W).
 
 vGBT-0.5 [VS3D PARITY — combined page + terrain zoom]
   • 🖥 VS3D tab: Book + Gamma + Charm on ONE page, assembled from the current
@@ -610,15 +616,17 @@ def weight_for(c, method):
 # Net signed GEX per strike (calls +, puts −) is aggregated, then turned into a SMOOTH
 # DENSITY across price (gamma magnitude tailing off across strikes) — NOT discrete
 # per-strike bumps. NO Black-Scholes anywhere.
+GBT_UNSEEDED_W=0.2   # legs with NO flow evidence enter under the naive sign at
+                     # reduced weight — unknowns must not shout over measured signs
 def _dealer_sign(c):
-    """vGBT-0.2: per-leg dealer sign. Signed mode → flow-inferred dsign in [-1,1]
-    (confidence-weighted); falls back to naive calls+/puts− when the toggle is off
-    or the column is absent (harness/synthetic frames)."""
+    """vGBT-0.2/0.5.1: per-leg dealer sign. Signed mode → flow-inferred dsign in
+    [-1,1] (confidence-weighted); legs without evidence → naive sign × GBT_UNSEEDED_W.
+    Toggle off / column absent (harness frames) → pure naive calls+/puts−."""
     nv=np.where(c["type"].values=="call",1.0,-1.0)
     try:
         if GBT_SIGNED and "dsign" in c.columns:
             d=c["dsign"].values.astype(float)
-            return np.where(np.isfinite(d),d,nv)
+            return np.where(np.isfinite(d),d,nv*GBT_UNSEEDED_W)
     except Exception: pass
     return nv
 def _gex_profile_barchart(c, pg, mult=100, smooth_frac=0.01):
@@ -1908,7 +1916,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.5 · GBT data · flow-signed · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.5.1 · GBT data · flow-signed · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -1927,6 +1935,8 @@ if capc1.button("Calibrate range",use_container_width=True):
 if capc2.button("Reset cap",use_container_width=True):
     for k in [k for k in list(st.session_state.keys()) if k.startswith("terr_cap_")]: st.session_state.pop(k,None)
 st.sidebar.caption("Field scale (§2.4 fixed cap) — Reset at the open · Calibrate after 2–3 snapshots.")
+GBT_SIGNED=st.sidebar.checkbox("Signed dealer inference (flow-seeded)",value=True,
+    help="Dealer signs from aggressor flow: yesterday's flow on today's expiry seeds the book pre-open; today's flow updates it live. Drives the gradient AND the Book bars. OFF = naive calls+/puts−.")
 if st.sidebar.button("♻ Re-run signed seed",
         help="Discards the persisted flow-seed and re-sweeps yesterday's flow on today's expiry (~2 min, paced). Use if the seed badge shows failures or the start looked broken."):
     for _k in [k for k in list(st.session_state.keys()) if str(k).startswith(("gbt_seed_","gbt_live_"))]:
@@ -1936,8 +1946,6 @@ if st.sidebar.button("♻ Re-run signed seed",
         try: take_snapshot(num_expiries)
         except Exception as _rx: st.sidebar.error(f"re-seed failed: {type(_rx).__name__}: {_rx}")
     st.sidebar.success("book re-seeded + fresh snapshot taken")
-GBT_SIGNED=st.sidebar.checkbox("Signed dealer inference (flow-seeded)",value=True,
-    help="Dealer signs from aggressor flow: yesterday's flow on today's expiry seeds the book pre-open; today's flow updates it live. Drives the gradient AND the Book bars. OFF = naive calls+/puts−.")
 try:
     _gm=[v for k,v in st.session_state.items() if str(k).startswith("gbt_seed_meta_")]
     if _gm:
@@ -2243,7 +2251,7 @@ with tab_book:
                 if "dsign" in ch.columns and ch["dsign"].notna().any():
                     cc=ch.copy(); sp=float(latest["spot"])
                     nv=np.where(cc["type"].values=="call",1.0,-1.0)
-                    eff=cc["dsign"].where(cc["dsign"].notna(),pd.Series(nv,index=cc.index))
+                    eff=cc["dsign"].where(cc["dsign"].notna(),pd.Series(nv*GBT_UNSEEDED_W,index=cc.index))
                     cc["_v"]=eff*cc["gamma"].fillna(0)*cc["oi"].fillna(0)*100.0*sp*sp/10000.0
                     cc["_w"]=cc["oi"].fillna(0); cc["_a"]=cc["dsign"].abs().fillna(0)*cc["_w"]
                     g=cc.groupby("strike",as_index=False).agg(signed_pct=("_v","sum"),_w=("_w","sum"),_a=("_a","sum"))
