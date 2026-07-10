@@ -2406,16 +2406,19 @@ def _intv_flow_values(df, greek="GEX", signed_map=None, unseeded_w=0.2, cumulati
     else:
         val=cs+ps
     out=pd.DataFrame({"strike":o["strikePrice"].astype(float),"val":val,
-                      "gross":cs.abs()+ps.abs(),   # significance = total activity, signless
+                      "cs":cs.values,"ps":ps.values,
+                      "gross":cs.abs()+ps.abs(),   # per-bucket significance = |c|+|p|
                       "ts":_ms_to_et_series(o["timestamp"])}).sort_values("ts")
     if cumulative:
         out["val"]=out.groupby("strike")["val"].cumsum()
-        out["gross"]=out.groupby("strike")["gross"].cumsum()
-    return out
+        # probe-10-faithful significance: |Σcalls|+|Σputs| — abs OF the cumulative leg sums.
+        # (cumsum of per-bucket |·| overweights strikes whose flow flip-flops direction.)
+        out["gross"]=out.groupby("strike")["cs"].cumsum().abs()+out.groupby("strike")["ps"].cumsum().abs()
+    return out.drop(columns=["cs","ps"])
 
 def _intv_draw(ax, dd, topn, smax=420.0):
-    """Campaign renderer: top-N by |final|, context dots, power-0.35 sizing over
-    top rows, rings on EVERY zero-cross. Returns (vmax, top-set)."""
+    """Campaign renderer: top-N + bubble size by GROSS significance (probe-10 channel),
+    color by signed/naive val, area-linear sizing, rings on EVERY zero-cross."""
     if not len(dd): return 0.0,set()
     _g="gross" if "gross" in dd.columns else None
     fin=(dd.sort_values("ts").groupby("strike")[_g].last() if _g
@@ -2793,7 +2796,7 @@ with tab_intv:
             else: ax.set_ylim(_l,_h)
             ax.tick_params(colors="#8a93a6",labelsize=8)
             for s_ in ax.spines.values(): s_.set_color("#2a2f3a")
-            ax.set_title(f"Interval ({_nm}) — {badge} · {src_tag} · top {int(i_top)} · maxbubble={vmax:,.0f} · ○=flip",
+            ax.set_title(f"Interval ({_nm}) — {badge} · {src_tag} · size=gross · top {int(i_top)} · maxbubble={vmax:,.0f} · ○=flip",
                          color="#ccc",fontsize=10,loc="left")
             emit("interval",fig)
     _isig=repr((sel_ts.isoformat(),st.session_state.get("intv_src"),st.session_state.get("intv_scope"),
