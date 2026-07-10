@@ -1,5 +1,16 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.8
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.8.5
+
+vGBT-0.8.5 [TONIGHT'S QUEUE — one consolidated build]
+  • Combined tab (Option A): canonical Gamma+Charm pair auto-fits its VIEW to
+    the session's price action ± pad at capture time (_canon_fit_axes) — dead
+    field gone, playback frames stay mutually consistent, Terrain tab keeps
+    full interactive zoom.
+  • Interval frame = top strikes ∪ price range (_intv_ylim): the price path can
+    never leave the frame. ±% window slider = FETCH range only.
+  • Interval fetch reaches MIDNIGHT (topN ladder 300→150→100; probe-10 finding).
+  • State (Δ/Γ×OI) source removed from the UI (engine + exact-math gates kept).
+  • Flip rings render in CUMULATIVE mode only (Diff-mode ring spam fix).
 
 vGBT-0.8 [⏱ INTERVAL TAB — final, per VS3D_INTERVAL_RECIPE.md]
   • GEX + DEX bubble panes, LIVE current session ONLY (no backfill — user spec).
@@ -2040,7 +2051,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.8 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.8.5 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -2313,6 +2324,7 @@ def emit(tab, fig, caption=None, container=None):
     tab=_EMIT_REDIRECT.get(tab,tab)
     if _EMIT_SILENT.get("on"):
         try:
+            if _EMIT_SILENT.get("fit")=="canon": fig=_canon_fit_axes(fig)
             buf=_io.BytesIO(); fig.savefig(buf,format="png",dpi=fig.dpi,facecolor=DARK)
             _EMIT_BUF.setdefault(tab,[]).append(buf.getvalue())
         except Exception: pass
@@ -2378,13 +2390,19 @@ def _interval_state_rows(snaps, greek="GEX", signed=True, unseeded_w=0.2):
         rows.append(g)
     return pd.concat(rows,ignore_index=True) if rows else pd.DataFrame(columns=["strike","val","gross","ts"])
 
-def _intv_flow_fetch(greek, lo, hi, exp=None, topn=100):
-    """FLAG-3 fixed: exp=None omits expirationDate = blank-chip (benchmark scope)."""
-    pay={"greekMode":greek,"ticker":"SPX","aggregationPeriod":"FIVE_MINUTE",
-         "minStrikePrice":float(lo),"maxStrikePrice":float(hi),"topN":int(topn)}
-    if exp: pay["expirationDate"]=exp
-    _,df=_gbt_post("interval_map",pay)
-    return df
+def _intv_flow_fetch(greek, lo, hi, exp=None, topn=300):
+    """FLAG-3 fixed: exp=None omits expirationDate = blank-chip (benchmark scope).
+    topN ladder reaches back to MIDNIGHT (probe-10: reference integrates from
+    00:00; 100 buckets only reached ~8h)."""
+    last=None
+    for _tn in (300,150,100):
+        pay={"greekMode":greek,"ticker":"SPX","aggregationPeriod":"FIVE_MINUTE",
+             "minStrikePrice":float(lo),"maxStrikePrice":float(hi),"topN":int(min(_tn,topn) if topn>=100 else topn)}
+        if exp: pay["expirationDate"]=exp
+        try:
+            _,df=_gbt_post("interval_map",pay); return df
+        except Exception as _fx: last=_fx
+    raise last
 
 def _ms_to_et_series(msser):
     t=pd.to_datetime(msser,unit="ms",utc=True)
@@ -2432,7 +2450,36 @@ def _intv_open_marker(ax, dd, fallback_now=None):
                 color="#999",fontsize=7,clip_on=True)
     except Exception: pass
 
-def _intv_draw(ax, dd, topn, smax=420.0):
+def _intv_ylim(ktop, lo, hi, bars):
+    """Interval frame = top-strike band ∪ session price range, padded — the
+    price path can NEVER leave the frame (top-5 clipping bug). The ±% window
+    slider governs the FETCH range only; the display frame is automatic."""
+    klo,khi=(min(ktop)-10.0,max(ktop)+10.0) if ktop else (float(lo),float(hi))
+    try:
+        if bars is not None and len(bars):
+            c=pd.to_numeric(bars["c"],errors="coerce").dropna()
+            if len(c): klo,khi=min(klo,float(c.min())-4.0),max(khi,float(c.max())+4.0)
+    except Exception: pass
+    return klo,khi
+
+def _canon_fit_axes(fig, pad_frac=0.35, pad_min=10.0):
+    """Option A (combined tab): crop the CANONICAL pair's view to the session's
+    price action ± pad. Field is rendered full, only the VIEW tightens — kills
+    the dead-space skyscraper while keeping every playback frame consistent."""
+    try:
+        if bars is None or not len(bars): return fig
+        c=pd.to_numeric(bars["c"],errors="coerce").dropna()
+        if not len(c): return fig
+        pad=max(pad_min,pad_frac*(float(c.max())-float(c.min())))   # pad ∝ session SPAN, not price level
+        ylo,yhi=float(c.min())-pad,float(c.max())+pad
+        for _ax in fig.axes:
+            y0,y1=_ax.get_ylim()
+            if y1>y0 and (y0<=yhi and y1>=ylo) and (y1-y0)>(yhi-ylo):
+                _ax.set_ylim(max(y0,ylo),min(y1,yhi))
+    except Exception: pass
+    return fig
+
+def _intv_draw(ax, dd, topn, smax=420.0, rings=True):
     """Campaign renderer: top-N + bubble size by GROSS significance (probe-10 channel),
     color by signed/naive val, area-linear sizing, rings on EVERY zero-cross."""
     if not len(dd): return 0.0,set()
@@ -2449,12 +2496,13 @@ def _intv_draw(ax, dd, topn, smax=420.0):
     sz=6.0+smax*(mag/vmax)   # AREA ∝ GROSS (significance) · COLOR = sign(NET) (direction)
     ax.scatter(dT["ts"],dT["strike"],s=sz,c=np.where(dT["val"]>=0,"#26a69a","#ef5350"),
                alpha=0.88,edgecolors="none",zorder=4)
-    for k in sorted(set(dT["strike"])):
-        s0=dT[dT["strike"]==k].sort_values("ts"); g=np.sign(s0["val"].values)
-        for i in range(1,len(g)):
-            if g[i]!=0 and g[i-1]!=0 and g[i]!=g[i-1]:
-                ax.scatter([s0["ts"].iloc[i]],[k],s=170,facecolors="none",
-                           edgecolors="white",linewidths=1.2,zorder=7)
+    if rings:   # rings mean "running total crossed zero" — cumulative semantics only
+        for k in sorted(set(dT["strike"])):
+            s0=dT[dT["strike"]==k].sort_values("ts"); g=np.sign(s0["val"].values)
+            for i in range(1,len(g)):
+                if g[i]!=0 and g[i-1]!=0 and g[i]!=g[i-1]:
+                    ax.scatter([s0["ts"].iloc[i]],[k],s=170,facecolors="none",
+                               edgecolors="white",linewidths=1.2,zorder=7)
     for k in sorted(top): ax.axhline(k,color="#1b2330",lw=0.5,zorder=1)
     return vmax,top
 with tab_combo:
@@ -2741,9 +2789,10 @@ with tab_terr:
                 _tg0=t_greek; t_greek="Gamma"
                 _EMIT_REDIRECT["terrain"]="vs3d_std"; _EMIT_SILENT["on"]=True
                 _EMIT_BUF["vs3d_std"]=[]
+                _EMIT_SILENT["fit"]="canon"        # Option A: crop canonical view to price action
                 try: _render_terrain()
                 finally:
-                    t_greek=_tg0; _EMIT_REDIRECT.pop("terrain",None); _EMIT_SILENT.pop("on",None)
+                    t_greek=_tg0; _EMIT_REDIRECT.pop("terrain",None); _EMIT_SILENT.pop("on",None); _EMIT_SILENT.pop("fit",None)
                 _fr0["vs3d_std"]=list(_EMIT_BUF.get("vs3d_std",[]))
                 save_day_state()
     except Exception as _cx:
@@ -2752,8 +2801,7 @@ with tab_terr:
 with tab_intv:
     emit_caption("interval","Interval bubbles — LIVE session, benchmark recipe (see VS3D_INTERVAL_RECIPE.md): "
         "cumulative = reference Raw · top-N = significance rank · ○ = sign flip. Signs follow the master toggle.")
-    i_src=st.radio("Source",["GBT flow (interval_map · benchmark)","State (Δ/Γ×OI from snapshots · 0 API)"],
-                   horizontal=True,key="intv_src")
+    i_src="GBT flow (interval_map · benchmark)"   # sole source; state engine retained for gates only
     _ic1,_ic2,_ic3=st.columns([1.3,1.0,1.0])
     i_scope=_ic1.radio("Expiry scope",["All expiries (blank-chip)","Session expiry (0DTE)"],key="intv_scope")
     i_top=_ic2.slider("Top strikes",5,40,25,5,key="intv_topn")
@@ -2785,14 +2833,12 @@ with tab_intv:
                    ("DEX",_intv_flow_values(_fd.get("DELTA"),"DEX",smap,GBT_UNSEEDED_W,bool(i_cum)))]
             src_tag=f"flow · {'CUM (Raw)' if i_cum else 'per-bucket (Diff)'} · {'blank-chip' if _exp is None else '0DTE'}"
         else:
-            panes=[("GEX",_interval_state_rows(_sn,"GEX",bool(GBT_SIGNED),GBT_UNSEEDED_W)),
-                   ("DEX",_interval_state_rows(_sn,"DEX",bool(GBT_SIGNED),GBT_UNSEEDED_W))]
-            src_tag="state · 1 bucket = 1 snapshot · 0 API"
+            panes=[]; src_tag=""   # state source removed from UI (too sparse in prod)
         for _nm,_dd in panes:
             if i_rth and len(_dd):        # trim display AFTER integration (cumulative stays honest)
                 _dd=_dd[(_dd["ts"].dt.time>=dt.time(9,25))&(_dd["ts"].dt.time<=dt.time(16,5))]
             fig,ax=plt.subplots(figsize=(16,5.4)); fig.patch.set_facecolor(DARK); ax.set_facecolor(DARK)
-            vmax,_ktop=_intv_draw(ax,_dd,i_top)
+            vmax,_ktop=_intv_draw(ax,_dd,i_top,rings=bool(i_cum))
             try:
                 if bars is not None and len(bars):
                     ax.plot(pd.to_datetime(bars["t"]),pd.to_numeric(bars["c"],errors="coerce"),
@@ -2802,15 +2848,14 @@ with tab_intv:
                 import matplotlib.dates as _md
                 ax.xaxis.set_major_formatter(_md.DateFormatter("%H:%M"))
             except Exception: pass
-            if _ktop: ax.set_ylim(min(_ktop)-10,max(_ktop)+10)
-            else: ax.set_ylim(_l,_h)
+            ax.set_ylim(*_intv_ylim(_ktop,_l,_h,bars))
             _intv_open_marker(ax,_dd,fallback_now=now_naive)   # AFTER ylim; geometry-safe
             ax.tick_params(colors="#8a93a6",labelsize=8)
             for s_ in ax.spines.values(): s_.set_color("#2a2f3a")
             ax.set_title(f"Interval ({_nm}) — {badge} · {src_tag} · size=gross · top {int(i_top)} · maxbubble={vmax:,.0f} · ○=flip",
                          color="#ccc",fontsize=10,loc="left")
             emit("interval",fig)
-    _isig=repr((sel_ts.isoformat(),st.session_state.get("intv_src"),st.session_state.get("intv_scope"),
+    _isig=repr((sel_ts.isoformat(),st.session_state.get("intv_scope"),
                 int(st.session_state.get("intv_topn") or 25),bool(st.session_state.get("intv_cum")),
                 bool(st.session_state.get("intv_rth",True)),
                 bool(GBT_SIGNED),len(st.session_state.get("snaps") or []),
