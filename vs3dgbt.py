@@ -1,17 +1,17 @@
 """
 vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.8
 
-vGBT-0.8 [⏱ INTERVAL TAB — built on the benchmark autopsy]
-  • Bubble charts (GEX + DEX) over session time: top-N strikes full-size (their
-    "N Strikes" = significance rank, not a spot radius — proven), context dots,
-    price path, open line. Renders only once snapshots exist.
-  • Sources: "State Δ/Γ×OI" (textbook Raw; from our cached snapshot greeks, 0
-    API) and "GBT flow" (interval_map, per-bucket or CUMULATIVE running total).
-  • Master Signed toggle re-signs both via dsign — SIGNED cumulative flow is our
-    positioning analog to the reference tool's proprietary attribution (their
-    7500 stayed green through the 10:20 dip: positioning, not Δ-state — the
-    benchmark's decisive finding). Badged honestly either way.
-  • Backfill-yesterday button (flow, sessionDate) for next-day corroboration.
+vGBT-0.8 [⏱ INTERVAL TAB — final, per VS3D_INTERVAL_RECIPE.md]
+  • GEX + DEX bubble panes, LIVE current session ONLY (no backfill — user spec).
+  • Recipe (benchmark-cracked): interval_map · scope radio "All expiries
+    (blank-chip, benchmark)" default vs "Session expiry (0DTE)" · client
+    CUMULATIVE = their Raw (per-bucket = Difference) · top-N significance,
+    DEFAULT 25 · context dots · rings on EVERY zero-cross.
+  • Signs follow master toggle. FLAG-2 FIXED: signed DEX put leg enters with
+    MINUS (dealer long puts = short delta). GEX keeps + both legs (long option
+    = long gamma). FLAG-3 FIXED: expirationDate optional in the fetch.
+  • Known residual (documented): thin far strikes may differ from the reference
+    — their proprietary print-classification; not reproducible from public data.
 
 vGBT-0.7.1 [VS3D VISIBILITY — layout + field mode]
   • Combined tab back to the REAL VS3D structure: Book left (1.0) · Gamma+Charm
@@ -2344,18 +2344,23 @@ combo_on=st.sidebar.checkbox("🖥 Combined VS3D layout",value=False,
 tab_combo,tab_book,tab_terr,tab_intv,tab_sig,tab_read=st.tabs(["🖥 VS3D (combined)","📊 Book (by strike)","🗺 Terrain (gradient chart)","⏱ Interval (bubbles)","🧭 Signals (daily workflow)","📖 Read (what happens next)"])
 
 def _interval_state_rows(snaps, greek="GEX", signed=True, unseeded_w=0.2):
-    """Textbook Raw: per snapshot-bucket, per strike: sign·|greek|·OI·100 (·spot
-    for GEX). Greeks come from each snapshot's stored chain — zero API calls."""
+    """Textbook Raw from our cached snapshots (0 API). GEX: long option = +γ, so
+    leg sign = dsign (signed) or naive ±1. DEX: dealer long PUT = SHORT delta —
+    put leg sign is −dsign when signed; naive keeps calls+/puts−."""
     rows=[]
     for s in snaps or []:
         ch=s.get("chain"); sp=float(s.get("spot") or 0)
         if ch is None or getattr(ch,"empty",True) or not sp: continue
         c=ch[ch["expiry"]==s["exps"][0]] if ("expiry" in ch.columns and s.get("exps")) else ch
-        gcol="gamma" if greek=="GEX" else "delta"
-        nv=np.where(c["type"].values=="call",1.0,-1.0)
-        if signed and "dsign" in c.columns:
-            sg=c["dsign"].where(c["dsign"].notna(), pd.Series(nv*unseeded_w,index=c.index)).values
+        is_call=(c["type"].values=="call"); nv=np.where(is_call,1.0,-1.0)
+        ds=c["dsign"].values if "dsign" in c.columns else np.full(len(c),np.nan)
+        seeded=~pd.isna(ds)
+        if signed:
+            sg=np.where(seeded,ds,nv*unseeded_w)
+            if greek=="DEX":
+                sg=np.where(is_call,sg,np.where(seeded,-ds,nv*unseeded_w))
         else: sg=nv
+        gcol="gamma" if greek=="GEX" else "delta"
         mag=np.abs(c[gcol].fillna(0).values)*c["oi"].fillna(0).values*100.0
         if greek=="GEX": mag=mag*sp
         v=pd.DataFrame({"strike":c["strike"].values,"val":sg*mag})
@@ -2363,18 +2368,22 @@ def _interval_state_rows(snaps, greek="GEX", signed=True, unseeded_w=0.2):
         rows.append(g)
     return pd.concat(rows,ignore_index=True) if rows else pd.DataFrame(columns=["strike","val","ts"])
 
-def _intv_flow_fetch(exp, greek, lo, hi, sess=None, topn=90):
+def _intv_flow_fetch(greek, lo, hi, exp=None, topn=100):
+    """FLAG-3 fixed: exp=None omits expirationDate = blank-chip (benchmark scope)."""
     pay={"greekMode":greek,"ticker":"SPX","aggregationPeriod":"FIVE_MINUTE",
-         "expirationDate":exp,"minStrikePrice":float(lo),"maxStrikePrice":float(hi),"topN":int(topn)}
-    if sess: pay["sessionDate"]=sess
+         "minStrikePrice":float(lo),"maxStrikePrice":float(hi),"topN":int(topn)}
+    if exp: pay["expirationDate"]=exp
     _,df=_gbt_post("interval_map",pay)
     return df
 
 def _ms_to_et_series(msser):
     t=pd.to_datetime(msser,unit="ms",utc=True)
     try: return t.dt.tz_convert("America/New_York").dt.tz_localize(None)
-    except Exception: return (t.dt.tz_localize(None)-pd.Timedelta(hours=4))   # tzdata-less fallback
-def _intv_flow_values(df, signed_map=None, unseeded_w=0.2, cumulative=True):
+    except Exception: return (t.dt.tz_localize(None)-pd.Timedelta(hours=4))
+
+def _intv_flow_values(df, greek="GEX", signed_map=None, unseeded_w=0.2, cumulative=True):
+    """naive: call+put native signs. signed GEX: dsign×|leg| both legs (long
+    option = +γ). signed DEX: call dsign×|c| MINUS put dsign×|p| (FLAG-2)."""
     if df is None or getattr(df,"empty",True): return pd.DataFrame(columns=["strike","val","ts"])
     o=df.copy()
     cs=pd.to_numeric(o["callExposureSum"],errors="coerce").fillna(0)
@@ -2382,27 +2391,35 @@ def _intv_flow_values(df, signed_map=None, unseeded_w=0.2, cumulative=True):
     if signed_map:
         k=o["strikePrice"].astype(float)
         dsc=k.map(lambda x: signed_map.get((x,"call"))); dsp=k.map(lambda x: signed_map.get((x,"put")))
-        val=dsc.fillna(unseeded_w)*cs.abs() + dsp.fillna(-unseeded_w)*ps.abs()
+        pterm=(dsp.fillna(-unseeded_w)*ps.abs()) if greek=="GEX" else (-(dsp*ps.abs()).fillna(-unseeded_w*ps.abs()))
+        val=dsc.fillna(unseeded_w)*cs.abs()+pterm
     else:
         val=cs+ps
     out=pd.DataFrame({"strike":o["strikePrice"].astype(float),"val":val,
-        "ts":_ms_to_et_series(o["timestamp"])}).sort_values("ts")
+                      "ts":_ms_to_et_series(o["timestamp"])}).sort_values("ts")
     if cumulative: out["val"]=out.groupby("strike")["val"].cumsum()
     return out
 
-def _intv_draw(ax, dd, topn, smax=430.0):
-    """Top-N by |final|, context dots, √ scaling over top rows only. Returns (vmax, top-set)."""
+def _intv_draw(ax, dd, topn, smax=420.0):
+    """Campaign renderer: top-N by |final|, context dots, power-0.35 sizing over
+    top rows, rings on EVERY zero-cross. Returns (vmax, top-set)."""
     if not len(dd): return 0.0,set()
     fin=dd.sort_values("ts").groupby("strike")["val"].last().abs()
     top=set(fin.sort_values(ascending=False).head(int(topn)).index)
     dT,dC=dd[dd["strike"].isin(top)],dd[~dd["strike"].isin(top)]
     vmax=float(np.abs(dT["val"]).max()) or 1.0
     if len(dC):
-        ax.scatter(dC["ts"],dC["strike"],s=6,c=np.where(dC["val"]>=0,"#26a69a","#ef5350"),
+        ax.scatter(dC["ts"],dC["strike"],s=7,c=np.where(dC["val"]>=0,"#26a69a","#ef5350"),
                    alpha=0.30,edgecolors="none",zorder=3)
-    sz=6.0+smax*np.sqrt(np.abs(dT["val"])/vmax)
+    sz=10.0+smax*np.power(np.abs(dT["val"])/vmax,0.35)
     ax.scatter(dT["ts"],dT["strike"],s=sz,c=np.where(dT["val"]>=0,"#26a69a","#ef5350"),
                alpha=0.88,edgecolors="none",zorder=4)
+    for k in sorted(set(dT["strike"])):
+        s0=dT[dT["strike"]==k].sort_values("ts"); g=np.sign(s0["val"].values)
+        for i in range(1,len(g)):
+            if g[i]!=0 and g[i-1]!=0 and g[i]!=g[i-1]:
+                ax.scatter([s0["ts"].iloc[i]],[k],s=170,facecolors="none",
+                           edgecolors="white",linewidths=1.2,zorder=7)
     for k in sorted(top): ax.axhline(k,color="#1b2330",lw=0.5,zorder=1)
     return vmax,top
 with tab_combo:
@@ -2698,21 +2715,15 @@ with tab_terr:
         st.sidebar.caption(f"canonical cache skipped: {type(_cx).__name__}")
 
 with tab_intv:
-    emit_caption("interval","Interval bubbles — exposure per strike over time. Top-N strikes full-size "
-        "(significance rank, like the reference tool's 'N Strikes'), rest as context dots. Signs follow "
-        "the master Signed toggle; SIGNED cumulative flow ≈ dealer-positioning view (benchmark finding).")
-    i_src=st.radio("Source",["State (Δ/Γ×OI from snapshots · 0 API)","GBT flow (interval_map)"],
+    emit_caption("interval","Interval bubbles — LIVE session, benchmark recipe (see VS3D_INTERVAL_RECIPE.md): "
+        "cumulative = reference Raw · top-N = significance rank · ○ = sign flip. Signs follow the master toggle.")
+    i_src=st.radio("Source",["GBT flow (interval_map · benchmark)","State (Δ/Γ×OI from snapshots · 0 API)"],
                    horizontal=True,key="intv_src")
-    _ic1,_ic2,_ic3=st.columns([1.2,1.0,1.2])
-    i_top=_ic1.slider("Top strikes",5,40,25,5,key="intv_topn")
-    i_cum=_ic2.checkbox("Cumulative",value=True,key="intv_cum",
-                        help="Flow source: running session total (their Raw look) vs per-bucket (their Difference).")
-    if _ic3.button("⏪ Backfill yesterday (flow, 2 calls)",key="intv_bfb"):
-        try:
-            _yd=_gbt_prev_session()
-            st.session_state["intv_bf"]={g:_intv_flow_fetch(_yd,g,latest["spot"]*0.97,latest["spot"]*1.03,sess=_yd)
-                                         for g in ("GAMMA","DELTA")}
-        except Exception as _bx: st.warning(f"backfill failed: {type(_bx).__name__}: {_bx}")
+    _ic1,_ic2,_ic3=st.columns([1.3,1.0,1.0])
+    i_scope=_ic1.radio("Expiry scope",["All expiries (blank-chip)","Session expiry (0DTE)"],key="intv_scope")
+    i_top=_ic2.slider("Top strikes",5,40,25,5,key="intv_topn")
+    i_cum=_ic3.checkbox("Cumulative (Raw)",value=True,key="intv_cum",
+                        help="Off = per-bucket (their Difference mode).")
     def _render_intv():
         _sn=st.session_state.get("snaps") or []
         if not any(s.get("book") is not None for s in _sn):   # synthetic boot snap has no book
@@ -2726,49 +2737,45 @@ with tab_intv:
                     smap={(float(r["strike"]),str(r["type"])):float(r["dsign"])
                           for _,r in _c.dropna(subset=["dsign"]).iterrows()}
             except Exception: smap=None
-        badge=("SIGNED·flow (positioning analog)" if (GBT_SIGNED and smap) else "NAIVE calls+/puts−")
-        if i_src.startswith("State"):
-            panes=[("GEX",_interval_state_rows(st.session_state["snaps"],"GEX",bool(GBT_SIGNED),GBT_UNSEEDED_W)),
-                   ("DEX",_interval_state_rows(st.session_state["snaps"],"DEX",bool(GBT_SIGNED),GBT_UNSEEDED_W))]
-            src_tag="state · 1 bucket = 1 snapshot · 0 API"
-        else:
-            _ck="intv_flow_"+sel_ts.isoformat()
+        badge=("SIGNED (dsign)" if (GBT_SIGNED and smap) else "NAIVE calls+/puts− (benchmark)")
+        if i_src.startswith("GBT flow"):
+            _exp=None if i_scope.startswith("All") else exps[0]
+            _ck=f"intv_flow_{sel_ts.isoformat()}_{'blank' if _exp is None else 'sess'}"
             if _ck not in st.session_state:
-                st.session_state[_ck]={g:_intv_flow_fetch(exps[0],g,_l,_h) for g in ("GAMMA","DELTA")}
+                st.session_state[_ck]={g:_intv_flow_fetch(g,_l,_h,exp=_exp) for g in ("GAMMA","DELTA")}
             _fd=st.session_state[_ck]
-            panes=[("GEX",_intv_flow_values(_fd.get("GAMMA"),smap,GBT_UNSEEDED_W,bool(i_cum))),
-                   ("DEX",_intv_flow_values(_fd.get("DELTA"),smap,GBT_UNSEEDED_W,bool(i_cum)))]
-            src_tag=f"flow · {'CUMULATIVE' if i_cum else 'per-bucket'}"
-        _bf=st.session_state.get("intv_bf")
-        if _bf:
-            panes+= [("GEX · YESTERDAY",_intv_flow_values(_bf.get("GAMMA"),smap,GBT_UNSEEDED_W,True)),
-                     ("DEX · YESTERDAY",_intv_flow_values(_bf.get("DELTA"),smap,GBT_UNSEEDED_W,True))]
+            panes=[("GEX",_intv_flow_values(_fd.get("GAMMA"),"GEX",smap,GBT_UNSEEDED_W,bool(i_cum))),
+                   ("DEX",_intv_flow_values(_fd.get("DELTA"),"DEX",smap,GBT_UNSEEDED_W,bool(i_cum)))]
+            src_tag=f"flow · {'CUM (Raw)' if i_cum else 'per-bucket (Diff)'} · {'blank-chip' if _exp is None else '0DTE'}"
+        else:
+            panes=[("GEX",_interval_state_rows(_sn,"GEX",bool(GBT_SIGNED),GBT_UNSEEDED_W)),
+                   ("DEX",_interval_state_rows(_sn,"DEX",bool(GBT_SIGNED),GBT_UNSEEDED_W))]
+            src_tag="state · 1 bucket = 1 snapshot · 0 API"
         for _nm,_dd in panes:
             fig,ax=plt.subplots(figsize=(16,5.4)); fig.patch.set_facecolor(DARK); ax.set_facecolor(DARK)
             vmax,_ktop=_intv_draw(ax,_dd,i_top)
             try:
-                if bars is not None and len(bars) and "YESTERDAY" not in _nm:
+                if bars is not None and len(bars):
                     ax.plot(pd.to_datetime(bars["t"]),pd.to_numeric(bars["c"],errors="coerce"),
                             color="white",lw=1.3,alpha=0.95,zorder=6)
             except Exception: pass
             try:
                 import matplotlib.dates as _md
-                if "YESTERDAY" not in _nm:
-                    _op=pd.Timestamp(now_naive.date()).replace(hour=9,minute=30)
-                    ax.axvline(_op,color="#888",ls="--",lw=0.9)
+                _op=pd.Timestamp(now_naive.date()).replace(hour=9,minute=30)
+                ax.axvline(_op,color="#888",ls="--",lw=0.9)
                 ax.xaxis.set_major_formatter(_md.DateFormatter("%H:%M"))
             except Exception: pass
-            if _ktop: ax.set_ylim(min(_ktop)-12,max(_ktop)+12)
+            if _ktop: ax.set_ylim(min(_ktop)-10,max(_ktop)+10)
             else: ax.set_ylim(_l,_h)
             ax.tick_params(colors="#8a93a6",labelsize=8)
             for s_ in ax.spines.values(): s_.set_color("#2a2f3a")
-            ax.set_title(f"Interval ({_nm}) — {badge} · {src_tag} · top {int(i_top)} · maxbubble={vmax:,.0f}",
+            ax.set_title(f"Interval ({_nm}) — {badge} · {src_tag} · top {int(i_top)} · maxbubble={vmax:,.0f} · ○=flip",
                          color="#ccc",fontsize=10,loc="left")
             emit("interval",fig)
-    _isig=repr((sel_ts.isoformat(),st.session_state.get("intv_src"),int(st.session_state.get("intv_topn") or 25),
-                bool(st.session_state.get("intv_cum")),bool(GBT_SIGNED),
-                len(st.session_state.get("snaps") or []),int(len(bars) if bars is not None else 0),
-                bool(st.session_state.get("intv_bf"))))
+    _isig=repr((sel_ts.isoformat(),st.session_state.get("intv_src"),st.session_state.get("intv_scope"),
+                int(st.session_state.get("intv_topn") or 25),bool(st.session_state.get("intv_cum")),
+                bool(GBT_SIGNED),len(st.session_state.get("snaps") or []),
+                int(len(bars) if bars is not None else 0)))
     dispatch("interval",_render_intv,sig=_isig)
 
 with tab_sig:
