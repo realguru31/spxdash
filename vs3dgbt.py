@@ -1,5 +1,28 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.7
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.8
+
+vGBT-0.8 [⏱ INTERVAL TAB — built on the benchmark autopsy]
+  • Bubble charts (GEX + DEX) over session time: top-N strikes full-size (their
+    "N Strikes" = significance rank, not a spot radius — proven), context dots,
+    price path, open line. Renders only once snapshots exist.
+  • Sources: "State Δ/Γ×OI" (textbook Raw; from our cached snapshot greeks, 0
+    API) and "GBT flow" (interval_map, per-bucket or CUMULATIVE running total).
+  • Master Signed toggle re-signs both via dsign — SIGNED cumulative flow is our
+    positioning analog to the reference tool's proprietary attribution (their
+    7500 stayed green through the 10:20 dip: positioning, not Δ-state — the
+    benchmark's decisive finding). Badged honestly either way.
+  • Backfill-yesterday button (flow, sessionDate) for next-day corroboration.
+
+vGBT-0.7.1 [VS3D VISIBILITY — layout + field mode]
+  • Combined tab back to the REAL VS3D structure: Book left (1.0) · Gamma+Charm
+    stacked right (2.2). Last night's full-width stacking was an overcorrection
+    — one giant unusable poster. Owned and reverted to the reference layout.
+  • NEW Gamma field mode, default "Per-strike rows (VS3D look)": each strike is
+    its own horizontal band, intensity = that strike's own signed exposure at
+    Γ(spot,K,τ_t). WHY: at τ≈6h/17% IV a BS gamma kernel is ±34 pts wide, so the
+    guide-spec aggregate ("γ if spot were here") mathematically cannot resolve
+    5-pt pockets — the reference tool's visible banding IS per-strike rows, not
+    an aggregate. Aggregate mode retained as "Aggregate (guide-spec §2)".
 
 vGBT-0.7 [RECORDER FIXES + BOOK×SPOT VIEW — from the first full-day review]
   • CANONICAL PAIR CACHE: every snapshot now caches a Gamma+Charm terrain pair
@@ -1108,7 +1131,7 @@ def pinak_levels(chain, spot, exp, now):
 # red=local maxima ridges, blue=local minima troughs, dotted=zero boundary.
 from scipy.signal import argrelextrema
 
-def terrain_grid(chain, spot, exps, now, greek="Delta Change", vol_adj=0.0,
+def terrain_grid(chain, spot, exps, now, greek="Delta Change", vol_adj=0.0, field_mode="Aggregate (guide-spec §2)",
                  p_min=None, p_max=None, n_price=170, n_time=84, simulated_gamma=False,
                  weighting="OI + Volume"):
     """Field Z(price,time) for the chosen greek over ALL expiries in `exps`.
@@ -1151,14 +1174,26 @@ def terrain_grid(chain, spot, exps, now, greek="Delta Change", vol_adj=0.0,
         for j,tau in enumerate(taus):
             T=_T_at(es,tau)
             if greek=="Gamma":
-                if simulated_gamma:  # §2.7 finite difference over $5 (effective gamma)
+                if str(field_mode).startswith("Per-strike"):
+                    # VS3D-look rows: deposit each leg's own exposure at ITS strike row.
+                    # γ evaluated at (spot, K, τ_t): near-ATM rows brighten into the
+                    # close, wings fade — no cross-strike aggregation, texture survives.
+                    gc=bs_gamma(spot,Kc,T,ivc); gp=bs_gamma(spot,Kp,T,ivp)
+                    _contrib=np.zeros_like(Z[:,j])
+                    for _K,_v in ((Kc,gc*wc*100.0*Kc),(Kp,-(gp*wp*100.0*Kp))):
+                        if len(_K):
+                            _idx=np.abs(pg[None,:]-_K[:,None]).argmin(1)   # NEAREST cell, not next-above
+                            np.add.at(_contrib,_idx,_v)
+                    Z[:,j]+=_contrib
+                elif simulated_gamma:  # §2.7 finite difference over $5 (effective gamma)
                     dU=bs_delta(Sg+5,Kc[None,:],T,ivc[None,:],True); dD=bs_delta(Sg-5,Kc[None,:],T,ivc[None,:],True)
                     gc=(dU-dD)/10.0
                     dU=bs_delta(Sg+5,Kp[None,:],T,ivp[None,:],False); dD=bs_delta(Sg-5,Kp[None,:],T,ivp[None,:],False)
                     gp=(dU-dD)/10.0
+                    Z[:,j]+= (gc*wc[None,:]).sum(1)*100*pg - (gp*wp[None,:]).sum(1)*100*pg
                 else:
                     gc=bs_gamma(Sg,Kc[None,:],T,ivc[None,:]); gp=bs_gamma(Sg,Kp[None,:],T,ivp[None,:])
-                Z[:,j]+= (gc*wc[None,:]).sum(1)*100*pg - (gp*wp[None,:]).sum(1)*100*pg
+                    Z[:,j]+= (gc*wc[None,:]).sum(1)*100*pg - (gp*wp[None,:]).sum(1)*100*pg
             elif greek=="Charm":
                 ch_c=bs_charm(Sg,Kc[None,:],T,ivc[None,:]); ch_p=bs_charm(Sg,Kp[None,:],T,ivp[None,:])
                 Z[:,j]+= (ch_c*wc[None,:]).sum(1)*100 - (ch_p*wp[None,:]).sum(1)*100
@@ -1167,7 +1202,7 @@ def terrain_grid(chain, spot, exps, now, greek="Delta Change", vol_adj=0.0,
                 Z[:,j]+= (dc*wc[None,:]).sum(1)*100 - (dp*wp[None,:]).sum(1)*100
     if greek=="Delta Change":
         Z=book_now-Z            # + = dealers BUY futures to arrive hedged there
-    Z=gaussian_filter1d(Z,1.2,axis=0)   # smooth PRICE only, never time
+    Z=gaussian_filter1d(Z,(0.6 if str(field_mode).startswith("Per-strike") else 1.2),axis=0)   # rows stay crisp; aggregate keeps §2 smoothing
     return pg,Z,taus
 
 def terrain_scale(Z, mode, cap, pct):
@@ -2001,7 +2036,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.7 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.8 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -2010,6 +2045,10 @@ num_expiries=st.sidebar.slider("Expiries to aggregate",1,5,1,help="1 = 0DTE only
 window_pct=st.sidebar.slider("Price window ±%",1.0,5.0,2.0,0.5)/100.0
 smooth_frac=st.sidebar.slider("Gradient smoothing",0.0,5.0,0.25,0.25,   # 0.25 default: signed pockets are ~15-25 pts; 1.0 blurs ~75 pts and erases them
     help="0 = raw per-strike detail (bumpy, like vols3d), higher = smoother density")/100.0
+t_fieldmode=st.sidebar.selectbox("Gamma field mode",
+    ["Per-strike rows (VS3D look)","Aggregate (guide-spec §2)"],index=0,
+    help="Rows: each strike is its own band — 5-pt pockets/texture survive (this is what the reference chart draws). "
+         "Aggregate: γ re-evaluated across price = 'gamma if spot were here'; kernels are ±30-40 pts at 0DTE morning, so structure blurs into slabs by construction.")
 # field scale controls — TOP LEVEL on purpose (v2.1.7): mid-session you must not
 # have to dig through a collapsed drawer to fix a saturated cap.
 capc1,capc2=st.sidebar.columns(2)
@@ -2302,7 +2341,70 @@ def dispatch(tab, render_fn, sig=None):
 
 combo_on=st.sidebar.checkbox("🖥 Combined VS3D layout",value=False,
     help="Book + Gamma + Charm on one page, composed from the current frame's cached panels — zero recompute.")
-tab_combo,tab_book,tab_terr,tab_sig,tab_read=st.tabs(["🖥 VS3D (combined)","📊 Book (by strike)","🗺 Terrain (gradient chart)","🧭 Signals (daily workflow)","📖 Read (what happens next)"])
+tab_combo,tab_book,tab_terr,tab_intv,tab_sig,tab_read=st.tabs(["🖥 VS3D (combined)","📊 Book (by strike)","🗺 Terrain (gradient chart)","⏱ Interval (bubbles)","🧭 Signals (daily workflow)","📖 Read (what happens next)"])
+
+def _interval_state_rows(snaps, greek="GEX", signed=True, unseeded_w=0.2):
+    """Textbook Raw: per snapshot-bucket, per strike: sign·|greek|·OI·100 (·spot
+    for GEX). Greeks come from each snapshot's stored chain — zero API calls."""
+    rows=[]
+    for s in snaps or []:
+        ch=s.get("chain"); sp=float(s.get("spot") or 0)
+        if ch is None or getattr(ch,"empty",True) or not sp: continue
+        c=ch[ch["expiry"]==s["exps"][0]] if ("expiry" in ch.columns and s.get("exps")) else ch
+        gcol="gamma" if greek=="GEX" else "delta"
+        nv=np.where(c["type"].values=="call",1.0,-1.0)
+        if signed and "dsign" in c.columns:
+            sg=c["dsign"].where(c["dsign"].notna(), pd.Series(nv*unseeded_w,index=c.index)).values
+        else: sg=nv
+        mag=np.abs(c[gcol].fillna(0).values)*c["oi"].fillna(0).values*100.0
+        if greek=="GEX": mag=mag*sp
+        v=pd.DataFrame({"strike":c["strike"].values,"val":sg*mag})
+        g=v.groupby("strike",as_index=False)["val"].sum(); g["ts"]=pd.to_datetime(s["ts"])
+        rows.append(g)
+    return pd.concat(rows,ignore_index=True) if rows else pd.DataFrame(columns=["strike","val","ts"])
+
+def _intv_flow_fetch(exp, greek, lo, hi, sess=None, topn=90):
+    pay={"greekMode":greek,"ticker":"SPX","aggregationPeriod":"FIVE_MINUTE",
+         "expirationDate":exp,"minStrikePrice":float(lo),"maxStrikePrice":float(hi),"topN":int(topn)}
+    if sess: pay["sessionDate"]=sess
+    _,df=_gbt_post("interval_map",pay)
+    return df
+
+def _ms_to_et_series(msser):
+    t=pd.to_datetime(msser,unit="ms",utc=True)
+    try: return t.dt.tz_convert("America/New_York").dt.tz_localize(None)
+    except Exception: return (t.dt.tz_localize(None)-pd.Timedelta(hours=4))   # tzdata-less fallback
+def _intv_flow_values(df, signed_map=None, unseeded_w=0.2, cumulative=True):
+    if df is None or getattr(df,"empty",True): return pd.DataFrame(columns=["strike","val","ts"])
+    o=df.copy()
+    cs=pd.to_numeric(o["callExposureSum"],errors="coerce").fillna(0)
+    ps=pd.to_numeric(o["putExposureSum"],errors="coerce").fillna(0)
+    if signed_map:
+        k=o["strikePrice"].astype(float)
+        dsc=k.map(lambda x: signed_map.get((x,"call"))); dsp=k.map(lambda x: signed_map.get((x,"put")))
+        val=dsc.fillna(unseeded_w)*cs.abs() + dsp.fillna(-unseeded_w)*ps.abs()
+    else:
+        val=cs+ps
+    out=pd.DataFrame({"strike":o["strikePrice"].astype(float),"val":val,
+        "ts":_ms_to_et_series(o["timestamp"])}).sort_values("ts")
+    if cumulative: out["val"]=out.groupby("strike")["val"].cumsum()
+    return out
+
+def _intv_draw(ax, dd, topn, smax=430.0):
+    """Top-N by |final|, context dots, √ scaling over top rows only. Returns (vmax, top-set)."""
+    if not len(dd): return 0.0,set()
+    fin=dd.sort_values("ts").groupby("strike")["val"].last().abs()
+    top=set(fin.sort_values(ascending=False).head(int(topn)).index)
+    dT,dC=dd[dd["strike"].isin(top)],dd[~dd["strike"].isin(top)]
+    vmax=float(np.abs(dT["val"]).max()) or 1.0
+    if len(dC):
+        ax.scatter(dC["ts"],dC["strike"],s=6,c=np.where(dC["val"]>=0,"#26a69a","#ef5350"),
+                   alpha=0.30,edgecolors="none",zorder=3)
+    sz=6.0+smax*np.sqrt(np.abs(dT["val"])/vmax)
+    ax.scatter(dT["ts"],dT["strike"],s=sz,c=np.where(dT["val"]>=0,"#26a69a","#ef5350"),
+               alpha=0.88,edgecolors="none",zorder=4)
+    for k in sorted(top): ax.axhline(k,color="#1b2330",lw=0.5,zorder=1)
+    return vmax,top
 with tab_combo:
     if combo_on:
         _frc=st.session_state.frames.get(sel_ts.isoformat() if hasattr(sel_ts,"isoformat") else str(sel_ts),{})
@@ -2311,10 +2413,13 @@ with tab_combo:
         if not _bp and not _tp:
             st.info("No cached panels for this frame yet — take a 📸 snapshot (panels cache automatically).")
         else:
-            st.caption("Positions — Book × spot path")
-            for _p in _bp: st.image(_p,use_container_width=True)
-            st.caption("Gamma + Charm terrain (canonical pair — cached every snapshot)")
-            for _p in _tp: st.image(_p,use_container_width=True)
+            _c1,_c2=st.columns([1.0,2.2],gap="small")
+            with _c1:
+                st.caption("Positions — Book × spot path")
+                for _p in _bp: st.image(_p,use_container_width=True)
+            with _c2:
+                st.caption("Gamma + Charm terrain (canonical pair)")
+                for _p in _tp: st.image(_p,use_container_width=True)
     else:
         st.caption("Enable '🖥 Combined VS3D layout' in the sidebar to compose Book + Gamma + Charm here.")
 
@@ -2428,7 +2533,7 @@ with tab_terr:
         _GHEAVY="Gamma |Γ| (heaviness)"; _GDECAY="Gamma Decay (color)"
         _base_greek="Gamma" if t_greek in (_GHEAVY,_GDECAY) else t_greek
         try:
-            pg,Z,taus=terrain_grid(latest["chain"],spot,use_exps,now_naive,greek=_base_greek,
+            pg,Z,taus=terrain_grid(latest["chain"],spot,use_exps,now_naive,greek=_base_greek,field_mode=t_fieldmode,
                                    vol_adj=(0.01 if t_voladj=="+1%" else 0.0),
                                    p_min=p_min,p_max=p_max,simulated_gamma=t_simg,weighting=t_wt)
             if t_greek==_GHEAVY: Z=np.abs(Z)
@@ -2568,7 +2673,7 @@ with tab_terr:
                 emit("terrain",fc)
             except Exception as ex:
                 st.caption(f"charm panel unavailable: {ex}")
-    _tsig=repr((sel_ts.isoformat(),t_greek,t_wt,t_norm,t_pct,t_int,round(t_pow,3),round(t_alpha,3),
+    _tsig=repr((t_fieldmode,sel_ts.isoformat(),t_greek,t_wt,t_norm,t_pct,t_int,round(t_pow,3),round(t_alpha,3),
                 t_cont,t_strad,t_lvls,t_voladj,t_simg,t_charm2,bool(GBT_SIGNED),round(float(st.session_state.get("terr_zoom",1.0)),3),int(num_expiries),round(window_pct,5),
                 st.session_state.get(f"terr_cap_{t_greek}_{t_wt}"),
                 st.session_state.get(f"terr_cap_Charm_{t_wt}") if t_charm2 else None))
@@ -2591,6 +2696,80 @@ with tab_terr:
                 save_day_state()
     except Exception as _cx:
         st.sidebar.caption(f"canonical cache skipped: {type(_cx).__name__}")
+
+with tab_intv:
+    emit_caption("interval","Interval bubbles — exposure per strike over time. Top-N strikes full-size "
+        "(significance rank, like the reference tool's 'N Strikes'), rest as context dots. Signs follow "
+        "the master Signed toggle; SIGNED cumulative flow ≈ dealer-positioning view (benchmark finding).")
+    i_src=st.radio("Source",["State (Δ/Γ×OI from snapshots · 0 API)","GBT flow (interval_map)"],
+                   horizontal=True,key="intv_src")
+    _ic1,_ic2,_ic3=st.columns([1.2,1.0,1.2])
+    i_top=_ic1.slider("Top strikes",5,40,25,5,key="intv_topn")
+    i_cum=_ic2.checkbox("Cumulative",value=True,key="intv_cum",
+                        help="Flow source: running session total (their Raw look) vs per-bucket (their Difference).")
+    if _ic3.button("⏪ Backfill yesterday (flow, 2 calls)",key="intv_bfb"):
+        try:
+            _yd=_gbt_prev_session()
+            st.session_state["intv_bf"]={g:_intv_flow_fetch(_yd,g,latest["spot"]*0.97,latest["spot"]*1.03,sess=_yd)
+                                         for g in ("GAMMA","DELTA")}
+        except Exception as _bx: st.warning(f"backfill failed: {type(_bx).__name__}: {_bx}")
+    def _render_intv():
+        _sn=st.session_state.get("snaps") or []
+        if not any(s.get("book") is not None for s in _sn):   # synthetic boot snap has no book
+            st.info("Interval view starts with the first GBT snapshot."); return
+        sp=float(latest["spot"]); half=sp*window_pct; _l,_h=sp-half,sp+half
+        smap=None
+        if GBT_SIGNED:
+            try:
+                _c=latest["chain"]
+                if "dsign" in _c.columns:
+                    smap={(float(r["strike"]),str(r["type"])):float(r["dsign"])
+                          for _,r in _c.dropna(subset=["dsign"]).iterrows()}
+            except Exception: smap=None
+        badge=("SIGNED·flow (positioning analog)" if (GBT_SIGNED and smap) else "NAIVE calls+/puts−")
+        if i_src.startswith("State"):
+            panes=[("GEX",_interval_state_rows(st.session_state["snaps"],"GEX",bool(GBT_SIGNED),GBT_UNSEEDED_W)),
+                   ("DEX",_interval_state_rows(st.session_state["snaps"],"DEX",bool(GBT_SIGNED),GBT_UNSEEDED_W))]
+            src_tag="state · 1 bucket = 1 snapshot · 0 API"
+        else:
+            _ck="intv_flow_"+sel_ts.isoformat()
+            if _ck not in st.session_state:
+                st.session_state[_ck]={g:_intv_flow_fetch(exps[0],g,_l,_h) for g in ("GAMMA","DELTA")}
+            _fd=st.session_state[_ck]
+            panes=[("GEX",_intv_flow_values(_fd.get("GAMMA"),smap,GBT_UNSEEDED_W,bool(i_cum))),
+                   ("DEX",_intv_flow_values(_fd.get("DELTA"),smap,GBT_UNSEEDED_W,bool(i_cum)))]
+            src_tag=f"flow · {'CUMULATIVE' if i_cum else 'per-bucket'}"
+        _bf=st.session_state.get("intv_bf")
+        if _bf:
+            panes+= [("GEX · YESTERDAY",_intv_flow_values(_bf.get("GAMMA"),smap,GBT_UNSEEDED_W,True)),
+                     ("DEX · YESTERDAY",_intv_flow_values(_bf.get("DELTA"),smap,GBT_UNSEEDED_W,True))]
+        for _nm,_dd in panes:
+            fig,ax=plt.subplots(figsize=(16,5.4)); fig.patch.set_facecolor(DARK); ax.set_facecolor(DARK)
+            vmax,_ktop=_intv_draw(ax,_dd,i_top)
+            try:
+                if bars is not None and len(bars) and "YESTERDAY" not in _nm:
+                    ax.plot(pd.to_datetime(bars["t"]),pd.to_numeric(bars["c"],errors="coerce"),
+                            color="white",lw=1.3,alpha=0.95,zorder=6)
+            except Exception: pass
+            try:
+                import matplotlib.dates as _md
+                if "YESTERDAY" not in _nm:
+                    _op=pd.Timestamp(now_naive.date()).replace(hour=9,minute=30)
+                    ax.axvline(_op,color="#888",ls="--",lw=0.9)
+                ax.xaxis.set_major_formatter(_md.DateFormatter("%H:%M"))
+            except Exception: pass
+            if _ktop: ax.set_ylim(min(_ktop)-12,max(_ktop)+12)
+            else: ax.set_ylim(_l,_h)
+            ax.tick_params(colors="#8a93a6",labelsize=8)
+            for s_ in ax.spines.values(): s_.set_color("#2a2f3a")
+            ax.set_title(f"Interval ({_nm}) — {badge} · {src_tag} · top {int(i_top)} · maxbubble={vmax:,.0f}",
+                         color="#ccc",fontsize=10,loc="left")
+            emit("interval",fig)
+    _isig=repr((sel_ts.isoformat(),st.session_state.get("intv_src"),int(st.session_state.get("intv_topn") or 25),
+                bool(st.session_state.get("intv_cum")),bool(GBT_SIGNED),
+                len(st.session_state.get("snaps") or []),int(len(bars) if bars is not None else 0),
+                bool(st.session_state.get("intv_bf"))))
+    dispatch("interval",_render_intv,sig=_isig)
 
 with tab_sig:
     emit_caption("signals","§5.1 daily workflow: straddle range → structure quality → charm gate → absorption. "
