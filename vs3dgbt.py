@@ -1,5 +1,11 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.8.5
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.8.6
+
+vGBT-0.8.6
+  • Interval: "Relative size (per time column)" toggle — bubble area = share of
+    the largest strike AT THAT MOMENT (leaders pop vs the population); default
+    OFF preserves the absolute benchmark growth look. All screenshot settings
+    confirmed as existing defaults (signed ON, blank-chip, cum, top 25, RTH).
 
 vGBT-0.8.5 [TONIGHT'S QUEUE — one consolidated build]
   • Combined tab (Option A): canonical Gamma+Charm pair auto-fits its VIEW to
@@ -2051,7 +2057,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.8.5 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.8.6 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -2479,7 +2485,14 @@ def _canon_fit_axes(fig, pad_frac=0.35, pad_min=10.0):
     except Exception: pass
     return fig
 
-def _intv_draw(ax, dd, topn, smax=420.0, rings=True):
+def _intv_relsize(dT, mag):
+    """Relative size: bubble area = strike's share of the LARGEST strike AT THAT
+    MOMENT (per-time-column normalization) — leaders pop against the population
+    regardless of how big the cumulative totals have grown."""
+    mx=mag.groupby(dT["ts"]).transform("max").replace(0,np.nan)
+    return (mag/mx).fillna(0.0)
+
+def _intv_draw(ax, dd, topn, smax=420.0, rings=True, rel=False):
     """Campaign renderer: top-N + bubble size by GROSS significance (probe-10 channel),
     color by signed/naive val, area-linear sizing, rings on EVERY zero-cross."""
     if not len(dd): return 0.0,set()
@@ -2490,10 +2503,11 @@ def _intv_draw(ax, dd, topn, smax=420.0, rings=True):
     dT,dC=dd[dd["strike"].isin(top)],dd[~dd["strike"].isin(top)]
     mag=(dT[_g] if _g else dT["val"].abs())
     vmax=float(mag.max()) or 1.0
+    frac=_intv_relsize(dT,mag) if rel else (mag/vmax)
     if len(dC):
         ax.scatter(dC["ts"],dC["strike"],s=7,c=np.where(dC["val"]>=0,"#26a69a","#ef5350"),
                    alpha=0.30,edgecolors="none",zorder=3)
-    sz=6.0+smax*(mag/vmax)   # AREA ∝ GROSS (significance) · COLOR = sign(NET) (direction)
+    sz=6.0+smax*frac   # AREA ∝ GROSS: absolute (÷session max) or RELATIVE (÷column max) · COLOR = sign(NET)
     ax.scatter(dT["ts"],dT["strike"],s=sz,c=np.where(dT["val"]>=0,"#26a69a","#ef5350"),
                alpha=0.88,edgecolors="none",zorder=4)
     if rings:   # rings mean "running total crossed zero" — cumulative semantics only
@@ -2809,6 +2823,8 @@ with tab_intv:
                         help="Off = per-bucket (their Difference mode).")
     i_rth=_ic3.checkbox("RTH only (9:30–16:00)",value=True,key="intv_rth",
                         help="Display window only — cumulative still integrates the full fetched span (pre-market included).")
+    i_rel=_ic3.checkbox("Relative size (per time column)",value=False,key="intv_rel",
+                        help="Bubble area = share of the largest strike AT THAT MOMENT — spot leaders vs the population at a glance. Off = absolute (benchmark growth look).")
     def _render_intv():
         _sn=st.session_state.get("snaps") or []
         if not any(s.get("book") is not None for s in _sn):   # synthetic boot snap has no book
@@ -2838,7 +2854,7 @@ with tab_intv:
             if i_rth and len(_dd):        # trim display AFTER integration (cumulative stays honest)
                 _dd=_dd[(_dd["ts"].dt.time>=dt.time(9,25))&(_dd["ts"].dt.time<=dt.time(16,5))]
             fig,ax=plt.subplots(figsize=(16,5.4)); fig.patch.set_facecolor(DARK); ax.set_facecolor(DARK)
-            vmax,_ktop=_intv_draw(ax,_dd,i_top,rings=bool(i_cum))
+            vmax,_ktop=_intv_draw(ax,_dd,i_top,rings=bool(i_cum),rel=bool(i_rel))
             try:
                 if bars is not None and len(bars):
                     ax.plot(pd.to_datetime(bars["t"]),pd.to_numeric(bars["c"],errors="coerce"),
@@ -2852,12 +2868,12 @@ with tab_intv:
             _intv_open_marker(ax,_dd,fallback_now=now_naive)   # AFTER ylim; geometry-safe
             ax.tick_params(colors="#8a93a6",labelsize=8)
             for s_ in ax.spines.values(): s_.set_color("#2a2f3a")
-            ax.set_title(f"Interval ({_nm}) — {badge} · {src_tag} · size=gross · top {int(i_top)} · maxbubble={vmax:,.0f} · ○=flip",
+            ax.set_title(f"Interval ({_nm}) — {badge} · {src_tag} · size=gross{'·rel' if i_rel else ''} · top {int(i_top)} · maxbubble={vmax:,.0f} · ○=flip",
                          color="#ccc",fontsize=10,loc="left")
             emit("interval",fig)
     _isig=repr((sel_ts.isoformat(),st.session_state.get("intv_scope"),
                 int(st.session_state.get("intv_topn") or 25),bool(st.session_state.get("intv_cum")),
-                bool(st.session_state.get("intv_rth",True)),
+                bool(st.session_state.get("intv_rth",True)),bool(st.session_state.get("intv_rel",False)),
                 bool(GBT_SIGNED),len(st.session_state.get("snaps") or []),
                 int(len(bars) if bars is not None else 0)))
     dispatch("interval",_render_intv,sig=_isig)
