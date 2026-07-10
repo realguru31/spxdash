@@ -2411,7 +2411,7 @@ def _intv_draw(ax, dd, topn, smax=420.0):
     if len(dC):
         ax.scatter(dC["ts"],dC["strike"],s=7,c=np.where(dC["val"]>=0,"#26a69a","#ef5350"),
                    alpha=0.30,edgecolors="none",zorder=3)
-    sz=10.0+smax*np.power(np.abs(dT["val"])/vmax,0.35)
+    sz=6.0+smax*(np.abs(dT["val"])/vmax)   # AREA-LINEAR: s∝value = the benchmark hierarchy (0.35 flattened it into a lawn)
     ax.scatter(dT["ts"],dT["strike"],s=sz,c=np.where(dT["val"]>=0,"#26a69a","#ef5350"),
                alpha=0.88,edgecolors="none",zorder=4)
     for k in sorted(set(dT["strike"])):
