@@ -2416,6 +2416,22 @@ def _intv_flow_values(df, greek="GEX", signed_map=None, unseeded_w=0.2, cumulati
         out["gross"]=out.groupby("strike")["cs"].cumsum().abs()+out.groupby("strike")["ps"].cumsum().abs()
     return out.drop(columns=["cs","ps"])
 
+def _intv_open_marker(ax, dd, fallback_now=None):
+    """9:30 ET Market-Open marker — anchored to the DATA's own date (server-tz
+    immune). Label lives in
+    axes-fraction Y via a blended transform with clip_on, so it can NEVER leave
+    the plot box and blow up a tight bounding box (the top-5 black-canvas bug)."""
+    try:
+        import matplotlib.transforms as _mt
+        _dref=dd["ts"].max() if (dd is not None and len(dd)) else fallback_now
+        if _dref is None: return
+        _op=pd.Timestamp(_dref).normalize().replace(hour=9,minute=30)
+        ax.axvline(_op,color="#888",ls="--",lw=0.9)
+        _tr=_mt.blended_transform_factory(ax.transData,ax.transAxes)
+        ax.text(_op,0.99," Market Open",transform=_tr,va="top",ha="left",
+                color="#999",fontsize=7,clip_on=True)
+    except Exception: pass
+
 def _intv_draw(ax, dd, topn, smax=420.0):
     """Campaign renderer: top-N + bubble size by GROSS significance (probe-10 channel),
     color by signed/naive val, area-linear sizing, rings on EVERY zero-cross."""
@@ -2786,14 +2802,9 @@ with tab_intv:
                 import matplotlib.dates as _md
                 ax.xaxis.set_major_formatter(_md.DateFormatter("%H:%M"))
             except Exception: pass
-            try:      # 9:30 ET open marker — anchored to the DATA's own date (server-tz immune)
-                _dref=_dd["ts"].max() if len(_dd) else now_naive
-                _op=pd.Timestamp(_dref).normalize().replace(hour=9,minute=30)
-                ax.axvline(_op,color="#888",ls="--",lw=0.9)
-                ax.text(_op,ax.get_ylim()[1]," Market Open",color="#999",fontsize=7,va="top")
-            except Exception: pass
             if _ktop: ax.set_ylim(min(_ktop)-10,max(_ktop)+10)
             else: ax.set_ylim(_l,_h)
+            _intv_open_marker(ax,_dd,fallback_now=now_naive)   # AFTER ylim; geometry-safe
             ax.tick_params(colors="#8a93a6",labelsize=8)
             for s_ in ax.spines.values(): s_.set_color("#2a2f3a")
             ax.set_title(f"Interval ({_nm}) — {badge} · {src_tag} · size=gross · top {int(i_top)} · maxbubble={vmax:,.0f} · ○=flip",
