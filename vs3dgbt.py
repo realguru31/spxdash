@@ -12,6 +12,10 @@ vGBT-0.8 [⏱ INTERVAL TAB — final, per VS3D_INTERVAL_RECIPE.md]
     = long gamma). FLAG-3 FIXED: expirationDate optional in the fetch.
   • Known residual (documented): thin far strikes may differ from the reference
     — their proprietary print-classification; not reproducible from public data.
+  • SIZE = GROSS / COLOR = NET (probe-9 v3, numeric confirmation): 7500 traded
+    214T gross with 93% cancellation → any net-sized bubble is blind to the
+    battleground strike. Bubble area ∝ |C|+|P| (significance); color = sign of
+    C+P (direction); top-N ranks by gross. Matches the reference hierarchy.
 
 vGBT-0.7.1 [VS3D VISIBILITY — layout + field mode]
   • Combined tab back to the REAL VS3D structure: Book left (1.0) · Gamma+Charm
@@ -2258,8 +2262,14 @@ if _nframes==0: PLAYBACK=False
 
 latest=snaps[sel_i]; spot=latest["spot"]; exps=latest["exps"]
 sel_ts=latest["ts"]
+# canonical frame clock — MODULE-LEVEL (v0.8.1): Book/Interval renderers use this;
+# it previously existed only as locals in terrain/signals/read → live NameError.
+now_naive=sel_ts.replace(tzinfo=None) if getattr(sel_ts,'tzinfo',None) else sel_ts
 exp_date=dt.datetime.strptime(exps[0],"%Y-%m-%d").date()
-bars,bars_msg=prep_bars()
+try:            # v0.8.1: TvDatafeed() constructor does network I/O — never let it kill the app
+    bars,bars_msg=prep_bars()
+except Exception as _be:
+    bars,bars_msg=None,f"bars offline: {type(_be).__name__}"
 try:  # ATM IV tripwire (v2.1.9): a units regression must be humanly visible
     _c0=latest["chain"]; _c0=_c0[_c0["expiry"]==exps[0]] if "expiry" in latest["chain"].columns else latest["chain"]
     _aiv=float(_c0.iloc[(_c0["strike"]-spot).abs().argsort()[:2]]["iv"].median())
@@ -2363,10 +2373,10 @@ def _interval_state_rows(snaps, greek="GEX", signed=True, unseeded_w=0.2):
         gcol="gamma" if greek=="GEX" else "delta"
         mag=np.abs(c[gcol].fillna(0).values)*c["oi"].fillna(0).values*100.0
         if greek=="GEX": mag=mag*sp
-        v=pd.DataFrame({"strike":c["strike"].values,"val":sg*mag})
-        g=v.groupby("strike",as_index=False)["val"].sum(); g["ts"]=pd.to_datetime(s["ts"])
+        v=pd.DataFrame({"strike":c["strike"].values,"val":sg*mag,"gross":mag})
+        g=v.groupby("strike",as_index=False)[["val","gross"]].sum(); g["ts"]=pd.to_datetime(s["ts"])
         rows.append(g)
-    return pd.concat(rows,ignore_index=True) if rows else pd.DataFrame(columns=["strike","val","ts"])
+    return pd.concat(rows,ignore_index=True) if rows else pd.DataFrame(columns=["strike","val","gross","ts"])
 
 def _intv_flow_fetch(greek, lo, hi, exp=None, topn=100):
     """FLAG-3 fixed: exp=None omits expirationDate = blank-chip (benchmark scope)."""
@@ -2396,22 +2406,28 @@ def _intv_flow_values(df, greek="GEX", signed_map=None, unseeded_w=0.2, cumulati
     else:
         val=cs+ps
     out=pd.DataFrame({"strike":o["strikePrice"].astype(float),"val":val,
+                      "gross":cs.abs()+ps.abs(),   # significance = total activity, signless
                       "ts":_ms_to_et_series(o["timestamp"])}).sort_values("ts")
-    if cumulative: out["val"]=out.groupby("strike")["val"].cumsum()
+    if cumulative:
+        out["val"]=out.groupby("strike")["val"].cumsum()
+        out["gross"]=out.groupby("strike")["gross"].cumsum()
     return out
 
 def _intv_draw(ax, dd, topn, smax=420.0):
     """Campaign renderer: top-N by |final|, context dots, power-0.35 sizing over
     top rows, rings on EVERY zero-cross. Returns (vmax, top-set)."""
     if not len(dd): return 0.0,set()
-    fin=dd.sort_values("ts").groupby("strike")["val"].last().abs()
-    top=set(fin.sort_values(ascending=False).head(int(topn)).index)
+    _g="gross" if "gross" in dd.columns else None
+    fin=(dd.sort_values("ts").groupby("strike")[_g].last() if _g
+         else dd.sort_values("ts").groupby("strike")["val"].last().abs())
+    top=set(fin.sort_values(ascending=False).head(int(topn)).index)   # top-N by SIGNIFICANCE (gross)
     dT,dC=dd[dd["strike"].isin(top)],dd[~dd["strike"].isin(top)]
-    vmax=float(np.abs(dT["val"]).max()) or 1.0
+    mag=(dT[_g] if _g else dT["val"].abs())
+    vmax=float(mag.max()) or 1.0
     if len(dC):
         ax.scatter(dC["ts"],dC["strike"],s=7,c=np.where(dC["val"]>=0,"#26a69a","#ef5350"),
                    alpha=0.30,edgecolors="none",zorder=3)
-    sz=6.0+smax*(np.abs(dT["val"])/vmax)   # AREA-LINEAR: s∝value = the benchmark hierarchy (0.35 flattened it into a lawn)
+    sz=6.0+smax*(mag/vmax)   # AREA ∝ GROSS (significance) · COLOR = sign(NET) (direction)
     ax.scatter(dT["ts"],dT["strike"],s=sz,c=np.where(dT["val"]>=0,"#26a69a","#ef5350"),
                alpha=0.88,edgecolors="none",zorder=4)
     for k in sorted(set(dT["strike"])):
@@ -2529,7 +2545,7 @@ with tab_book:
                 _ch0=latest["chain"]; _ch0=_ch0[_ch0["expiry"]==exps[0]] if "expiry" in _ch0.columns else _ch0
                 fig=_book_spot_overlay(fig,bars,_lo2,_hi2,chain=_ch0,spot=float(latest["spot"]),exp=exps[0],nowv=now_naive)
             except Exception as _ox:
-                st.caption(f"spot-path overlay unavailable: {type(_ox).__name__}")
+                st.caption(f"spot-path overlay unavailable: {type(_ox).__name__}: {_ox}")
         emit("book",fig)
     if book_on:
         _bsig=repr((sel_ts.isoformat(),b_mode,b_side,bool(b_dots),bool(b_strad),bool(b_sqrt),bool(b_spot),int(len(bars) if bars is not None else 0),bool(GBT_SIGNED),round(float(st.session_state.get("book_zoom",1.0)),3),round(window_pct,5),len(st.session_state.snaps)))
@@ -2724,6 +2740,8 @@ with tab_intv:
     i_top=_ic2.slider("Top strikes",5,40,25,5,key="intv_topn")
     i_cum=_ic3.checkbox("Cumulative (Raw)",value=True,key="intv_cum",
                         help="Off = per-bucket (their Difference mode).")
+    i_rth=_ic3.checkbox("RTH only (9:30–16:00)",value=True,key="intv_rth",
+                        help="Display window only — cumulative still integrates the full fetched span (pre-market included).")
     def _render_intv():
         _sn=st.session_state.get("snaps") or []
         if not any(s.get("book") is not None for s in _sn):   # synthetic boot snap has no book
@@ -2752,6 +2770,8 @@ with tab_intv:
                    ("DEX",_interval_state_rows(_sn,"DEX",bool(GBT_SIGNED),GBT_UNSEEDED_W))]
             src_tag="state · 1 bucket = 1 snapshot · 0 API"
         for _nm,_dd in panes:
+            if i_rth and len(_dd):        # trim display AFTER integration (cumulative stays honest)
+                _dd=_dd[(_dd["ts"].dt.time>=dt.time(9,25))&(_dd["ts"].dt.time<=dt.time(16,5))]
             fig,ax=plt.subplots(figsize=(16,5.4)); fig.patch.set_facecolor(DARK); ax.set_facecolor(DARK)
             vmax,_ktop=_intv_draw(ax,_dd,i_top)
             try:
@@ -2759,11 +2779,15 @@ with tab_intv:
                     ax.plot(pd.to_datetime(bars["t"]),pd.to_numeric(bars["c"],errors="coerce"),
                             color="white",lw=1.3,alpha=0.95,zorder=6)
             except Exception: pass
-            try:
+            try:      # axis formatting stands alone — must survive any neighbor failing
                 import matplotlib.dates as _md
-                _op=pd.Timestamp(now_naive.date()).replace(hour=9,minute=30)
-                ax.axvline(_op,color="#888",ls="--",lw=0.9)
                 ax.xaxis.set_major_formatter(_md.DateFormatter("%H:%M"))
+            except Exception: pass
+            try:      # 9:30 ET open marker — anchored to the DATA's own date (server-tz immune)
+                _dref=_dd["ts"].max() if len(_dd) else now_naive
+                _op=pd.Timestamp(_dref).normalize().replace(hour=9,minute=30)
+                ax.axvline(_op,color="#888",ls="--",lw=0.9)
+                ax.text(_op,ax.get_ylim()[1]," Market Open",color="#999",fontsize=7,va="top")
             except Exception: pass
             if _ktop: ax.set_ylim(min(_ktop)-10,max(_ktop)+10)
             else: ax.set_ylim(_l,_h)
@@ -2774,6 +2798,7 @@ with tab_intv:
             emit("interval",fig)
     _isig=repr((sel_ts.isoformat(),st.session_state.get("intv_src"),st.session_state.get("intv_scope"),
                 int(st.session_state.get("intv_topn") or 25),bool(st.session_state.get("intv_cum")),
+                bool(st.session_state.get("intv_rth",True)),
                 bool(GBT_SIGNED),len(st.session_state.get("snaps") or []),
                 int(len(bars) if bars is not None else 0)))
     dispatch("interval",_render_intv,sig=_isig)
