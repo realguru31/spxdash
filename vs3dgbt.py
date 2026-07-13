@@ -1,6 +1,17 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.4
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.5
 
+vGBT-0.9.5 [NO-REPAINT BURSTS — trader audit fix]
+  • Cooldown is now CAUSAL: first minute over threshold LOCKS the event; later
+    minutes inside the 5-min window are suppressed, never promoted. A printed
+    dot is immutable (old peak-per-window could move it).
+  • Ranked top-12 cap DELETED (could retroactively erase a printed dot hours
+    later). Replaced by a chronological sanity ceiling (50, never ranked)
+    that can only stop NEW dots, never remove old ones.
+  • Burst-logic expander removed from the page (per user).
+  • Harness: incremental-stream gate proves the printed set only ever grows.
+  • Latency unchanged: dot prints 1–6 min after the burst minute begins
+    (minute close + 5-min cache).
 vGBT-0.9.4 [BURST SENSITIVITY SLIDER]
   • Burst z-threshold slider (2.0–6.0, step 0.5, default 3.0) beside the
     controls. The z SERIES is cached; threshold + cooldown + cap now apply at
@@ -2111,7 +2122,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.4 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.5 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -2527,7 +2538,7 @@ def _intv_ylim(ktop, lo, hi, bars):
 IV2_TICKERS=("SPX","SPY","NDX","QQQ")
 IV2_CLEAN=["AUTO","AUCT","ISO","AUCT_ISO","M2S_AUTO"]   # single-leg: boxes/rolls out
 IV2_EDGE=("09:40","15:50"); IV2_ZWIN=60; IV2_ZMIN=20; IV2_ZTHR=3.0
-IV2_COOL=5; IV2_CAP=12; IV2_TOP=5; IV2_PAD=0.006
+IV2_COOL=5; IV2_CAP=50; IV2_TOP=5; IV2_PAD=0.006   # CAP: chronological sanity ceiling, never ranked
 IV2_POS="dodgerblue"; IV2_NEG="crimson"
 IV2_RING_C="#2eff8a"; IV2_RING_P="#ff7300"; IV2_FILL="#ff9f1a"
 
@@ -2566,15 +2577,17 @@ def _iv2_imap(tk,greek,ref,zero_dte=False):
     return o[["ts","strike","val","gross"]]
 
 def _iv2_burst_reduce(raw):
-    """cooldown collapse (peak-per-IV2_COOL-min) + top-IV2_CAP by z."""
+    """CAUSAL event lock (vGBT-0.9.5, no-repaint): the FIRST minute over
+    threshold locks the event; later minutes inside IV2_COOL are suppressed,
+    never promoted — a printed dot is immutable. IV2_CAP is a chronological
+    sanity ceiling (stops NEW dots, never removes printed ones); never ranked."""
     keep=[]
-    for t,r in raw.sort_index().iterrows():
-        if keep and (t-keep[-1][0])<=pd.Timedelta(minutes=IV2_COOL):
-            if r["z"]>keep[-1][1]["z"]: keep[-1]=(t,r)
-        else: keep.append((t,r))
-    ev=pd.DataFrame({t:r for t,r in keep}).T if keep else raw.iloc[0:0]
-    return ev.sort_values("z",ascending=False).head(IV2_CAP).sort_index()
-
+    for t, r in raw.sort_index().iterrows():
+        if keep and (t - keep[-1][0]) <= pd.Timedelta(minutes=IV2_COOL):
+            continue                     # first trigger locked; no promotion
+        keep.append((t, r))
+        if len(keep) >= IV2_CAP: break   # ceiling: chronological, never ranked
+    return pd.DataFrame({t: r for t, r in keep}).T if keep else raw.iloc[0:0]
 def _iv2_bursts(tk, zero_dte=False):
     """CLEAN premium/min → log-z on RTH-only baseline (abs MAD floor 0.05 —
     scale-invariant across tickers) → edge-trim → reduce. NET_PREMIUM=CENTS."""
@@ -2647,12 +2660,6 @@ def _render_intv2():
     _top=_c3.selectbox("Top strikes",[5,10],index=0,key="iv2_top")
     _zthr=_c4.slider("Burst z ≥",2.0,6.0,float(IV2_ZTHR),0.5,key="iv2_zthr",
                      help="Lower = more dots. Applied at draw time — instant, no refetch.")
-    with st.expander("Burst logic (sensitivity chain)"):
-        st.markdown("clean single-leg premium/min → **log-z** vs 60-min rolling "
-            "median (MAD floor 0.05, RTH-only baseline, edges 09:40–15:50 dropped) "
-            "→ **z ≥ slider** → peak-per-5-min cooldown → top-12 cap. Relative per "
-            "day: each session fires against its own baseline, so violent days "
-            "don't inherently print more. Ring: green = call-led, orange = put-led.")
     _zd=_scope!="All expiries"
     _now=dt.datetime.now()
     _ck=f"iv2_{_now.strftime('%Y%m%d_%H')}_{_now.minute//5}_{_scope}"
