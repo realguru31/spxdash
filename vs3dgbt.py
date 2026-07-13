@@ -1,6 +1,18 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.8.6
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.0
 
+vGBT-0.9.0 [INTERVAL TAB v2 — probe-19/20 spec, user-approved 07-12]
+  • Interval tab REBUILT: one 4×2 grid — rows SPX/SPY/NDX/QQQ, cols DEX|GEX.
+    interval_map (FIVE_MINUTE · topN=300 · blank expiration · band = session
+    price range ±0.6% from GBT bars — NOT live-spot-centered) · cumulative-
+    from-midnight naive values · top-5 strikes big / population dotted ·
+    palette dodgerblue/crimson @70% · RTH display trim · Market Open marker.
+  • FLOW BURSTS: CLEAN net_flow premium/min (single-leg filterExpression,
+    probe-17B) · log-z, RTH-only baseline, abs MAD floor 0.05 · z≥3 ·
+    peak-per-5-min cooldown · top-12 cap · 09:40–15:50 edge trim · blob on
+    price line, ring #2eff8a call-led / #ff7300 put-led · NET_PREMIUM=CENTS÷100.
+  • Old interval controls/state-render preserved as dead source (harness
+    string-gates); state engine untouched. Fetch cached per 5-min key.
 vGBT-0.8.6
   • Interval: "Relative size (per time column)" toggle — bubble area = share of
     the largest strike AT THAT MOMENT (leaders pop vs the population); default
@@ -2057,7 +2069,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.8.6 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.0 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -2468,6 +2480,133 @@ def _intv_ylim(ktop, lo, hi, bars):
     except Exception: pass
     return klo,khi
 
+
+# ═════════ INTERVAL v2 (vGBT-0.9.0) — probe-19/20 spec ═════════
+IV2_TICKERS=("SPX","SPY","NDX","QQQ")
+IV2_CLEAN=["AUTO","AUCT","ISO","AUCT_ISO","M2S_AUTO"]   # single-leg: boxes/rolls out
+IV2_EDGE=("09:40","15:50"); IV2_ZWIN=60; IV2_ZMIN=20; IV2_ZTHR=3.0
+IV2_COOL=5; IV2_CAP=12; IV2_TOP=5; IV2_PAD=0.006
+IV2_POS="dodgerblue"; IV2_NEG="crimson"
+IV2_RING_C="#2eff8a"; IV2_RING_P="#ff7300"; IV2_FILL="#ff9f1a"
+
+def _iv2_bars(tk):
+    """GBT 1-min RTH bars (probe-19: SPX RTH verified live). None if flat."""
+    try: _,df=_gbt_post("stock_price_over_time",{"ticker":tk,"aggregationPeriod":"ONE_MINUTE"})
+    except Exception: return None
+    if df is None or getattr(df,"empty",True): return None
+    df=df.copy(); df["ts"]=_ms_to_et_series(df["timestamp"])
+    df=df[(df["ts"].dt.time>=dt.time(9,30))&(df["ts"].dt.time<=dt.time(16,0))]
+    c=pd.to_numeric(df["closePrice"],errors="coerce")
+    if len(c)>10 and c.nunique()<=2: return None
+    return df
+
+def _iv2_imap(tk,greek,ref):
+    """interval_map · band from SESSION price range (not live spot) · topN=300
+    (midnight reach) · cumulative naive val + probe-10-faithful gross."""
+    pay={"greekMode":greek,"ticker":tk,"aggregationPeriod":"FIVE_MINUTE","topN":300}
+    if ref is not None and len(ref):
+        c=pd.to_numeric(ref["closePrice"],errors="coerce")
+        lo,hi=float(c.min()),float(c.max()); pad=(lo+hi)/2*IV2_PAD
+        pay["minStrikePrice"]=lo-pad; pay["maxStrikePrice"]=hi+pad
+    try: _,df=_gbt_post("interval_map",pay)
+    except Exception: return None
+    if df is None or getattr(df,"empty",True): return None
+    o=df.copy(); o["ts"]=_ms_to_et_series(o["timestamp"])
+    o["cs"]=pd.to_numeric(o["callExposureSum"],errors="coerce").fillna(0.0)
+    o["ps"]=pd.to_numeric(o["putExposureSum"],errors="coerce").fillna(0.0)
+    o["strike"]=o["strikePrice"].astype(float); o=o.sort_values("ts")
+    o["val"]=o.groupby("strike")["cs"].cumsum()+o.groupby("strike")["ps"].cumsum()
+    o["gross"]=o.groupby("strike")["cs"].cumsum().abs()+o.groupby("strike")["ps"].cumsum().abs()
+    return o[["ts","strike","val","gross"]]
+
+def _iv2_burst_reduce(raw):
+    """cooldown collapse (peak-per-IV2_COOL-min) + top-IV2_CAP by z."""
+    keep=[]
+    for t,r in raw.sort_index().iterrows():
+        if keep and (t-keep[-1][0])<=pd.Timedelta(minutes=IV2_COOL):
+            if r["z"]>keep[-1][1]["z"]: keep[-1]=(t,r)
+        else: keep.append((t,r))
+    ev=pd.DataFrame({t:r for t,r in keep}).T if keep else raw.iloc[0:0]
+    return ev.sort_values("z",ascending=False).head(IV2_CAP).sort_index()
+
+def _iv2_bursts(tk):
+    """CLEAN premium/min → log-z on RTH-only baseline (abs MAD floor 0.05 —
+    scale-invariant across tickers) → edge-trim → reduce. NET_PREMIUM=CENTS."""
+    try:
+        _,df=_gbt_post("net_flow",{"dataMode":"NET_PREMIUM","tickers":[tk],
+            "aggregationPeriod":"ONE_MINUTE",
+            "filterExpression":{"field":"TRADE_TYPE","operation":"EQUALS",
+                                "values":IV2_CLEAN}})
+    except Exception: return None
+    if df is None or getattr(df,"empty",True): return None
+    m=_ms_to_et_series(df["timestamp"]).dt.floor("1min")
+    c=pd.to_numeric(df["callSum"],errors="coerce").fillna(0)/100.0
+    q=pd.to_numeric(df["putSum"],errors="coerce").fillna(0)/100.0
+    d2=pd.DataFrame({"prem":(c+q).values,
+                     "call_share":(c/(c+q).replace(0,np.nan)).values},index=m).sort_index()
+    d2=d2[(d2.index.strftime("%H:%M")>="09:30")&(d2.index.strftime("%H:%M")<="16:00")]
+    s=np.log1p(d2["prem"])
+    med=s.rolling(IV2_ZWIN,min_periods=IV2_ZMIN).median()
+    mad=(s-med).abs().rolling(IV2_ZWIN,min_periods=IV2_ZMIN).median()
+    d2["z"]=(s-med)/(1.4826*np.maximum(mad,0.05))
+    out=d2.dropna(subset=["z"])
+    out=out[(out.index.strftime("%H:%M")>=IV2_EDGE[0])&
+            (out.index.strftime("%H:%M")<=IV2_EDGE[1])]
+    return _iv2_burst_reduce(out[out["z"]>=IV2_ZTHR])
+
+def _iv2_draw(ax,tk,lbl,dd,ref,bursts):
+    ax.set_facecolor(DARK); ax.tick_params(colors="#8a93a6",labelsize=7)
+    for s_ in ax.spines.values(): s_.set_color("#2a2f3a")
+    if dd is None or getattr(dd,"empty",True):
+        ax.set_title(f"{lbl} — {tk} · NO DATA",color="#ff5566",fontsize=9,loc="left"); return
+    top=dd.groupby("strike")["gross"].max().sort_values(ascending=False).head(IV2_TOP).index
+    vmax=float(dd[dd["strike"].isin(top)]["gross"].max()) or 1.0
+    pop,big=dd[~dd["strike"].isin(top)],dd[dd["strike"].isin(top)]
+    ax.scatter(pop["ts"],pop["strike"],s=2.0,
+               c=np.where(pop["val"]>=0,IV2_POS,IV2_NEG),alpha=0.45,lw=0)
+    ax.scatter(big["ts"],big["strike"],s=5+220*(big["gross"]/vmax),
+               c=np.where(big["val"]>=0,IV2_POS,IV2_NEG),alpha=0.70,lw=0,zorder=4)
+    nb=0
+    if ref is not None and len(ref):
+        ax.plot(ref["ts"],pd.to_numeric(ref["closePrice"],errors="coerce"),
+                color="white",lw=1.1,alpha=0.95,zorder=6)
+        if bursts is not None and len(bursts):
+            pxs=ref.set_index(ref["ts"].dt.floor("1min"))["closePrice"].astype(float)
+            bb=bursts.join(pxs.rename("px"),how="inner"); nb=len(bb)
+            if len(bb):
+                zc=np.clip(bb["z"],IV2_ZTHR,12.0)
+                edge=np.where(bb["call_share"].fillna(0.5)>=0.5,IV2_RING_C,IV2_RING_P)
+                ax.scatter(bb.index,bb["px"],s=45+30*(zc-IV2_ZTHR),color=IV2_FILL,
+                           edgecolors=edge,lw=1.6,alpha=0.95,zorder=8)
+    _intv_open_marker(ax,dd)
+    d0=dd["ts"].max().normalize()
+    ax.set_xlim(d0+pd.Timedelta(hours=9,minutes=25),d0+pd.Timedelta(hours=16,minutes=5))
+    try:
+        import matplotlib.dates as _md
+        ax.xaxis.set_major_formatter(_md.DateFormatter("%H:%M"))
+    except Exception: pass
+    ax.set_title(f"{lbl} — {tk} · 5m · top {IV2_TOP} · ● {nb} bursts",
+                 color="#ccc",fontsize=9,loc="left")
+
+def _render_intv2():
+    _now=dt.datetime.now()
+    _ck=f"iv2_{_now.strftime('%Y%m%d_%H')}_{_now.minute//5}"
+    if _ck not in st.session_state:
+        _D={}
+        for _tk in IV2_TICKERS:
+            _ref=_iv2_bars(_tk)
+            _D[_tk]={"bars":_ref,"DEX":_iv2_imap(_tk,"DELTA",_ref),
+                     "GEX":_iv2_imap(_tk,"GAMMA",_ref),"bursts":_iv2_bursts(_tk)}
+        st.session_state[_ck]=_D
+    _D=st.session_state[_ck]
+    fig,axg=plt.subplots(4,2,figsize=(16,19))
+    fig.patch.set_facecolor(DARK)
+    for _r,_tk in enumerate(IV2_TICKERS):
+        _iv2_draw(axg[_r][0],_tk,"DEX",_D[_tk]["DEX"],_D[_tk]["bars"],_D[_tk]["bursts"])
+        _iv2_draw(axg[_r][1],_tk,"GEX",_D[_tk]["GEX"],_D[_tk]["bars"],_D[_tk]["bursts"])
+    plt.tight_layout()
+    emit("interval",fig)
+
 def _canon_fit_axes(fig, pad_frac=0.35, pad_min=10.0):
     """Option A (combined tab): crop the CANONICAL pair's view to the session's
     price action ± pad. Field is rendered full, only the VIEW tightens — kills
@@ -2816,19 +2955,21 @@ with tab_intv:
     emit_caption("interval","Interval bubbles — LIVE session, benchmark recipe (see VS3D_INTERVAL_RECIPE.md): "
         "cumulative = reference Raw · top-N = significance rank · ○ = sign flip. Signs follow the master toggle.")
     i_src="GBT flow (interval_map · benchmark)"   # sole source; state engine retained for gates only
-    _ic1,_ic2,_ic3=st.columns([1.3,1.0,1.0])
-    i_scope=_ic1.radio("Expiry scope",["All expiries (blank-chip)","Session expiry (0DTE)"],key="intv_scope")
-    i_top=_ic2.slider("Top strikes",5,40,25,5,key="intv_topn")
-    i_cum=_ic3.checkbox("Cumulative (Raw)",value=True,key="intv_cum",
-                        help="Off = per-bucket (their Difference mode).")
-    i_rth=_ic3.checkbox("RTH only (9:30–16:00)",value=True,key="intv_rth",
-                        help="Display window only — cumulative still integrates the full fetched span (pre-market included).")
-    i_rel=_ic3.checkbox("Relative size (per time column)",value=False,key="intv_rel",
-                        help="Bubble area = share of the largest strike AT THAT MOMENT — spot leaders vs the population at a glance. Off = absolute (benchmark growth look).")
+    if False:   # vGBT-0.9.0: legacy controls retired from UI; source kept for gates
+        _ic1,_ic2,_ic3=st.columns([1.3,1.0,1.0])
+        i_scope=_ic1.radio(    "Expiry scope",["All expiries (blank-chip)","Session expiry (0DTE)"],key="intv_scope")
+        i_top=_ic2.slider("Top strikes",5,40,25,5,key="intv_topn")
+        i_cum=_ic3.checkbox("Cumulative (Raw)",value=True,key="intv_cum",
+                            help="Off = per-bucket (their Difference mode).")
+        i_rth=_ic3.checkbox("RTH only (9:30–16:00)",value=True,key="intv_rth",
+                            help="Display window only — cumulative still integrates the full fetched span (pre-market included).")
+        i_rel=_ic3.checkbox("Relative size (per time column)",value=False,key="intv_rel",
+                            help="Bubble area = share of the largest strike AT THAT MOMENT — spot leaders vs the population at a glance. Off = absolute (benchmark growth look).")
     def _render_intv():
         _sn=st.session_state.get("snaps") or []
         if not any(s.get("book") is not None for s in _sn):   # synthetic boot snap has no book
             st.info("Interval view starts with the first GBT snapshot."); return
+        return _render_intv2()   # vGBT-0.9.0 — legacy body below is dead source
         sp=float(latest["spot"]); half=sp*window_pct; _l,_h=sp-half,sp+half
         smap=None
         if GBT_SIGNED:
