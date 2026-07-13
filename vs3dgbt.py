@@ -1,6 +1,12 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.0
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.1
 
+vGBT-0.9.1 [EXPIRY RESOLVER — weekend/holiday fix]
+  • Snapshot no longer assumes today's date is a listed expiry (Sunday/holiday
+    → heat calls hit a nonexistent expiry → empty chain → 'all quotes dead').
+    _gbt_next_expiry(): open_interest_by_expiration → first expiration ≥ today
+    (falls back to today's date string on any API failure = old behavior).
+    Weekend snapshots now show the latest session's state for the NEXT expiry.
 vGBT-0.9.0 [INTERVAL TAB v2 — probe-19/20 spec, user-approved 07-12]
   • Interval tab REBUILT: one 4×2 grid — rows SPX/SPY/NDX/QQQ, cols DEX|GEX.
     interval_map (FIVE_MINUTE · topN=300 · blank expiration · band = session
@@ -1943,14 +1949,32 @@ def gbt_dsign_map(exp,strikes,spot,nvol=None):
             if tot>0: out[(kf,typ)]=float(np.clip(-net/tot,-1.0,1.0))
     return out
 
+def _pick_next_exp(dates, today_s):
+    """Pure picker: first expiration date-string >= today; None if none."""
+    c=sorted(d for d in dates if isinstance(d,str) and d>=today_s)
+    return c[0] if c else None
+
+def _gbt_next_expiry():
+    """Resolve the session expiry from the API's own expiration list (vGBT-0.9.1).
+    Sunday/holiday-safe: today has no listed expiry -> next one. Fallback =
+    today's date string (pre-0.9.1 behavior) so a failed call can't brick us."""
+    t=today_est().strftime("%Y-%m-%d")
+    try:
+        _,df=_gbt_post("open_interest_by_expiration",{"ticker":"SPX"})
+        if df is not None and not df.empty and "expirationDate" in df.columns:
+            e=_pick_next_exp(df["expirationDate"].astype(str).tolist(), t)
+            if e: return e
+    except Exception: pass
+    return t
+
 def gbt_snapshot_frame(window_pct):
     """One snapshot: wide exposure (spot from preamble + Book bars) then 8 heat calls."""
+    exp=_gbt_next_expiry()   # 0.9.1: next LISTED expiry (weekend/holiday-safe)
     meta,expo=_gbt_post("exposure_by_strike",{"greekMode":"GAMMA","representationMode":"PER_ONE_DOLLAR_MOVE",
-        "ticker":"SPX","expirationDates":[today_est().strftime("%Y-%m-%d")],
+        "ticker":"SPX","expirationDates":[exp],
         "strikePriceRange":{"min":5000,"max":9500}})
     spot=float(meta.get("SPX.stockPrice") or 0.0)
     if not spot: raise RuntimeError("GBT spot missing from exposure preamble")
-    exp=today_est().strftime("%Y-%m-%d")
     lo,hi=round(spot*(1-window_pct)/5)*5,round(spot*(1+window_pct)/5)*5
     H=lambda m:_gbt_post("heat_map",{"dataMode":m,"ticker":"SPX","expirationDates":[exp],
         "strikePriceRange":{"min":lo,"max":hi}})[1]
@@ -2069,7 +2093,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.0 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.1 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
