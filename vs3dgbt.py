@@ -1,15 +1,24 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.2
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.4
 
-vGBT-0.9.2 [INTERVAL SCOPE TOGGLE — probe-21 decision deferred to live monitoring]
-  • Interval tab gains ONE control: Scope radio — "All expiries" (probe-19
-    benchmark) · "0DTE only" (probe-21: walls hug the tape; NDX flush burst
-    only visible here) · "0DTE + monuments" (default) = 0DTE bubbles/bursts
-    with dashed reference lines at the top-5 STANDING-OI strikes
-    (open_interest_by_strike, all expirations — a monument IS an OI mountain).
-  • Scope plumbs into interval_map (expirationDate), burst net_flow
-    (expirationDates), the 5-min cache key, and the dispatch signature.
-  • _gbt_next_expiry(tk) generalized per ticker (snapshot call unchanged).
+vGBT-0.9.4 [BURST SENSITIVITY SLIDER]
+  • Burst z-threshold slider (2.0–6.0, step 0.5, default 3.0) beside the
+    controls. The z SERIES is cached; threshold + cooldown + cap now apply at
+    DRAW time — slider responds instantly, zero refetch. Sensitivity chain
+    (documented in-tab expander): log-z vs 60-min rolling median (MAD floor
+    0.05, RTH baseline, edge-trim 09:40–15:50) → z≥slider → peak-per-5-min
+    cooldown → top-12 cap. Detector is RELATIVE per day — violent and quiet
+    days each fire against their own baseline.
+vGBT-0.9.3 [INTERVAL v2 FINAL CONTROLS — user spec 07-12]
+  • Scope radio: "All expiries" | "0DTE only" (default 0DTE) — plumbs into
+    interval_map expirationDate + burst net_flow expirationDates via the
+    per-ticker resolver; scope in cache key + dispatch sig.
+  • RTH display checkbox (display-only; cumulative always integrates from
+    midnight; continuous shows SPX overnight bubbles).
+  • Top-strikes dropdown 5|10 (draw-time only — no refetch).
+  • NO staleness guard (latest available session shows as-is, per user).
+    Monuments dropped ("All expiries" one click away). Panels taller (16×26),
+    ticker titles 13pt bold.
 vGBT-0.9.1 [EXPIRY RESOLVER — weekend/holiday fix]
   • Snapshot no longer assumes today's date is a listed expiry (Sunday/holiday
     → heat calls hit a nonexistent expiry → empty chain → 'all quotes dead').
@@ -2102,7 +2111,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.2 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.4 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -2522,25 +2531,7 @@ IV2_COOL=5; IV2_CAP=12; IV2_TOP=5; IV2_PAD=0.006
 IV2_POS="dodgerblue"; IV2_NEG="crimson"
 IV2_RING_C="#2eff8a"; IV2_RING_P="#ff7300"; IV2_FILL="#ff9f1a"
 
-IV2_SCOPES=("All expiries","0DTE only","0DTE + monuments")
-
-def _iv2_monuments(tk, ref):
-    """Top-5 STANDING-OI strikes inside the display band (all expirations)."""
-    try: _,df=_gbt_post("open_interest_by_strike",{"ticker":tk})
-    except Exception: return []
-    if df is None or getattr(df,"empty",True): return []
-    d=df.copy(); d["k"]=pd.to_numeric(d["strikePrice"],errors="coerce")
-    d["oi"]=pd.to_numeric(d["callOpenInterest"],errors="coerce").fillna(0)+            pd.to_numeric(d["putOpenInterest"],errors="coerce").fillna(0)
-    if ref is not None and len(ref):
-        c=pd.to_numeric(ref["closePrice"],errors="coerce")
-        lo,hi=float(c.min()),float(c.max()); pad=(lo+hi)/2*IV2_PAD
-        d=d[(d["k"]>=lo-pad)&(d["k"]<=hi+pad)]
-    return _iv2_top_oi(d)
-
-def _iv2_top_oi(d, n=5):
-    """Pure picker: top-n strikes by total OI (harness-gated)."""
-    if d is None or not len(d): return []
-    return sorted(d.sort_values("oi",ascending=False).head(n)["k"].astype(float).tolist())
+IV2_SCOPES=("All expiries","0DTE only")
 
 def _iv2_bars(tk):
     """GBT 1-min RTH bars (probe-19: SPX RTH verified live). None if flat."""
@@ -2609,14 +2600,15 @@ def _iv2_bursts(tk, zero_dte=False):
     out=d2.dropna(subset=["z"])
     out=out[(out.index.strftime("%H:%M")>=IV2_EDGE[0])&
             (out.index.strftime("%H:%M")<=IV2_EDGE[1])]
-    return _iv2_burst_reduce(out[out["z"]>=IV2_ZTHR])
+    return out          # full z frame; threshold/cooldown/cap applied at DRAW time
 
-def _iv2_draw(ax,tk,lbl,dd,ref,bursts,monuments=None):
-    ax.set_facecolor(DARK); ax.tick_params(colors="#8a93a6",labelsize=7)
+def _iv2_draw(ax,tk,lbl,dd,ref,bursts,rth=True,topn=IV2_TOP,zthr=IV2_ZTHR):
+    ax.set_facecolor(DARK); ax.tick_params(colors="#8a93a6",labelsize=9)
     for s_ in ax.spines.values(): s_.set_color("#2a2f3a")
     if dd is None or getattr(dd,"empty",True):
-        ax.set_title(f"{lbl} — {tk} · NO DATA",color="#ff5566",fontsize=9,loc="left"); return
-    top=dd.groupby("strike")["gross"].max().sort_values(ascending=False).head(IV2_TOP).index
+        ax.set_title(f"{lbl} — {tk} · NO DATA",color="#ff5566",
+                     fontsize=13,fontweight="bold",loc="left"); return
+    top=dd.groupby("strike")["gross"].max().sort_values(ascending=False).head(int(topn)).index
     vmax=float(dd[dd["strike"].isin(top)]["gross"].max()) or 1.0
     pop,big=dd[~dd["strike"].isin(top)],dd[dd["strike"].isin(top)]
     ax.scatter(pop["ts"],pop["strike"],s=2.0,
@@ -2628,28 +2620,40 @@ def _iv2_draw(ax,tk,lbl,dd,ref,bursts,monuments=None):
         ax.plot(ref["ts"],pd.to_numeric(ref["closePrice"],errors="coerce"),
                 color="white",lw=1.1,alpha=0.95,zorder=6)
         if bursts is not None and len(bursts):
+            _ev=_iv2_burst_reduce(bursts[bursts["z"]>=float(zthr)])
             pxs=ref.set_index(ref["ts"].dt.floor("1min"))["closePrice"].astype(float)
-            bb=bursts.join(pxs.rename("px"),how="inner"); nb=len(bb)
+            bb=_ev.join(pxs.rename("px"),how="inner"); nb=len(bb)
             if len(bb):
-                zc=np.clip(bb["z"],IV2_ZTHR,12.0)
+                zc=np.clip(bb["z"],float(zthr),12.0)
                 edge=np.where(bb["call_share"].fillna(0.5)>=0.5,IV2_RING_C,IV2_RING_P)
                 ax.scatter(bb.index,bb["px"],s=45+30*(zc-IV2_ZTHR),color=IV2_FILL,
                            edgecolors=edge,lw=1.6,alpha=0.95,zorder=8)
-    for _mk in (monuments or []):
-        ax.axhline(float(_mk),color="#8899aa",ls="--",lw=0.9,alpha=0.6,zorder=2)
     _intv_open_marker(ax,dd)
     d0=dd["ts"].max().normalize()
-    ax.set_xlim(d0+pd.Timedelta(hours=9,minutes=25),d0+pd.Timedelta(hours=16,minutes=5))
+    if rth:
+        ax.set_xlim(d0+pd.Timedelta(hours=9,minutes=25),d0+pd.Timedelta(hours=16,minutes=5))
     try:
         import matplotlib.dates as _md
         ax.xaxis.set_major_formatter(_md.DateFormatter("%H:%M"))
     except Exception: pass
-    ax.set_title(f"{lbl} — {tk} · 5m · top {IV2_TOP} · ● {nb} bursts",
-                 color="#ccc",fontsize=9,loc="left")
+    ax.set_title(f"{lbl} — {tk} · 5m · top {int(topn)} · ● {nb} bursts z≥{float(zthr):g}",
+                 color="#e8eef8",fontsize=13,fontweight="bold",loc="left")
 
 def _render_intv2():
-    _scope=st.radio("Scope",IV2_SCOPES,index=2,horizontal=True,key="iv2_scope")
-    _zd=_scope!="All expiries"; _mon=_scope=="0DTE + monuments"
+    _c1,_c2,_c3,_c4=st.columns([1.6,0.9,0.7,1.2])
+    _scope=_c1.radio("Scope",IV2_SCOPES,index=1,horizontal=True,key="iv2_scope")
+    _rth=_c2.checkbox("RTH display (9:30–16:00)",value=True,key="iv2_rth",
+                      help="Display window only — cumulative always integrates from midnight.")
+    _top=_c3.selectbox("Top strikes",[5,10],index=0,key="iv2_top")
+    _zthr=_c4.slider("Burst z ≥",2.0,6.0,float(IV2_ZTHR),0.5,key="iv2_zthr",
+                     help="Lower = more dots. Applied at draw time — instant, no refetch.")
+    with st.expander("Burst logic (sensitivity chain)"):
+        st.markdown("clean single-leg premium/min → **log-z** vs 60-min rolling "
+            "median (MAD floor 0.05, RTH-only baseline, edges 09:40–15:50 dropped) "
+            "→ **z ≥ slider** → peak-per-5-min cooldown → top-12 cap. Relative per "
+            "day: each session fires against its own baseline, so violent days "
+            "don't inherently print more. Ring: green = call-led, orange = put-led.")
+    _zd=_scope!="All expiries"
     _now=dt.datetime.now()
     _ck=f"iv2_{_now.strftime('%Y%m%d_%H')}_{_now.minute//5}_{_scope}"
     if _ck not in st.session_state:
@@ -2658,17 +2662,16 @@ def _render_intv2():
             _ref=_iv2_bars(_tk)
             _D[_tk]={"bars":_ref,"DEX":_iv2_imap(_tk,"DELTA",_ref,zero_dte=_zd),
                      "GEX":_iv2_imap(_tk,"GAMMA",_ref,zero_dte=_zd),
-                     "bursts":_iv2_bursts(_tk,zero_dte=_zd),
-                     "mons":(_iv2_monuments(_tk,_ref) if _mon else [])}
+                     "bursts":_iv2_bursts(_tk,zero_dte=_zd)}
         st.session_state[_ck]=_D
     _D=st.session_state[_ck]
-    fig,axg=plt.subplots(4,2,figsize=(16,19))
+    fig,axg=plt.subplots(4,2,figsize=(16,26))
     fig.patch.set_facecolor(DARK)
     for _r,_tk in enumerate(IV2_TICKERS):
         _iv2_draw(axg[_r][0],_tk,"DEX",_D[_tk]["DEX"],_D[_tk]["bars"],
-                  _D[_tk]["bursts"],monuments=_D[_tk]["mons"])
+                  _D[_tk]["bursts"],rth=bool(_rth),topn=int(_top),zthr=float(_zthr))
         _iv2_draw(axg[_r][1],_tk,"GEX",_D[_tk]["GEX"],_D[_tk]["bars"],
-                  _D[_tk]["bursts"],monuments=_D[_tk]["mons"])
+                  _D[_tk]["bursts"],rth=bool(_rth),topn=int(_top),zthr=float(_zthr))
     plt.tight_layout()
     emit("interval",fig)
 
@@ -3077,7 +3080,7 @@ with tab_intv:
             ax.set_title(f"Interval ({_nm}) — {badge} · {src_tag} · size=gross{'·rel' if i_rel else ''} · top {int(i_top)} · maxbubble={vmax:,.0f} · ○=flip",
                          color="#ccc",fontsize=10,loc="left")
             emit("interval",fig)
-    _isig=repr((sel_ts.isoformat(),st.session_state.get("iv2_scope"),st.session_state.get("intv_scope"),
+    _isig=repr((sel_ts.isoformat(),st.session_state.get("iv2_scope"),st.session_state.get("iv2_rth"),st.session_state.get("iv2_top"),st.session_state.get("iv2_zthr"),st.session_state.get("intv_scope"),
                 int(st.session_state.get("intv_topn") or 25),bool(st.session_state.get("intv_cum")),
                 bool(st.session_state.get("intv_rth",True)),bool(st.session_state.get("intv_rel",False)),
                 bool(GBT_SIGNED),len(st.session_state.get("snaps") or []),
