@@ -1,6 +1,9 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.7
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.7b
 
+vGBT-0.9.7b [POWER FLOOR] — Power exponent slider min 0.4→0.1 (VS3D runs
+  0.20; exponents <1 boost LOW values, which is what blooms shallow pockets:
+  a 1%-of-cap pocket renders 0.16 at ^0.4 but 0.40 at ^0.2). One-line change.
 vGBT-0.9.7 [VS3D GRADIENT PARITY — aggregate default, blur kill, saturation]
   • Aggregate (guide-spec §2) is now the DEFAULT field mode; per-strike renamed
     "Per-strike ladder (exploration)" — the old label calling the ladder the
@@ -2153,7 +2156,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.7 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.7b · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -2227,7 +2230,7 @@ with st.sidebar.expander("🗺 Terrain controls", expanded=False):
         help="Manual (guide §2.4): fixed symmetric cap so a loose day LOOKS loose. Percentile rescales every frame.")
     t_pct=st.slider("Percentile hi",80,99,95) if t_norm=="Percentile" else 95
     t_int=st.selectbox("Intensity",["Power","Sqrt","Arcsinh"],index=0)
-    t_pow=st.slider("Power exponent",0.4,1.5,0.40,0.05,   # 0.40 default: fields span decades; linear = clipped slabs
+    t_pow=st.slider("Power exponent",0.1,1.5,0.40,0.05,   # 0.40 default: fields span decades; linear = clipped slabs
         help="§2.4: ~1 feels most natural. Low values = the 'cartoon setting' Dan warns about.")
     t_alpha=st.slider("Field opacity",0.15,1.0,0.38,0.01,help="Dan uses ~35% — field behind price.")
     t_sat=st.slider("Saturation (cap ×)",0.05,1.0,1.0,0.05,
