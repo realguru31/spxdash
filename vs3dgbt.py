@@ -1,6 +1,21 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.6
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.7
 
+vGBT-0.9.7 [VS3D GRADIENT PARITY — aggregate default, blur kill, saturation]
+  • Aggregate (guide-spec §2) is now the DEFAULT field mode; per-strike renamed
+    "Per-strike ladder (exploration)" — the old label calling the ladder the
+    "VS3D look" was backwards (guide: "continuous simulation across strike
+    space").
+  • Price-axis gaussian blur REMOVED in aggregate mode (continuous by
+    construction; the blur was a ladder-era leftover that smeared right-edge
+    0DTE needles/valleys). Ladder keeps its σ0.6.
+  • Saturation slider (cap ×0.05–1.0, default 1.0): slide left to pin the slab
+    at full color so shallow gamma dips read as dark pockets hours earlier —
+    the VS3D saturated aesthetic on demand. Display-only; the seeded cap
+    itself stays frozen (no repaint).
+  • Ridge-finder retuned for the smooth field: wider extrema window (order 6),
+    threshold 0.25×cap, max 4 ridge + 4 trough chains — VS3D draws 2-3 lines,
+    not spaghetti.
 vGBT-0.9.6 [GRADIENT NO-REPAINT — audited + harness-enforced]
   • Trader audit of the terrain gradient, verified in code: Range default =
     "Manual (fixed cap)" — zero-pinned symmetric scale, cap seeded ONCE per
@@ -99,7 +114,7 @@ vGBT-0.7.1 [VS3D VISIBILITY — layout + field mode]
   • Combined tab back to the REAL VS3D structure: Book left (1.0) · Gamma+Charm
     stacked right (2.2). Last night's full-width stacking was an overcorrection
     — one giant unusable poster. Owned and reverted to the reference layout.
-  • NEW Gamma field mode, default "Per-strike rows (VS3D look)": each strike is
+  • NEW Gamma field mode, superseded 0.9.7: Aggregate is default: each strike is
     its own horizontal band, intensity = that strike's own signed exposure at
     Γ(spot,K,τ_t). WHY: at τ≈6h/17% IV a BS gamma kernel is ±34 pts wide, so the
     guide-spec aggregate ("γ if spot were here") mathematically cannot resolve
@@ -1284,7 +1299,8 @@ def terrain_grid(chain, spot, exps, now, greek="Delta Change", vol_adj=0.0, fiel
                 Z[:,j]+= (dc*wc[None,:]).sum(1)*100 - (dp*wp[None,:]).sum(1)*100
     if greek=="Delta Change":
         Z=book_now-Z            # + = dealers BUY futures to arrive hedged there
-    Z=gaussian_filter1d(Z,(0.6 if str(field_mode).startswith("Per-strike") else 1.2),axis=0)   # rows stay crisp; aggregate keeps §2 smoothing
+    if str(field_mode).startswith("Per-strike"):
+        Z=gaussian_filter1d(Z,0.6,axis=0)   # ladder rows only; aggregate is continuous by construction (0.9.7: blur removed — it smeared 0DTE needles)
     return pg,Z,taus
 
 def terrain_scale(Z, mode, cap, pct):
@@ -1314,12 +1330,12 @@ def terrain_contours(ax, Z, x0, x1, pg, cap, zero=True, ridges=True):
                         linestyles=(0,(4,3)),alpha=.9,zorder=6)
         except Exception: pass
     if not ridges: return
-    thr=0.15*(cap or (np.abs(Z).max() or 1.0)); edge=4
+    thr=0.25*(cap or (np.abs(Z).max() or 1.0)); edge=4   # 0.9.7: smooth-field tuning
     def chains(sign):
         pts={}   # col -> list of row idx (edges excluded — border artifacts)
         for j in range(Z.shape[1]):
             colv=Z[:,j]*sign
-            idx=argrelextrema(colv,np.greater,order=3)[0]
+            idx=argrelextrema(colv,np.greater,order=6)[0]
             pts[j]=[i for i in idx if colv[i]>thr and edge<=i<Z.shape[0]-edge]
         used=set(); out=[]
         for j0 in range(Z.shape[1]):
@@ -1331,7 +1347,8 @@ def terrain_contours(ax, Z, x0, x1, pg, cap, zero=True, ridges=True):
                     if not cand: break
                     k=min(cand,key=lambda q:abs(q-i)); ch.append((j+1,k)); used.add((j+1,k)); j,i=j+1,k
                 if len(ch)>=8: out.append(ch)
-        return out
+        out.sort(key=len,reverse=True)
+        return out[:4]                       # 0.9.7: VS3D draws 2-3 lines, not spaghetti
     for ch in chains(+1):
         ax.plot([X[j] for j,_ in ch],[pg[i] for _,i in ch],color="#ff5a6a",lw=0.9,alpha=.85,zorder=6)
     for ch in chains(-1):
@@ -2136,7 +2153,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.6 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.7 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -2146,7 +2163,7 @@ window_pct=st.sidebar.slider("Price window ±%",1.0,5.0,2.0,0.5)/100.0
 smooth_frac=st.sidebar.slider("Gradient smoothing",0.0,5.0,0.25,0.25,   # 0.25 default: signed pockets are ~15-25 pts; 1.0 blurs ~75 pts and erases them
     help="0 = raw per-strike detail (bumpy, like vols3d), higher = smoother density")/100.0
 t_fieldmode=st.sidebar.selectbox("Gamma field mode",
-    ["Per-strike rows (VS3D look)","Aggregate (guide-spec §2)"],index=0,
+    ["Aggregate (guide-spec §2)","Per-strike ladder (exploration)"],index=0,
     help="Rows: each strike is its own band — 5-pt pockets/texture survive (this is what the reference chart draws). "
          "Aggregate: γ re-evaluated across price = 'gamma if spot were here'; kernels are ±30-40 pts at 0DTE morning, so structure blurs into slabs by construction.")
 # field scale controls — TOP LEVEL on purpose (v2.1.7): mid-session you must not
@@ -2213,6 +2230,8 @@ with st.sidebar.expander("🗺 Terrain controls", expanded=False):
     t_pow=st.slider("Power exponent",0.4,1.5,0.40,0.05,   # 0.40 default: fields span decades; linear = clipped slabs
         help="§2.4: ~1 feels most natural. Low values = the 'cartoon setting' Dan warns about.")
     t_alpha=st.slider("Field opacity",0.15,1.0,0.38,0.01,help="Dan uses ~35% — field behind price.")
+    t_sat=st.slider("Saturation (cap ×)",0.05,1.0,1.0,0.05,
+        help="VS3D aesthetic: slide LEFT to pin the slab at full color so shallow dips show as dark pockets. Display-only; the seeded cap stays frozen.")
     t_cont=st.checkbox("Contours (zero + ridges/troughs)",value=True)
     t_strad=st.checkbox("Straddle bounds",value=True)
     t_lvls=st.checkbox("Dealer levels overlay (Pinak)",value=True)
@@ -2885,9 +2904,10 @@ with tab_terr:
         # fixed-cap scaling (per greek, seeded once; Calibrate button re-seeds)
         capkey=f"terr_cap_{t_greek}_{t_wt}"
         seed=st.session_state.get(capkey)
-        V,used_cap=terrain_scale(Z,t_norm,seed if t_norm=="Manual (fixed cap)" else None,t_pct)
+        _sat=float(t_sat)
+        V,used_cap=terrain_scale(Z,t_norm,(seed*_sat if (seed and t_norm=="Manual (fixed cap)") else (seed if t_norm=="Manual (fixed cap)" else None)),t_pct)
         if t_norm=="Manual (fixed cap)" and seed is None:
-            st.session_state[capkey]=1.2*float(np.percentile(np.abs(Z),98)); V,used_cap=terrain_scale(Z,t_norm,st.session_state[capkey],t_pct)
+            st.session_state[capkey]=1.2*float(np.percentile(np.abs(Z),98)); V,used_cap=terrain_scale(Z,t_norm,st.session_state[capkey]*_sat,t_pct)
         _p92=float(np.percentile(np.abs(Z),92))
         st.session_state.setdefault(f"terr_hist_{t_greek}_{t_wt}",[]).append(_p92)
         if t_norm=="Manual (fixed cap)" and used_cap and (_p92>1.5*used_cap or float((np.abs(Z)>=0.999*used_cap).mean())>0.35):
