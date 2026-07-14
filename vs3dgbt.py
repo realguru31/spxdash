@@ -1,6 +1,14 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.7b
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.8
 
+vGBT-0.9.8 [MIN-INTENSITY FLOOR — build A] — "Min intensity floor" slider
+  (0-0.6, default 0): VS3D's Min-Opacity mechanism. Applied INSIDE
+  terrain_intensity after the curve: m -> floor+(1-floor)*m for m>0, exact
+  zero stays neutral, sign preserved. The faint 7527-7550 pocket the Book
+  bars showed all day now lifts into visible paint at floor~0.5 + Power 0.2.
+  Display-only: cap seeding, printed levels, bursts all untouched. (Probe23
+  killed multi-expiry-under-naive: same picture as 0DTE — far wings need a
+  positioning sign model, see probe24.)
 vGBT-0.9.7b [POWER FLOOR] — Power exponent slider min 0.4→0.1 (VS3D runs
   0.20; exponents <1 boost LOW values, which is what blooms shallow pockets:
   a 1%-of-cap pocket renders 0.16 at ^0.4 but 0.40 at ^0.2). One-line change.
@@ -1317,11 +1325,16 @@ def terrain_scale(Z, mode, cap, pct):
         sc=(2.0*np.abs(Z).std()) or 1.0
     return np.clip(Z/sc,-1,1), sc
 
-def terrain_intensity(V, kind="Power", power=1.0, gain=3.0):
+def terrain_intensity(V, kind="Power", power=1.0, gain=3.0, floor=0.0):
+    """floor (0.9.8, VS3D 'Min Opacity'): lift low-intensity paint so shallow
+    pockets stay visible — m -> floor + (1-floor)*m, sign-preserving, exact
+    zero stays neutral. Display-only; the scale cap is untouched."""
     s=np.sign(V); m=np.abs(V)
     if kind=="Sqrt": m=np.sqrt(m)
     elif kind=="Arcsinh": m=np.arcsinh(gain*m)/np.arcsinh(gain)
     else: m=np.power(m,max(power,0.05))     # Power, default 1.0 = linear (§2.4)
+    if floor>0.0:
+        m=np.where(m>0.0, floor+(1.0-floor)*m, 0.0)   # lift paint; exact zero stays neutral
     return s*m
 
 def terrain_contours(ax, Z, x0, x1, pg, cap, zero=True, ridges=True):
@@ -2156,7 +2169,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.7b · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.8 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -2233,6 +2246,8 @@ with st.sidebar.expander("🗺 Terrain controls", expanded=False):
     t_pow=st.slider("Power exponent",0.1,1.5,0.40,0.05,   # 0.40 default: fields span decades; linear = clipped slabs
         help="§2.4: ~1 feels most natural. Low values = the 'cartoon setting' Dan warns about.")
     t_alpha=st.slider("Field opacity",0.15,1.0,0.38,0.01,help="Dan uses ~35% — field behind price.")
+    t_floor=st.slider("Min intensity floor",0.0,0.6,0.0,0.05,
+        help="VS3D's 'Min Opacity': lifts low-intensity paint so shallow pockets stay visible (VS3D runs ~0.5). 0 = honest render. Display-only — the cap and printed levels are untouched.")
     t_sat=st.slider("Saturation (cap ×)",0.05,1.0,1.0,0.05,
         help="VS3D aesthetic: slide LEFT to pin the slab at full color so shallow dips show as dark pockets. Display-only; the seeded cap stays frozen.")
     t_cont=st.checkbox("Contours (zero + ridges/troughs)",value=True)
@@ -2921,7 +2936,7 @@ with tab_terr:
         if _t<dt.time(9,30) or _t>dt.time(16,0):
             st.caption("⏸ off-hours: time-to-expiry ~constant across the session axis → field is nearly "
                        "time-flat and candles are absent. Structure appears live during RTH on 0DTE.")
-        V=terrain_intensity(V,t_int,power=t_pow,gain=3.0)
+        V=terrain_intensity(V,t_int,power=t_pow,gain=3.0,floor=t_floor)
         cmap=(charm_cmap() if t_greek=="Charm" else heat_cmap() if t_greek==_GHEAVY
               else decay_cmap() if t_greek==_GDECAY else gex_cmap())
         plotV=(-V if t_greek=="Charm" else V)   # hedging-effect polarity: dealers-must-SELL renders gold (§7.7)
@@ -2986,7 +3001,7 @@ with tab_terr:
              else "orange = γ BUILDING into the close (pin energy) · purple = fading" if t_greek==_GDECAY
              else "gold = dealers must SELL as time passes · blue = must BUY")
         ax.set_title(f"TERRAIN · {t_greek} · {t_wt} · {_sgmode} · exps {len(use_exps)} · cap {st.session_state.get(capkey,0):,.0f}"
-                     f" · {t_int}({t_pow:g}) · α{t_alpha:.2f}   [{pol}]",color=TXT,fontsize=10.5,loc="left")
+                     f" · {t_int}({t_pow:g})" + (f" · floor {t_floor:g}" if t_floor>0 else "") + f" · α{t_alpha:.2f}   [{pol}]",color=TXT,fontsize=10.5,loc="left")
         # strike scale: 25-pt gridlines across the field + bright labels both sides
         _yt=np.arange(np.ceil(pg[0]/25)*25, pg[-1]+1, 25)
         for _y in _yt:
@@ -3017,7 +3032,7 @@ with tab_terr:
                 if t_norm=="Manual (fixed cap)" and cseed is None:
                     st.session_state[ck]=1.2*float(np.percentile(np.abs(Zc),98)); Vc,c_cap=terrain_scale(Zc,t_norm,st.session_state[ck],t_pct)
                 st.session_state.setdefault(f"terr_hist_Charm_{t_wt}",[]).append(float(np.percentile(np.abs(Zc),92)))
-                Vc=terrain_intensity(Vc,t_int,power=t_pow,gain=3.0)
+                Vc=terrain_intensity(Vc,t_int,power=t_pow,gain=3.0,floor=t_floor)
                 fc=plt.figure(figsize=(16.5,4.4),dpi=80,facecolor=DARK)
                 axc=fc.add_subplot(111); axc.set_facecolor(DARK)
                 axc.imshow(-Vc,origin="lower",extent=[x0,x1,pg[0],pg[-1]],aspect="auto",
@@ -3038,7 +3053,7 @@ with tab_terr:
                 emit("terrain",fc)
             except Exception as ex:
                 st.caption(f"charm panel unavailable: {ex}")
-    _tsig=repr((t_fieldmode,sel_ts.isoformat(),t_greek,t_wt,t_norm,t_pct,t_int,round(t_pow,3),round(t_alpha,3),
+    _tsig=repr((t_fieldmode,sel_ts.isoformat(),t_greek,t_wt,t_norm,t_pct,t_int,round(t_pow,3),round(t_floor,3),round(t_alpha,3),
                 t_cont,t_strad,t_lvls,t_voladj,t_simg,t_charm2,bool(GBT_SIGNED),round(float(st.session_state.get("terr_zoom",1.0)),3),int(num_expiries),round(window_pct,5),
                 st.session_state.get(f"terr_cap_{t_greek}_{t_wt}"),
                 st.session_state.get(f"terr_cap_Charm_{t_wt}") if t_charm2 else None))
