@@ -1,6 +1,17 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.9
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.10
 
+vGBT-0.9.10 [POCKETS, TRADER-FIRST] — 0.9.9's rings redesigned on live
+  feedback:
+  • Gold rings on POSITIVE masses were noise (the slab is >50% everywhere, so
+    its "outline" ballooned across the chart). Killed. VS3D's answer adopted:
+    only NEGATIVE pockets get marked — dark cavity fill + red core + one
+    dashed outline, thresholds relative to the frame's own dip so they stay
+    compact and hug the right edge like VS3D's.
+  • "Pockets to show" slider (1-6, deepest first).
+  • Min-intensity floor slider REMOVED (superseded by pockets; the render
+    stays honest at any Power). terrain_intensity keeps the floor param for
+    compatibility; UI no longer exposes it.
 vGBT-0.9.9 [BLOB RINGS + BOOK PARITY] —
   • Terrain "Blob rings" checkbox: level-set outlines of the field's masses at
     50/75/90% of frame scale, computed on the PRE-intensity normalized field so
@@ -1350,17 +1361,34 @@ def terrain_intensity(V, kind="Power", power=1.0, gain=3.0, floor=0.0):
         m=np.where(m>0.0, floor+(1.0-floor)*m, 0.0)   # lift paint; exact zero stays neutral
     return s*m
 
-def terrain_blob_rings(ax, Vn, x0, x1, pg, levels=(0.5,0.75,0.9)):
-    """0.9.9: level-set outlines of the field's masses ("blobs"), drawn from the
-    PRE-intensity normalized field so the rings are identical at any Power/floor
-    setting. Gold rings = positive-gamma masses, bright red = negative cores;
-    the 90% ring is brightest so cores scream. Display-only."""
-    X=np.linspace(x0,x1,Vn.shape[1])
-    for lv,lw,al in zip(levels,(0.7,0.95,1.3),(0.40,0.60,0.95)):
-        try:
-            ax.contour(X,pg,Vn,levels=[ lv],colors=["#ffd54a"],linewidths=lw,alpha=al,zorder=7)
-            ax.contour(X,pg,Vn,levels=[-lv],colors=["#ff3b5c"],linewidths=lw,alpha=al,zorder=7)
-        except Exception: pass
+def terrain_pockets(ax, Vn, x0, x1, pg, topn=3):
+    """0.9.10 (replaces 0.9.9 rings): VS3D-style NEGATIVE-gamma pockets only —
+    dark cavity fill + red core + one dashed outline. The positive slab is never
+    outlined (support needs no ring; danger does — trader-first). Thresholds are
+    relative to the frame's own negative extreme so pockets stay compact and
+    hug where the field actually dips (right edge near expiry), not the render
+    settings. Components ranked by depth; top-N kept. Display-only.
+    Sanity: cavity = 30% of the deepest negative, core = 65%."""
+    try:
+        from scipy import ndimage
+        neg=np.where(np.isfinite(Vn),-Vn,0.0)
+        ref=float(neg.max())
+        if ref<=0: return                       # no negative territory — draw nothing
+        cav=neg>0.30*ref
+        if not cav.any(): return
+        lab,n=ndimage.label(cav)
+        depths=ndimage.maximum(neg,lab,index=np.arange(1,n+1))
+        keep=(np.argsort(depths)[::-1][:max(1,int(topn))]+1)
+        mask=np.isin(lab,keep)
+        X=np.linspace(x0,x1,Vn.shape[1])
+        ax.contourf(X,pg,np.where(mask,1.0,np.nan),levels=[0.5,1.5],
+                    colors=["#03050a"],alpha=0.62,zorder=6)          # dark cavity
+        core=np.where(mask&(neg>0.65*ref),1.0,np.nan)
+        ax.contourf(X,pg,core,levels=[0.5,1.5],
+                    colors=["#d9303f"],alpha=0.70,zorder=6)          # red core
+        ax.contour(X,pg,mask.astype(float),levels=[0.5],colors=["#e8ecf2"],
+                   linewidths=1.0,linestyles="--",alpha=0.9,zorder=7) # one dashed outline
+    except Exception: pass
 
 def terrain_contours(ax, Z, x0, x1, pg, cap, zero=True, ridges=True):
     """§1.5: dotted zero boundary + RED ridge lines (local maxima through time)
@@ -2234,7 +2262,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.9 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.10 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -2311,13 +2339,12 @@ with st.sidebar.expander("🗺 Terrain controls", expanded=False):
     t_pow=st.slider("Power exponent",0.1,1.5,0.40,0.05,   # 0.40 default: fields span decades; linear = clipped slabs
         help="§2.4: ~1 feels most natural. Low values = the 'cartoon setting' Dan warns about.")
     t_alpha=st.slider("Field opacity",0.15,1.0,0.38,0.01,help="Dan uses ~35% — field behind price.")
-    t_floor=st.slider("Min intensity floor",0.0,0.6,0.0,0.05,
-        help="VS3D's 'Min Opacity': lifts low-intensity paint so shallow pockets stay visible (VS3D runs ~0.5). 0 = honest render. Display-only — the cap and printed levels are untouched.")
     t_sat=st.slider("Saturation (cap ×)",0.05,1.0,1.0,0.05,
         help="VS3D aesthetic: slide LEFT to pin the slab at full color so shallow dips show as dark pockets. Display-only; the seeded cap stays frozen.")
     t_cont=st.checkbox("Contours (zero + ridges/troughs)",value=True)
-    t_rings=st.checkbox("Blob rings (mass outlines 50/75/90%)",value=False,
-        help="Level-set rings around the field's masses, drawn from the raw normalized field — identical at any Power/floor. Gold = +γ masses, red = −γ cores.")
+    t_rings=st.checkbox("Gamma pockets (cavity + red core)",value=True,
+        help="VS3D-style: only NEGATIVE-gamma pockets are marked — dark fill, red core, one dashed outline. Compact by construction (relative to the frame's own dip).")
+    t_nblob=st.slider("Pockets to show",1,6,3,1,help="Deepest first.")
     t_strad=st.checkbox("Straddle bounds",value=True)
     t_lvls=st.checkbox("Dealer levels overlay (Pinak)",value=True)
     t_voladj=st.radio("Vol adjust",["0%","+1%"],index=0,horizontal=True)
@@ -3000,7 +3027,7 @@ with tab_terr:
             st.caption("⏸ off-hours: time-to-expiry ~constant across the session axis → field is nearly "
                        "time-flat and candles are absent. Structure appears live during RTH on 0DTE.")
         Vn_rings=V.copy()                       # pre-intensity field for blob rings
-        V=terrain_intensity(V,t_int,power=t_pow,gain=3.0,floor=t_floor)
+        V=terrain_intensity(V,t_int,power=t_pow,gain=3.0)
         cmap=(charm_cmap() if t_greek=="Charm" else heat_cmap() if t_greek==_GHEAVY
               else decay_cmap() if t_greek==_GDECAY else gex_cmap())
         plotV=(-V if t_greek=="Charm" else V)   # hedging-effect polarity: dealers-must-SELL renders gold (§7.7)
@@ -3013,7 +3040,7 @@ with tab_terr:
         ax.imshow(plotV,origin="lower",extent=[x0,x1,pg[0],pg[-1]],aspect="auto",cmap=cmap,
                   vmin=_vmin,vmax=1,interpolation="bilinear",zorder=0,alpha=t_alpha)
         if t_cont: terrain_contours(ax,Z,x0,x1,pg,st.session_state.get(capkey))
-        if t_rings: terrain_blob_rings(ax,Vn_rings,x0,x1,pg)
+        if t_rings: terrain_pockets(ax,Vn_rings,x0,x1,pg,topn=t_nblob)
         draw_candles(ax,bars,x0,x1,pg[0],pg[-1])
         ax.axhline(spot,color=WHITE,ls="--",lw=1.0,alpha=.9,zorder=7)
         ax.axvline(mdates.date2num(now_naive),color="#3399dd",ls=":",lw=1.1,zorder=7)
@@ -3066,7 +3093,7 @@ with tab_terr:
              else "orange = γ BUILDING into the close (pin energy) · purple = fading" if t_greek==_GDECAY
              else "gold = dealers must SELL as time passes · blue = must BUY")
         ax.set_title(f"TERRAIN · {t_greek} · {t_wt} · {_sgmode} · exps {len(use_exps)} · cap {st.session_state.get(capkey,0):,.0f}"
-                     f" · {t_int}({t_pow:g})" + (f" · floor {t_floor:g}" if t_floor>0 else "") + f" · α{t_alpha:.2f}   [{pol}]",color=TXT,fontsize=10.5,loc="left")
+                     f" · {t_int}({t_pow:g})" + (" · pockets" if t_rings else "") + f" · α{t_alpha:.2f}   [{pol}]",color=TXT,fontsize=10.5,loc="left")
         # strike scale: 25-pt gridlines across the field + bright labels both sides
         _yt=np.arange(np.ceil(pg[0]/25)*25, pg[-1]+1, 25)
         for _y in _yt:
@@ -3097,7 +3124,7 @@ with tab_terr:
                 if t_norm=="Manual (fixed cap)" and cseed is None:
                     st.session_state[ck]=1.2*float(np.percentile(np.abs(Zc),98)); Vc,c_cap=terrain_scale(Zc,t_norm,st.session_state[ck],t_pct)
                 st.session_state.setdefault(f"terr_hist_Charm_{t_wt}",[]).append(float(np.percentile(np.abs(Zc),92)))
-                Vc=terrain_intensity(Vc,t_int,power=t_pow,gain=3.0,floor=t_floor)
+                Vc=terrain_intensity(Vc,t_int,power=t_pow,gain=3.0)
                 fc=plt.figure(figsize=(16.5,4.4),dpi=80,facecolor=DARK)
                 axc=fc.add_subplot(111); axc.set_facecolor(DARK)
                 axc.imshow(-Vc,origin="lower",extent=[x0,x1,pg[0],pg[-1]],aspect="auto",
@@ -3118,7 +3145,7 @@ with tab_terr:
                 emit("terrain",fc)
             except Exception as ex:
                 st.caption(f"charm panel unavailable: {ex}")
-    _tsig=repr((t_fieldmode,sel_ts.isoformat(),t_greek,t_wt,t_norm,t_pct,t_int,round(t_pow,3),round(t_floor,3),bool(t_rings),round(t_alpha,3),
+    _tsig=repr((t_fieldmode,sel_ts.isoformat(),t_greek,t_wt,t_norm,t_pct,t_int,round(t_pow,3),bool(t_rings),int(t_nblob),round(t_alpha,3),
                 t_cont,t_strad,t_lvls,t_voladj,t_simg,t_charm2,bool(GBT_SIGNED),round(float(st.session_state.get("terr_zoom",1.0)),3),int(num_expiries),round(window_pct,5),
                 st.session_state.get(f"terr_cap_{t_greek}_{t_wt}"),
                 st.session_state.get(f"terr_cap_Charm_{t_wt}") if t_charm2 else None))
