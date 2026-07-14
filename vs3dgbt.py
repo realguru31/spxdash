@@ -1,6 +1,19 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.8
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.9
 
+vGBT-0.9.9 [BLOB RINGS + BOOK PARITY] —
+  • Terrain "Blob rings" checkbox: level-set outlines of the field's masses at
+    50/75/90% of frame scale, computed on the PRE-intensity normalized field so
+    rings are identical at any Power/floor. Gold = +γ masses, red = −γ cores,
+    90% brightest. Display-only.
+  • Book (MM-inferred view): open + prev-snap dots now drawn in SIGNED units —
+    each stored snapshot's chain carries its own as-of-capture dsign, so the
+    dots are honest history, not a recompute. (The old code deliberately
+    suppressed naive dots on the signed axis — right call, wrong fix.)
+  • Book exhaustion sticks (both views): where a level has pulled back from its
+    open extent (same sign, smaller magnitude), a thin stick runs from the
+    current bar tip to the open extent — bar = what's left, stick = consumed.
+    Sign flips get dots only.
 vGBT-0.9.8 [MIN-INTENSITY FLOOR — build A] — "Min intensity floor" slider
   (0-0.6, default 0): VS3D's Min-Opacity mechanism. Applied INSIDE
   terrain_intensity after the curve: m -> floor+(1-floor)*m for m>0, exact
@@ -1337,6 +1350,18 @@ def terrain_intensity(V, kind="Power", power=1.0, gain=3.0, floor=0.0):
         m=np.where(m>0.0, floor+(1.0-floor)*m, 0.0)   # lift paint; exact zero stays neutral
     return s*m
 
+def terrain_blob_rings(ax, Vn, x0, x1, pg, levels=(0.5,0.75,0.9)):
+    """0.9.9: level-set outlines of the field's masses ("blobs"), drawn from the
+    PRE-intensity normalized field so the rings are identical at any Power/floor
+    setting. Gold rings = positive-gamma masses, bright red = negative cores;
+    the 90% ring is brightest so cores scream. Display-only."""
+    X=np.linspace(x0,x1,Vn.shape[1])
+    for lv,lw,al in zip(levels,(0.7,0.95,1.3),(0.40,0.60,0.95)):
+        try:
+            ax.contour(X,pg,Vn,levels=[ lv],colors=["#ffd54a"],linewidths=lw,alpha=al,zorder=7)
+            ax.contour(X,pg,Vn,levels=[-lv],colors=["#ff3b5c"],linewidths=lw,alpha=al,zorder=7)
+        except Exception: pass
+
 def terrain_contours(ax, Z, x0, x1, pg, cap, zero=True, ridges=True):
     """§1.5: dotted zero boundary + RED ridge lines (local maxima through time)
     and BLUE trough lines (local minima). Chains linked across adjacent columns."""
@@ -2068,7 +2093,23 @@ def gbt_snapshot_frame(window_pct):
         try: st.sidebar.caption(f"⚠ signed inference degraded → naive this frame: {type(_sx).__name__}")
         except Exception: pass
     return spot,chain,bk,exp
-def book_figure(book,spot,straddle,lo,hi,side="Total",prev=None,openb=None,signed=None,sqrt_scale=False):
+def signed_book_rows(ch, sp):
+    """0.9.9: per-strike MM-inferred signed GEX rows from a stored chain (its own
+    as-of-capture dsign column) — factored out so open/prev snapshots can be
+    dotted on the signed Book in the SAME units as the live bars."""
+    if ch is None or "dsign" not in getattr(ch,"columns",[]) or not ch["dsign"].notna().any():
+        return None
+    cc=ch.copy()
+    nv=np.where(cc["type"].values=="call",1.0,-1.0)
+    eff=cc["dsign"].where(cc["dsign"].notna(),pd.Series(nv*GBT_UNSEEDED_W,index=cc.index))
+    cc["_v"]=eff*cc["gamma"].fillna(0)*cc["oi"].fillna(0)*100.0*sp*sp/10000.0
+    cc["_w"]=cc["oi"].fillna(0); cc["_a"]=cc["dsign"].abs().fillna(0)*cc["_w"]
+    g=cc.groupby("strike",as_index=False).agg(signed_pct=("_v","sum"),_w=("_w","sum"),_a=("_a","sum"))
+    g["conf"]=(g["_a"]/g["_w"].replace(0,np.nan)).fillna(0.0)
+    return g[["strike","signed_pct","conf"]]
+
+def book_figure(book,spot,straddle,lo,hi,side="Total",prev=None,openb=None,signed=None,
+                signed_prev=None,signed_open=None,sticks=True,sqrt_scale=False):
     def _tx(v): return np.sign(v)*np.sqrt(np.abs(v)) if sqrt_scale else v
     """VS3D 'Positions by Strike' analogue. Bars in e-minis per $1 (per-$1 ÷ 50).
     NAIVE calls+/puts− convention — measured signing arrives with the flow ledger."""
@@ -2081,7 +2122,21 @@ def book_figure(book,spot,straddle,lo,hi,side="Total",prev=None,openb=None,signe
                     color=("#26a69a" if v>=0 else "#ef5350"),
                     alpha=0.35+0.6*min(1.0,float(r.get("conf",0.5))))
         ax.set_xlabel(("√" if sqrt_scale else "")+"dealer GEX $M per 1% — MM-inferred (flow-signed · opacity = confidence)",color="#aaa",fontsize=8)
-        prev=openb=None
+        _cur={float(r["strike"]):_tx(float(r["signed_pct"])/1e6) for _,r in sg.iterrows()}
+        def _sg_map(df):
+            if df is None or getattr(df,"empty",True): return None
+            d=df[(df["strike"]>=lo)&(df["strike"]<=hi)]
+            return {float(r["strike"]):_tx(float(r["signed_pct"])/1e6) for _,r in d.iterrows()}
+        _op=_sg_map(signed_open); _pv=_sg_map(signed_prev)
+        if sticks and _op:                       # exhausted extent: thin stick + dot at the open level
+            for k,ov in _op.items():
+                cv=_cur.get(k,0.0)
+                if ov*cv>0 and abs(ov)>abs(cv):
+                    ax.barh(k,ov-cv,left=cv,height=0.9,color="#9aa5b1",alpha=0.45,zorder=2)
+        for _m,_c,_l in ((_pv,"#e0e0e0","prev snap"),(_op,"#6f9bd1","market open")):
+            if _m: ax.scatter(list(_m.values()),list(_m.keys()),s=14,color=_c,zorder=4,label=_l)
+        if _pv or _op: prev=openb=None; _legend_force=True
+        else: prev=openb=None; _legend_force=False
     else:
         b=book.copy(); b=b[(b["strike"]>=lo)&(b["strike"]<=hi)]
         c=b["call_pd"].fillna(0)/50.0; p=b["put_pd"].fillna(0)/50.0; ks=b["strike"].values
@@ -2089,6 +2144,16 @@ def book_figure(book,spot,straddle,lo,hi,side="Total",prev=None,openb=None,signe
         elif side=="Puts": vals=p.values; cols=["#ef5350"]*len(ks)
         else: vals=(c+p).values; cols=["#26a69a" if v>=0 else "#ef5350" for v in vals]
         ax.barh(ks,_tx(np.asarray(vals,float)),height=3.6,color=cols,alpha=0.9,zorder=3)
+        _legend_force=False
+        if sticks and openb is not None and not getattr(openb,"empty",True):
+            o=openb[(openb["strike"]>=lo)&(openb["strike"]<=hi)]
+            oc=o["call_pd"].fillna(0)/50.0; op=o["put_pd"].fillna(0)/50.0
+            ov=oc.values if side=="Calls" else (op.values if side=="Puts" else (oc+op).values)
+            _cur={float(k):_tx(float(v)) for k,v in zip(ks,vals)}
+            for k,x in zip(o["strike"].values,_tx(np.asarray(ov,float))):
+                cv=_cur.get(float(k),0.0)
+                if x*cv>0 and abs(x)>abs(cv):
+                    ax.barh(float(k),x-cv,left=cv,height=0.9,color="#9aa5b1",alpha=0.45,zorder=2)
     def _dots(src,color,lbl):
         if src is None or getattr(src,"empty",True): return
         s2=src[(src["strike"]>=lo)&(src["strike"]<=hi)]
@@ -2107,7 +2172,7 @@ def book_figure(book,spot,straddle,lo,hi,side="Total",prev=None,openb=None,signe
         ax.set_xlabel(("√" if sqrt_scale else "")+"e-minis per $1 (naive calls+ / puts−)",color="#aaa",fontsize=8)
     ax.tick_params(colors="#aaa",labelsize=7)
     for _sp in ax.spines.values(): _sp.set_color("#333")
-    if prev is not None or openb is not None: ax.legend(loc="lower right",fontsize=7,facecolor="#0e1117",labelcolor="#ccc")
+    if prev is not None or openb is not None or _legend_force: ax.legend(loc="lower right",fontsize=7,facecolor="#0e1117",labelcolor="#ccc")
     ax.set_ylim(lo,hi); fig.tight_layout(); return fig
 
 def take_snapshot(num_expiries):
@@ -2169,7 +2234,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.8 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.9 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -2251,6 +2316,8 @@ with st.sidebar.expander("🗺 Terrain controls", expanded=False):
     t_sat=st.slider("Saturation (cap ×)",0.05,1.0,1.0,0.05,
         help="VS3D aesthetic: slide LEFT to pin the slab at full color so shallow dips show as dark pockets. Display-only; the seeded cap stays frozen.")
     t_cont=st.checkbox("Contours (zero + ridges/troughs)",value=True)
+    t_rings=st.checkbox("Blob rings (mass outlines 50/75/90%)",value=False,
+        help="Level-set rings around the field's masses, drawn from the raw normalized field — identical at any Power/floor. Gold = +γ masses, red = −γ cores.")
     t_strad=st.checkbox("Straddle bounds",value=True)
     t_lvls=st.checkbox("Dealer levels overlay (Pinak)",value=True)
     t_voladj=st.radio("Vol adjust",["0%","+1%"],index=0,horizontal=True)
@@ -2848,13 +2915,17 @@ with tab_book:
         bk=latest.get("book")
         if bk is None or getattr(bk,"empty",True):
             st.info("No book frame in this snapshot (pre-GBT or synthetic)."); return
-        prevb=openb=None
+        prevb=openb=None; _sgp=_sgo=None
         if b_dots:
             try:
                 _sl=st.session_state.snaps
                 _i=[i for i,s in enumerate(_sl) if s["ts"]==latest["ts"]][0]
                 if _i>0: prevb=_sl[_i-1].get("book")
                 if _i>0: openb=_sl[0].get("book")
+                if _i>0:
+                    _sgp=signed_book_rows(_sl[_i-1].get("chain"),float(_sl[_i-1].get("spot") or latest["spot"]))
+                    _sgo=signed_book_rows(_sl[0].get("chain"),float(_sl[0].get("spot") or latest["spot"]))
+                else: _sgp=_sgo=None
             except Exception: pass
         _strv=None
         if b_strad:
@@ -2865,17 +2936,8 @@ with tab_book:
             st.caption("Signed dealer inference is OFF (sidebar toggle) — naive bars shown")
         elif b_mode.startswith("MM"):
             try:
-                ch=latest["chain"]
-                if "dsign" in ch.columns and ch["dsign"].notna().any():
-                    cc=ch.copy(); sp=float(latest["spot"])
-                    nv=np.where(cc["type"].values=="call",1.0,-1.0)
-                    eff=cc["dsign"].where(cc["dsign"].notna(),pd.Series(nv*GBT_UNSEEDED_W,index=cc.index))
-                    cc["_v"]=eff*cc["gamma"].fillna(0)*cc["oi"].fillna(0)*100.0*sp*sp/10000.0
-                    cc["_w"]=cc["oi"].fillna(0); cc["_a"]=cc["dsign"].abs().fillna(0)*cc["_w"]
-                    g=cc.groupby("strike",as_index=False).agg(signed_pct=("_v","sum"),_w=("_w","sum"),_a=("_a","sum"))
-                    g["conf"]=(g["_a"]/g["_w"].replace(0,np.nan)).fillna(0.0)
-                    _sg=g[["strike","signed_pct","conf"]]
-                else: st.caption("no signed data in this frame — naive bars shown")
+                _sg=signed_book_rows(latest["chain"],float(latest["spot"]))
+                if _sg is None: st.caption("no signed data in this frame — naive bars shown")
             except Exception as _bx: st.caption(f"signed book unavailable this frame: {type(_bx).__name__}")
         _z=float(st.session_state.get("book_zoom",1.0))
         _sp=float(latest["spot"]); _half=_sp*window_pct*_z
@@ -2885,7 +2947,8 @@ with tab_book:
             _cv=f" · seeded {_gm2[0].get('ok','?')}/{_gm2[0].get('n','?')} · live {_gm2[0].get('live',0)}" if (_gm2 and _sg is not None) else ""
         except Exception: _cv=""
         st.caption(f"showing {int(_lo2)}–{int(_hi2)} · fetched {int(lo)}–{int(hi)} (spot {_sp:.2f} ±{window_pct*100:.1f}%) · zoom ×{_z:.2f}{_cv}")
-        fig=book_figure(bk,latest["spot"],_strv,_lo2,_hi2,side=b_side,prev=prevb,openb=openb,signed=_sg,sqrt_scale=bool(b_sqrt))
+        fig=book_figure(bk,latest["spot"],_strv,_lo2,_hi2,side=b_side,prev=prevb,openb=openb,signed=_sg,
+                        signed_prev=_sgp,signed_open=_sgo,sticks=True,sqrt_scale=bool(b_sqrt))
         if b_spot:
             try:
                 _ch0=latest["chain"]; _ch0=_ch0[_ch0["expiry"]==exps[0]] if "expiry" in _ch0.columns else _ch0
@@ -2936,6 +2999,7 @@ with tab_terr:
         if _t<dt.time(9,30) or _t>dt.time(16,0):
             st.caption("⏸ off-hours: time-to-expiry ~constant across the session axis → field is nearly "
                        "time-flat and candles are absent. Structure appears live during RTH on 0DTE.")
+        Vn_rings=V.copy()                       # pre-intensity field for blob rings
         V=terrain_intensity(V,t_int,power=t_pow,gain=3.0,floor=t_floor)
         cmap=(charm_cmap() if t_greek=="Charm" else heat_cmap() if t_greek==_GHEAVY
               else decay_cmap() if t_greek==_GDECAY else gex_cmap())
@@ -2949,6 +3013,7 @@ with tab_terr:
         ax.imshow(plotV,origin="lower",extent=[x0,x1,pg[0],pg[-1]],aspect="auto",cmap=cmap,
                   vmin=_vmin,vmax=1,interpolation="bilinear",zorder=0,alpha=t_alpha)
         if t_cont: terrain_contours(ax,Z,x0,x1,pg,st.session_state.get(capkey))
+        if t_rings: terrain_blob_rings(ax,Vn_rings,x0,x1,pg)
         draw_candles(ax,bars,x0,x1,pg[0],pg[-1])
         ax.axhline(spot,color=WHITE,ls="--",lw=1.0,alpha=.9,zorder=7)
         ax.axvline(mdates.date2num(now_naive),color="#3399dd",ls=":",lw=1.1,zorder=7)
@@ -3053,7 +3118,7 @@ with tab_terr:
                 emit("terrain",fc)
             except Exception as ex:
                 st.caption(f"charm panel unavailable: {ex}")
-    _tsig=repr((t_fieldmode,sel_ts.isoformat(),t_greek,t_wt,t_norm,t_pct,t_int,round(t_pow,3),round(t_floor,3),round(t_alpha,3),
+    _tsig=repr((t_fieldmode,sel_ts.isoformat(),t_greek,t_wt,t_norm,t_pct,t_int,round(t_pow,3),round(t_floor,3),bool(t_rings),round(t_alpha,3),
                 t_cont,t_strad,t_lvls,t_voladj,t_simg,t_charm2,bool(GBT_SIGNED),round(float(st.session_state.get("terr_zoom",1.0)),3),int(num_expiries),round(window_pct,5),
                 st.session_state.get(f"terr_cap_{t_greek}_{t_wt}"),
                 st.session_state.get(f"terr_cap_Charm_{t_wt}") if t_charm2 else None))
