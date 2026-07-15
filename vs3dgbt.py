@@ -1,5 +1,18 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.10
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.11
+
+vGBT-0.9.11 [DEFAULTS + REFRESH + COMBINED ALIGN — five tune-ups, one build]
+  • Interval: default scope = ALL EXPIRIES (was 0DTE) · RTH display default OFF
+  • Terrain: Straddle bounds + Pinak overlay default OFF (checkboxes unchanged)
+  • Auto-refresh: component tick 5min→60s — the countdown resets on every widget
+    rerun, so interaction could starve the 5-min tick forever ("doesn't always
+    refresh"); _due() remains the 5-min data authority, so pull cadence is
+    unchanged, just reliable. Worst post-interaction delay ≈ 60s.
+  • Combined tab: columns [1.0,2.2]→[1.0,1.5] — computed so the Book panel
+    (11×12) and the Gamma+Charm stack (16.5×7.6 + 16.5×4.4) render the SAME
+    height: 1.0909·a = 0.7273·b → b/a = 1.5. Black gap under the book gone.
+  • Combined gradient: canonical vs3d_std pair now ALWAYS renders overlay-free
+    (straddle/Pinak forced off for the pair), whatever the Terrain checkboxes.
 
 vGBT-0.9.10 [POCKETS, TRADER-FIRST] — 0.9.9's rings redesigned on live
   feedback:
@@ -2262,7 +2275,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.10 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.11 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -2345,8 +2358,8 @@ with st.sidebar.expander("🗺 Terrain controls", expanded=False):
     t_rings=st.checkbox("Gamma pockets (cavity + red core)",value=True,
         help="VS3D-style: only NEGATIVE-gamma pockets are marked — dark fill, red core, one dashed outline. Compact by construction (relative to the frame's own dip).")
     t_nblob=st.slider("Pockets to show",1,6,3,1,help="Deepest first.")
-    t_strad=st.checkbox("Straddle bounds",value=True)
-    t_lvls=st.checkbox("Dealer levels overlay (Pinak)",value=True)
+    t_strad=st.checkbox("Straddle bounds",value=False)
+    t_lvls=st.checkbox("Dealer levels overlay (Pinak)",value=False)
     t_voladj=st.radio("Vol adjust",["0%","+1%"],index=0,horizontal=True)
     t_simg=st.checkbox("Simulated gamma ($5 finite diff, §2.7)",value=False)
     t_charm2=st.checkbox("Charm panel below (stacked, VS3D-style)",value=True,
@@ -2379,7 +2392,10 @@ try:
         _tick=st_autorefresh(interval=_iv,key="pb_tick")
         _AUTOREFRESH_OK=True
     elif auto_on:
-        st_autorefresh(interval=5*60*1000, key="auto5min")
+        # vGBT-0.9.11: 60s tick — the component countdown RESETS on every widget
+        # rerun, so a 5-min tick could be starved forever by interaction. _due()
+        # remains the 5-min data authority; worst post-interaction delay ≈ 60s.
+        st_autorefresh(interval=60*1000, key="auto5min")
         _AUTOREFRESH_OK=True
     else:
         _AUTOREFRESH_OK=True   # nothing to install in manual mode; not an error
@@ -2799,8 +2815,8 @@ def _iv2_draw(ax,tk,lbl,dd,ref,bursts,rth=True,topn=IV2_TOP,zthr=IV2_ZTHR):
 
 def _render_intv2():
     _c1,_c2,_c3,_c4=st.columns([1.6,0.9,0.7,1.2])
-    _scope=_c1.radio("Scope",IV2_SCOPES,index=1,horizontal=True,key="iv2_scope")
-    _rth=_c2.checkbox("RTH display (9:30–16:00)",value=True,key="iv2_rth",
+    _scope=_c1.radio("Scope",IV2_SCOPES,index=0,horizontal=True,key="iv2_scope")
+    _rth=_c2.checkbox("RTH display (9:30–16:00)",value=False,key="iv2_rth",
                       help="Display window only — cumulative always integrates from midnight.")
     _top=_c3.selectbox("Top strikes",[5,10],index=0,key="iv2_top")
     _zthr=_c4.slider("Burst z ≥",2.0,6.0,float(IV2_ZTHR),0.5,key="iv2_zthr",
@@ -2886,7 +2902,7 @@ with tab_combo:
         if not _bp and not _tp:
             st.info("No cached panels for this frame yet — take a 📸 snapshot (panels cache automatically).")
         else:
-            _c1,_c2=st.columns([1.0,2.2],gap="small")
+            _c1,_c2=st.columns([1.0,1.5],gap="small")   # vGBT-0.9.11: 1.0909·a == 0.7273·b → bottoms align
             with _c1:
                 st.caption("Positions — Book × spot path")
                 for _p in _bp: st.image(_p,use_container_width=True)
@@ -3155,16 +3171,21 @@ with tab_terr:
         _cts=sel_ts.isoformat()
         _fr0=st.session_state.frames.setdefault(_cts,{})
         if (not PLAYBACK) and st.session_state.get("snaps") and not _fr0.get("vs3d_std"):
-            if t_greek=="Gamma":
+            # vGBT-0.9.11: canonical pair is ALWAYS overlay-free (no straddle/Pinak),
+            # regardless of the Terrain checkboxes. Copy shortcut only when the live
+            # terrain render is already Gamma AND already clean.
+            if t_greek=="Gamma" and not t_strad and not t_lvls:
                 if _fr0.get("terrain"): _fr0["vs3d_std"]=list(_fr0["terrain"])
             else:
-                _tg0=t_greek; t_greek="Gamma"
+                _tg0,_ts0,_tl0=t_greek,t_strad,t_lvls
+                t_greek="Gamma"; t_strad=False; t_lvls=False
                 _EMIT_REDIRECT["terrain"]="vs3d_std"; _EMIT_SILENT["on"]=True
                 _EMIT_BUF["vs3d_std"]=[]
                 _EMIT_SILENT["fit"]="canon"        # Option A: crop canonical view to price action
                 try: _render_terrain()
                 finally:
-                    t_greek=_tg0; _EMIT_REDIRECT.pop("terrain",None); _EMIT_SILENT.pop("on",None); _EMIT_SILENT.pop("fit",None)
+                    t_greek,t_strad,t_lvls=_tg0,_ts0,_tl0
+                    _EMIT_REDIRECT.pop("terrain",None); _EMIT_SILENT.pop("on",None); _EMIT_SILENT.pop("fit",None)
                 _fr0["vs3d_std"]=list(_EMIT_BUF.get("vs3d_std",[]))
                 save_day_state()
     except Exception as _cx:
