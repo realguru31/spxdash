@@ -1,5 +1,19 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.16
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.17
+
+vGBT-0.9.17 [PACKAGE-AWARE CARD — the Jul-16 clearing-audit response]
+  • package_suspects(): equidistant triplets with inverted body sign and 1-2-1-ish
+    mass (the fly fingerprint) are FLAGGED, never auto-flipped — the tape side-codes
+    a package as one aggressor, so inversion direction is unknowable from prints.
+    Audit case: our 7575/7585/7595 read mirror-inverted vs VS3D clearing.
+  • Card: cluster confidence halved inside suspect bands (strength earns its "?");
+    ⚠pkg suffix on balance/tests in-band; dual-read line names the alternative
+    ("if customer-owned, 7,585 is the long mass").
+  • FLY: full gate stack — straddle decay AND no fishbone AND outside the open
+    window, every blocker printed; sell-2× target must be a corroborated long
+    OUTSIDE any suspect band ("never sell someone else's body").
+  • Cluster window widened to spot±max(2.5×straddle, 0.9%) — the second-rung
+    tier (their 7515/7525) is now in frame.
 
 vGBT-0.9.16 [KEY-LEVELS CARD UNBENCHED — NameError fix]
   • The card called key_levels_lines with strad_now, a SIGNALS-tab local that
@@ -1573,6 +1587,41 @@ def signed_clusters(rows, lo, hi, min_share=0.05):
         if share>=min_share: res.append(dict(sign=c["sign"],peak=peak,mass=m,conf=conf,share=share))
     return res
 
+def package_suspects(rows, spacings=(5,10,15,20,25)):
+    """0.9.17 audit lesson (Jul-16: 7575/7585/7595 inverted vs VS3D clearing):
+    spread packages get side-coded as ONE aggressor on the tape, so a customer
+    fly can invert our per-strike signs across its whole band. Detect the
+    geometry — equidistant triplet, wings same sign, body opposite, body mass
+    comparable to combined wings — and FLAG it. Never auto-flip: the inversion
+    direction is unknowable from prints. Returns [{lo,body,hi,sign_body}]."""
+    if rows is None or getattr(rows,"empty",True): return []
+    r=rows[rows["signed_pct"].abs()>0].sort_values("strike")
+    ks=r["strike"].values.astype(float); vs=r["signed_pct"].values.astype(float)
+    idx={k:i for i,k in enumerate(ks)}
+    out=[]
+    for i,a in enumerate(ks):
+        for sp in spacings:
+            b,c=a+sp,a+2*sp
+            if b not in idx or c not in idx: continue
+            va,vb,vc=vs[i],vs[idx[b]],vs[idx[c]]
+            if np.sign(va)==np.sign(vc)!=np.sign(vb) and np.sign(vb)!=0:
+                wings=abs(va)+abs(vc)
+                if wings<=0: continue
+                if 0.5<=abs(vb)/wings<=3.0 and max(abs(va),abs(vc))<=4.0*max(1e-9,min(abs(va),abs(vc))):
+                    out.append(dict(lo=a,body=b,hi=c,sign_body=int(np.sign(vb))))
+    # merge overlapping bands
+    out=sorted(out,key=lambda d:(d["lo"],d["hi"])); merged=[]
+    for d in out:
+        if merged and d["lo"]<=merged[-1]["hi"]:
+            merged[-1]["hi"]=max(merged[-1]["hi"],d["hi"])
+        else: merged.append(dict(d))
+    return merged
+
+def _in_band(K, bands):
+    for b in bands:
+        if b["lo"]<=K<=b["hi"]: return b
+    return None
+
 def _strength(share, conf):
     lab=("Strong" if share>=0.35 else "Moderate" if share>=0.18 else "Weak")
     if conf<0.35: lab+="?"          # thin sign confidence — flag, don't hide
@@ -1587,15 +1636,24 @@ def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WAR
     if rows is None:
         L.append(("  needs Signed mode — naive ± cannot define tests/anchors",DIM,11,False))
         return L
-    half=max(1.2*(strad_now or 0.0), spot*0.006)
+    half=max(2.5*(strad_now or 0.0), spot*0.009)   # 0.9.17: wide enough for the second-rung tier
+    bands=package_suspects(rows)
     cl=signed_clusters(rows,spot-half,spot+half)
+    for c in cl:                                    # confidence haircut inside suspect bands
+        if _in_band(c["peak"],bands): c["conf"]*=0.5
     longs =sorted([c for c in cl if c["sign"]>0],key=lambda c:-c["mass"])
     shorts=[c for c in cl if c["sign"]<0]
     if not longs and not shorts:
         L.append(("  no clusters clear the noise floor in range — structureless book",DIM,11,False)); return L
     bal=longs[0] if longs else None
     if bal:
-        L.append((f"BALANCE: {bal['peak']:,.0f} ({_strength(bal['share'],bal['conf'])})",WHT,13,True))
+        _pk=" ⚠pkg" if _in_band(bal["peak"],bands) else ""
+        L.append((f"BALANCE: {bal['peak']:,.0f} ({_strength(bal['share'],bal['conf'])}){_pk}",WHT,13,True))
+    for b in bands:
+        if spot-half<=b["body"]<=spot+half:
+            _alt="long mass (their balance)" if b["sign_body"]<0 else "short mass (their test)"
+            L.append((f"⚠ {b['lo']:,.0f}–{b['hi']:,.0f} fly-shaped — tape can't side packages; "
+                      f"if customer-owned, {b['body']:,.0f} is the {_alt}",WARN,10.5,False))
     ups=sorted([c for c in shorts if c["peak"]>spot],key=lambda c:c["peak"])[:2]
     dns=sorted([c for c in shorts if c["peak"]<spot],key=lambda c:-c["peak"])[:2]
     def _bal_beyond(t_peak, direction):
@@ -1607,7 +1665,7 @@ def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WAR
     def ladder(tests, direction, name, col):
         if not tests:
             L.append((f"{name}: none in range",DIM,11,False)); return
-        hdr=f"{name}: "+" >> ".join(f"{t['peak']:,.0f}" for t in tests)
+        hdr=f"{name}: "+" >> ".join(f"{t['peak']:,.0f}"+("⚠" if _in_band(t["peak"],bands) else "") for t in tests)
         L.append((hdr,col,12.5,True))
         for i,t in enumerate(tests):
             b,bl=_bal_beyond(t["peak"],direction)
@@ -1616,17 +1674,33 @@ def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WAR
     ladder(ups,+1,"UPSIDE TEST",BULL)
     ladder(dns,-1,"DOWNSIDE TESTS",BEAR)
     L.append(("Reject a test = reverse tests/ranges until balance",DIM,11,False))
-    # fly per §6.4 — printed ONLY when the charm gate is open (straddle decaying)
-    gate_open=str(v.get("decay","")).startswith(("DECAYING","COLLAPSING"))
+    # fly per §6.4 — 0.9.17: inherits the FULL gate stack; every blocker named
+    _blockers=[]
+    if not str(v.get("decay","")).startswith(("DECAYING","COLLAPSING")):
+        _blockers.append("straddle not decaying (flies die on repricing)")
+    if "FISHBONE" in str(v.get("fish","")):
+        _blockers.append(f"structure untradeable ({v.get('fish','fishbone')})")
+    if str(v.get("clock","")).startswith("OPEN"):
+        _blockers.append("open window — external flow dominates")
     up="LEANS UP" in v.get("pat","") or "BULL" in v.get("pat","")
-    if not gate_open:
-        L.append(("FLY: none — charm gate CLOSED (straddle not decaying); flies die on repricing",WARN,11.5,False))
+    if _blockers:
+        L.append(("FLY: none — "+"; ".join(_blockers),WARN,11.5,False))
     else:
         buy=round(spot/5.0)*5.0
+        def _bal_clean(t_peak, direction):
+            cands=[c for c in longs if (c["peak"]>t_peak if direction>0 else c["peak"]<t_peak)
+                   and not _in_band(c["peak"],bands)]        # never sell 2× into a suspect band
+            if cands:
+                return min(cands,key=lambda c:abs(c["peak"]-t_peak))["peak"]
+            return None
         tgt=None
-        if up and ups: tgt,_=_bal_beyond(ups[0]["peak"],+1)
-        elif (not up) and dns: tgt,_=_bal_beyond(dns[0]["peak"],-1)
-        elif bal: tgt=bal["peak"]
+        if up and ups: tgt=_bal_clean(ups[0]["peak"],+1)
+        elif (not up) and dns: tgt=_bal_clean(dns[0]["peak"],-1)
+        elif bal and not _in_band(bal["peak"],bands): tgt=bal["peak"]
+        _flyskip=False
+        if tgt is None and ((up and ups) or ((not up) and dns)):
+            _flyskip=True
+            L.append(("FLY: only targets sit inside package-suspect bands — skip (never sell someone else's body)",WARN,11.5,False))
         if tgt and abs(tgt-buy)>=5:
             wing=round((2*tgt-buy)/5.0)*5.0; leg="call" if up else "put"
             px=""
@@ -1642,7 +1716,7 @@ def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WAR
                 if None not in (m1,m2,m3): px=f" · ≈${m1-2*m2+m3:,.2f} debit (mids)"
             except Exception: pass
             L.append((f"FLY ({leg}s, §6.4): buy {buy:,.0f} / sell 2× {tgt:,.0f} / buy {wing:,.0f}{px} — buy through, sell to",CYAN,12,True))
-        else:
+        elif not _flyskip:
             L.append(("FLY: no clean target beyond the first test — skip",DIM,11,False))
     L.append(("",WHT,6,False))
     return L
@@ -2499,7 +2573,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.16 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.17 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
