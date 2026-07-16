@@ -1,5 +1,18 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.13
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.14
+
+vGBT-0.9.14 [SEED SWEEP UNSTUCK — deferrable, resumable, budgeted, visible]
+  • Symptom: reboot after the close → container wiped /tmp state → full re-seed
+    (~61 strikes at SPX 7550 × 2.3s pace + evening retry backoffs) behind a
+    STATIC spinner = "stuck on taking chain snapshot". 0.9.13 exonerated —
+    nothing new runs in that path.
+  • After ~16:10 ET with no seed: sweep DEFERRED (empty seed, meta says so;
+    snapshot completes in seconds; tomorrow's open re-seeds fresh).
+  • Sweep is RESUMABLE (per-strike partial persisted in session_state — an
+    interrupted run continues, never restarts) and BUDGETED (240s wall clock →
+    ship partial honestly; unswept strikes stay unseeded-naive).
+  • Sidebar progress bar "seeding flow signs k/n…" — long ≠ hung, ever again.
+  • Docstring time estimate corrected to the real strike-count math.
 
 vGBT-0.9.13 [GUIDE RECONCILIATION — Dan-card, hedge units, charm flip, sim charm]
   • KEY LEVELS + TAKEAWAYS card at the top of the Read tab (no new tabs): Dan-format
@@ -2184,36 +2197,68 @@ def _nd_live(exp,strike,vol_call=None,vol_put=None):
 def gbt_dsign_map(exp,strikes,spot,nvol=None):
     """{(strike,type): dsign in [-1,1]} — dealer direction × confidence.
     Seed fetched ONCE per day (yesterday is immutable; server caches 24h; paced
-    inside the 30/min budget — the FIRST snapshot of the day takes ~1-2 min) and
+    inside the 30/min budget — the FIRST snapshot of the day takes ~3-5 min at current index levels; budgeted at 240s, resumable, deferred after the close) and
     persisted to disk; today's CUMULATIVE side stats refreshed each snapshot for
     the 10 top-OI + 4 nearest-ATM strikes."""
     ss=st.session_state
     seedk=f"gbt_seed_{exp}"; livek=f"gbt_live_{exp}"
     seed=ss.get(seedk)
     if seed is None:
-        # anchor the sweep to YESTERDAY's close ±2% (the session that built this book),
-        # union the live window's strikes — intraday drift can't orphan a strike
-        try:
-            _pc=ss.get("gbt_seed_prevclose")
-            if _pc is None:
-                _,_pb=_gbt_post("stock_price_over_time",{"ticker":"SPX",
-                        "aggregationPeriod":"FIVE_MINUTE","sessionDate":_gbt_prev_session()})
-                _pc=float(_pb.iloc[-1]["closePrice"]) if _pb is not None and len(_pb) else float(spot)
-                ss["gbt_seed_prevclose"]=_pc
-        except Exception: _pc=float(spot)
-        _g0,_g1=round(_pc*0.98/5)*5,round(_pc*1.02/5)*5
-        strikes=sorted(set([float(k) for k in strikes])|
-                       set(float(_g0+i*5) for i in range(int((_g1-_g0)/5)+1)))
-        seed={}; _errs=[]
-        for k in strikes:
-            try: seed[float(k)]=_side_net_total(_gbt_side_stats(exp,k,_gbt_prev_session()))
-            except Exception as _se:
-                seed[float(k)]={}; _errs.append(f"{k:g}: {type(_se).__name__}")
-            _time.sleep(2.3)                      # ≤26/min — inside the documented 30/min budget
-        ss[seedk]=seed
-        ss["gbt_seed_meta_"+exp]={"ok":sum(1 for v in seed.values() if v),
-                                  "n":len(seed),"errs":_errs[-3:]}
-        save_day_state()
+        # vGBT-0.9.14: the sweep is now DEFERRABLE, RESUMABLE, BUDGETED, and VISIBLE.
+        #   • after ~16:10 ET with no seed: defer entirely (session's over; tomorrow's
+        #     open re-seeds under a fresh expiry key) — snapshot completes in seconds
+        #   • partial progress persists in session_state per strike, so an interrupted
+        #     run (rerun/tick/reboot within session) RESUMES instead of restarting
+        #   • wall-clock budget 240s: past it, ship the partial seed honestly
+        #     (unswept strikes stay unseeded-naive; meta says so) — never hang the app
+        #   • sidebar progress bar: a long sweep can no longer look like a hang
+        # True cost at SPX ~7550: ±2% grid = ~61 strikes × (2.3s pace + latency)
+        # ≈ 3.5-5 min clean — the old "~1-2 min" note undersold it.
+        _nowe=now_est()
+        if _nowe.time()>dt.time(16,10):
+            seed={}; ss[seedk]=seed
+            ss["gbt_seed_meta_"+exp]={"ok":0,"n":0,"errs":[],"mode":"deferred-postclose"}
+            save_day_state()
+        else:
+            _partk=seedk+"_partial"
+            seed=dict(ss.get(_partk,{}))
+            try:
+                _pc=ss.get("gbt_seed_prevclose")
+                if _pc is None:
+                    _,_pb=_gbt_post("stock_price_over_time",{"ticker":"SPX",
+                            "aggregationPeriod":"FIVE_MINUTE","sessionDate":_gbt_prev_session()})
+                    _pc=float(_pb.iloc[-1]["closePrice"]) if _pb is not None and len(_pb) else float(spot)
+                    ss["gbt_seed_prevclose"]=_pc
+            except Exception: _pc=float(spot)
+            _g0,_g1=round(_pc*0.98/5)*5,round(_pc*1.02/5)*5
+            strikes=sorted(set([float(k) for k in strikes])|
+                           set(float(_g0+i*5) for i in range(int((_g1-_g0)/5)+1)))
+            _errs=list(ss.get(_partk+"_errs",[]))
+            _todo=[k for k in strikes if float(k) not in seed]
+            _prog=None
+            try: _prog=st.sidebar.progress(0.0,text=f"seeding flow signs {len(seed)}/{len(strikes)}…")
+            except Exception: pass
+            _t0=_time.time(); _BUDGET_S=240; _mode="full"
+            for k in _todo:
+                try: seed[float(k)]=_side_net_total(_gbt_side_stats(exp,k,_gbt_prev_session()))
+                except Exception as _se:
+                    seed[float(k)]={}; _errs.append(f"{k:g}: {type(_se).__name__}")
+                ss[_partk]=seed; ss[_partk+"_errs"]=_errs[-6:]
+                if _prog is not None:
+                    try: _prog.progress(min(1.0,len(seed)/max(1,len(strikes))),
+                                        text=f"seeding flow signs {len(seed)}/{len(strikes)}…")
+                    except Exception: pass
+                if _time.time()-_t0>_BUDGET_S and len(seed)<len(strikes):
+                    _mode="partial-budget"; break
+                _time.sleep(2.3)                  # ≤26/min — inside the documented 30/min budget
+            if _prog is not None:
+                try: _prog.empty()
+                except Exception: pass
+            ss[seedk]=seed
+            for _pk in (_partk,_partk+"_errs"): ss.pop(_pk,None)
+            ss["gbt_seed_meta_"+exp]={"ok":sum(1 for v in seed.values() if v),
+                                      "n":len(seed),"errs":_errs[-3:],"mode":_mode}
+            save_day_state()
     live=ss.get(livek,{})
     vk="gbt_live_vol_"+exp; lastvol=ss.get(vk,{})
     def _wt(k):
@@ -2434,7 +2479,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.13 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.14 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
