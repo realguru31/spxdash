@@ -1,5 +1,12 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.15
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.16
+
+vGBT-0.9.16 [KEY-LEVELS CARD UNBENCHED — NameError fix]
+  • The card called key_levels_lines with strad_now, a SIGNALS-tab local that
+    does not exist in the Read tab's scope → NameError → graceful bench note.
+    The Read tab now computes the straddle itself from the same 0DTE chain.
+  • Bench note now includes the exception message, not just the type — a
+    future failure names itself.
 
 vGBT-0.9.15 [DEFER POISON FIX — hotfix on 0.9.14]
   • 0.9.14's after-close defer PERSISTED an empty seed under the resolved expiry
@@ -2492,7 +2499,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.15 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.16 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -3692,9 +3699,15 @@ with tab_read:
         lines.append((f"SPX {v['spot']:,.2f}   {sel_ts:%H:%M:%S} EST   straddle {v['strad']}",WHT,13,False))
         lines.append(("",WHT,6,False))
         try:
-            lines+=key_levels_lines(latest,spot,strad_now,v,WHT,BULL,BEAR,CYAN,DIM,WARN)
+            # vGBT-0.9.16: strad_now is a Signals-tab local — compute the straddle
+            # HERE from the same chain (the NameError that benched the card).
+            _ch0r=latest["chain"]; _e0r=(latest.get("exps") or [None])[0]
+            _ch0r=_ch0r[_ch0r["expiry"]==_e0r] if "expiry" in _ch0r.columns else _ch0r
+            try: _stn=terrain_straddle(_ch0r,spot)
+            except Exception: _stn=None
+            lines+=key_levels_lines(latest,spot,_stn,v,WHT,BULL,BEAR,CYAN,DIM,WARN)
         except Exception as _kx:
-            lines.append((f"key levels card unavailable: {type(_kx).__name__}",DIM,10.5,False))
+            lines.append((f"key levels card unavailable: {type(_kx).__name__}: {_kx}",DIM,10.5,False))
         lines.append((("▲ " if up else "▼ ")+v["pat"],dirc,17,True))
         for i,w in enumerate(textwrap.wrap("NEXT  "+v["nxt"],96)):
             lines.append((w if i==0 else "      "+w, dirc if "WARNING" not in w and "tension" not in w else WARN, 12.5,False))
