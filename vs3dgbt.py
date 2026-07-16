@@ -1,5 +1,21 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.12
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.13
+
+vGBT-0.9.13 [GUIDE RECONCILIATION — Dan-card, hedge units, charm flip, sim charm]
+  • KEY LEVELS + TAKEAWAYS card at the top of the Read tab (no new tabs): Dan-format
+    §4.4 readout from the flow-signed book — BALANCE = biggest dealer-LONG cluster
+    peak in spot±1.2×straddle; UPSIDE/DOWNSIDE TESTS = dealer-SHORT peaks with
+    "Cross T = balance (strength) at B, or extend and test T2" rungs; reject rule;
+    §6.4 FLY (buy through / sell 2× to / wing, mid-priced) printed ONLY when the
+    straddle-decay gate is OPEN. Card self-labels: flow-signed candidates, NOT
+    clearing data; renders "needs Signed mode" under naive.
+  • Hedge-product units (§2.1/§3.1): gamma title + Read row show ≈minis/$1 @spot
+    (exposure ×2) with Dan's absolute floors (<100 LIGHT · <25 NEGLIGIBLE);
+    charm panel title shows ≈minis/5min.
+  • Charm FLIP strike (§4.7 binary decision point): dashed line + label on the
+    charm panel at the zero-cross nearest spot; strike printed in the title.
+  • Simulated charm (§2.7): new Terrain toggle — 5-min clock-advance finite
+    difference of book delta; own frozen cap (…_sim key); in cache signature.
 
 vGBT-0.9.12 [CONTOURS SURFACED — ridge/trough visible at last]
   • Root cause: ridge/trough chains drew at zorder 6 BEFORE the pockets (6-7);
@@ -1285,7 +1301,7 @@ from scipy.signal import argrelextrema
 
 def terrain_grid(chain, spot, exps, now, greek="Delta Change", vol_adj=0.0, field_mode="Aggregate (guide-spec §2)",
                  p_min=None, p_max=None, n_price=170, n_time=84, simulated_gamma=False,
-                 weighting="OI + Volume"):
+                 simulated_charm=False, weighting="OI + Volume"):
     """Field Z(price,time) for the chosen greek over ALL expiries in `exps`.
     Each expiry decays on its own T(τ) across the 09:30–16:00 axis.
     Sign convention (proxy): calls +, puts − (dealer long/short NOT measured).
@@ -1347,7 +1363,13 @@ def terrain_grid(chain, spot, exps, now, greek="Delta Change", vol_adj=0.0, fiel
                     gc=bs_gamma(Sg,Kc[None,:],T,ivc[None,:]); gp=bs_gamma(Sg,Kp[None,:],T,ivp[None,:])
                     Z[:,j]+= (gc*wc[None,:]).sum(1)*100*pg - (gp*wp[None,:]).sum(1)*100*pg
             elif greek=="Charm":
-                ch_c=bs_charm(Sg,Kc[None,:],T,ivc[None,:]); ch_p=bs_charm(Sg,Kp[None,:],T,ivp[None,:])
+                if simulated_charm:   # §2.7: advance the clock 5 min, sample delta, difference
+                    _dT=5.0/(365.0*24*60)
+                    T2=max(T-_dT,1e-8)
+                    ch_c=(bs_delta(Sg,Kc[None,:],T2,ivc[None,:],True) -bs_delta(Sg,Kc[None,:],T,ivc[None,:],True))
+                    ch_p=(bs_delta(Sg,Kp[None,:],T2,ivp[None,:],False)-bs_delta(Sg,Kp[None,:],T,ivp[None,:],False))
+                else:
+                    ch_c=bs_charm(Sg,Kc[None,:],T,ivc[None,:]); ch_p=bs_charm(Sg,Kp[None,:],T,ivp[None,:])
                 Z[:,j]+= (ch_c*wc[None,:]).sum(1)*100 - (ch_p*wp[None,:]).sum(1)*100
             else:  # Delta Change
                 dc=bs_delta(Sg,Kc[None,:],T,ivc[None,:],True); dp=bs_delta(Sg,Kp[None,:],T,ivp[None,:],False)
@@ -1496,6 +1518,121 @@ def _book_delta_drift(chp0, spot_prev, t_prev, spot_now, t_now, exp):
         out+=sgn*(w*(bs_delta(spot_now,K,Tn,iv,typ=="call")-bs_delta(spot_prev,K,Tp,iv,typ=="call"))).sum()*100
     return out
 
+def signed_clusters(rows, lo, hi, min_share=0.05):
+    """Contiguous same-sign runs of the signed book inside [lo,hi] (gap ≤ 10 pts).
+    Returns list of dicts: sign, peak (mass-weighted centroid, rounded to 5),
+    mass, conf (mass-weighted), share (of total |mass| in range)."""
+    if rows is None or getattr(rows,"empty",True): return []
+    r=rows[(rows["strike"]>=lo)&(rows["strike"]<=hi)].sort_values("strike").reset_index(drop=True)
+    r=r[r["signed_pct"].abs()>0]
+    if r.empty: return []
+    out=[]; cur=None
+    for _,q in r.iterrows():
+        k=float(q["strike"]); v=float(q["signed_pct"]); c=float(q.get("conf",0.5)); s=1 if v>=0 else -1
+        if cur and s==cur["sign"] and k-cur["last"]<=10.01:
+            cur["ks"].append(k); cur["vs"].append(abs(v)); cur["cs"].append(c); cur["last"]=k
+        else:
+            if cur: out.append(cur)
+            cur=dict(sign=s,ks=[k],vs=[abs(v)],cs=[c],last=k)
+    if cur: out.append(cur)
+    tot=sum(sum(c["vs"]) for c in out) or 1.0
+    res=[]
+    for c in out:
+        m=sum(c["vs"]); w=np.array(c["vs"]); ks=np.array(c["ks"])
+        peak=round(float((ks*w).sum()/m)/5.0)*5.0
+        conf=float((np.array(c["cs"])*w).sum()/m)
+        share=m/tot
+        if share>=min_share: res.append(dict(sign=c["sign"],peak=peak,mass=m,conf=conf,share=share))
+    return res
+
+def _strength(share, conf):
+    lab=("Strong" if share>=0.35 else "Moderate" if share>=0.18 else "Weak")
+    if conf<0.35: lab+="?"          # thin sign confidence — flag, don't hide
+    return lab
+
+def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WARN):
+    """Dan-format KEY LEVELS + TAKEAWAYS from the flow-signed book (§4.4 test-anchor).
+    Tests = dealer-SHORT cluster peaks · Balance = biggest dealer-LONG peak in range.
+    Signs are dsign (flow-inferred) — candidates, NOT CBOE clearing."""
+    L=[("KEY LEVELS + TAKEAWAYS  (flow-signed candidates — not clearing data)",WHT,14,True)]
+    rows=signed_book_rows(latest["chain"],spot)
+    if rows is None:
+        L.append(("  needs Signed mode — naive ± cannot define tests/anchors",DIM,11,False))
+        return L
+    half=max(1.2*(strad_now or 0.0), spot*0.006)
+    cl=signed_clusters(rows,spot-half,spot+half)
+    longs =sorted([c for c in cl if c["sign"]>0],key=lambda c:-c["mass"])
+    shorts=[c for c in cl if c["sign"]<0]
+    if not longs and not shorts:
+        L.append(("  no clusters clear the noise floor in range — structureless book",DIM,11,False)); return L
+    bal=longs[0] if longs else None
+    if bal:
+        L.append((f"BALANCE: {bal['peak']:,.0f} ({_strength(bal['share'],bal['conf'])})",WHT,13,True))
+    ups=sorted([c for c in shorts if c["peak"]>spot],key=lambda c:c["peak"])[:2]
+    dns=sorted([c for c in shorts if c["peak"]<spot],key=lambda c:-c["peak"])[:2]
+    def _bal_beyond(t_peak, direction):
+        cands=[c for c in longs if (c["peak"]>t_peak if direction>0 else c["peak"]<t_peak)]
+        if cands:
+            c=min(cands,key=lambda c:abs(c["peak"]-t_peak))
+            return c["peak"],_strength(c["share"],c["conf"])
+        return t_peak+direction*5.0,"thin"
+    def ladder(tests, direction, name, col):
+        if not tests:
+            L.append((f"{name}: none in range",DIM,11,False)); return
+        hdr=f"{name}: "+" >> ".join(f"{t['peak']:,.0f}" for t in tests)
+        L.append((hdr,col,12.5,True))
+        for i,t in enumerate(tests):
+            b,bl=_bal_beyond(t["peak"],direction)
+            nxt=(f", or extend and test {tests[i+1]['peak']:,.0f}" if i+1<len(tests) else "")
+            L.append((f"  Cross {t['peak']:,.0f} = balance ({bl}) at {b:,.0f}{nxt}",WHT,11.5,False))
+    ladder(ups,+1,"UPSIDE TEST",BULL)
+    ladder(dns,-1,"DOWNSIDE TESTS",BEAR)
+    L.append(("Reject a test = reverse tests/ranges until balance",DIM,11,False))
+    # fly per §6.4 — printed ONLY when the charm gate is open (straddle decaying)
+    gate_open=str(v.get("decay","")).startswith(("DECAYING","COLLAPSING"))
+    up="LEANS UP" in v.get("pat","") or "BULL" in v.get("pat","")
+    if not gate_open:
+        L.append(("FLY: none — charm gate CLOSED (straddle not decaying); flies die on repricing",WARN,11.5,False))
+    else:
+        buy=round(spot/5.0)*5.0
+        tgt=None
+        if up and ups: tgt,_=_bal_beyond(ups[0]["peak"],+1)
+        elif (not up) and dns: tgt,_=_bal_beyond(dns[0]["peak"],-1)
+        elif bal: tgt=bal["peak"]
+        if tgt and abs(tgt-buy)>=5:
+            wing=round((2*tgt-buy)/5.0)*5.0; leg="call" if up else "put"
+            px=""
+            try:
+                e0=(latest.get("exps") or [None])[0]
+                ch=latest["chain"]; c0=ch[ch["expiry"]==e0] if "expiry" in ch.columns else ch
+                def _mid(K):
+                    d=c0[(c0["strike"]==K)&(c0["type"]==("call" if up else "put"))]
+                    if d.empty: return None
+                    b=float(d["bid"].iloc[0] or 0); a=float(d.get("ask",d["bid"]).iloc[0] or b)
+                    return (a+b)/2 if (a or b) else None
+                m1,m2,m3=_mid(buy),_mid(tgt),_mid(wing)
+                if None not in (m1,m2,m3): px=f" · ≈${m1-2*m2+m3:,.2f} debit (mids)"
+            except Exception: pass
+            L.append((f"FLY ({leg}s, §6.4): buy {buy:,.0f} / sell 2× {tgt:,.0f} / buy {wing:,.0f}{px} — buy through, sell to",CYAN,12,True))
+        else:
+            L.append(("FLY: no clean target beyond the first test — skip",DIM,11,False))
+    L.append(("",WHT,6,False))
+    return L
+
+def gamma_exposure_minis(ch0, spot, e0, now):
+    """§2.1 hedge product: exposure = Σ γ·pos (SPX contract-delta per $1, dsign-signed
+    where seeded, naive ± elsewhere); minis/$1 = exposure ×100 ÷50 = ×2."""
+    try:
+        c=ch0.dropna(subset=["strike","gamma"])
+        if c.empty: return None,None
+        nv=np.where(c["type"].values=="call",1.0,-1.0)
+        sgn=c["dsign"].where(c["dsign"].notna(),pd.Series(nv,index=c.index)).values \
+            if "dsign" in c.columns else nv
+        w=c["oi"].fillna(0).values.astype(float)
+        expos=float((sgn*c["gamma"].fillna(0).values*w).sum())
+        return expos,expos*2.0
+    except Exception: return None,None
+
 def read_verdict(snaps, exps, now, track=True):
     """Cheat-sheet logic → what happens next. Returns dict of lines + confidence.
     gamma sign (env) × charm lean (direction) = four patterns; gated by charm clock,
@@ -1594,7 +1731,13 @@ def read_verdict(snaps, exps, now, track=True):
     if gsign<0: nxt+=" IF a trigger arrives — without one it floats (γ is a multiplier, not a generator)"
     if swallowed: nxt+=f" · WARNING: ~{absorb:,.0f} minis of γ absorption in path — pin may land short (profile consumes itself)"
     if tension: nxt+="  ·  "+tension
-    return dict(pat=pat,do=do,env=env,lean=lean+f"  [{src} · ≈{flow5:,.0f} minis/5min proxy]",
+    _ex,_mn=gamma_exposure_minis(ch0,spot,e0,now)
+    if _ex is None: gexp="n/a"
+    else:
+        _tag=("NEGLIGIBLE <25 — 'as good as negative' (Dan floor)" if abs(_ex)<25 else
+              "LIGHT <100 — moves come easier (Dan floor)" if abs(_ex)<100 else "normal by Dan floors")
+        gexp=f"≈{_ex:+,.0f} SPX/$1 → {_mn:+,.0f} minis/$1 · {_tag}"
+    return dict(gexp=gexp,pat=pat,do=do,env=env,lean=lean+f"  [{src} · ≈{flow5:,.0f} minis/5min proxy]",
                 decay=decay,clock=clock,vix=vixline,fish=f"{fishline} (score {fish})",
                 nxt=nxt,conf=conf,through=through,to=to,spot=spot,wall_up=wall_up,wall_dn=wall_dn,pin=target,
                 strad=f"\\${strad_now:.2f}" if strad_now else "n/a",open_lbl=open_lbl)
@@ -2291,7 +2434,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.12 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.13 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -2378,6 +2521,8 @@ with st.sidebar.expander("🗺 Terrain controls", expanded=False):
     t_lvls=st.checkbox("Dealer levels overlay (Pinak)",value=False)
     t_voladj=st.radio("Vol adjust",["0%","+1%"],index=0,horizontal=True)
     t_simg=st.checkbox("Simulated gamma ($5 finite diff, §2.7)",value=False)
+    t_simc=st.checkbox("Simulated charm (5-min clock, §2.7)",value=False,
+        help="Finite difference: advance the clock 5 min, sample book delta, difference — the 'effective charm' on fishbone/complex days.")
     t_charm2=st.checkbox("Charm panel below (stacked, VS3D-style)",value=True,
         help="Second field under the main greek — gold = dealers must SELL as time passes · blue = BUY. No more dropdown flip-flopping.")
 auto_on=st.sidebar.toggle("Auto-refresh (5 min)",value=True)
@@ -3036,7 +3181,8 @@ with tab_terr:
         try:
             pg,Z,taus=terrain_grid(latest["chain"],spot,use_exps,now_naive,greek=_base_greek,field_mode=t_fieldmode,
                                    vol_adj=(0.01 if t_voladj=="+1%" else 0.0),
-                                   p_min=p_min,p_max=p_max,simulated_gamma=t_simg,weighting=t_wt)
+                                   p_min=p_min,p_max=p_max,simulated_gamma=t_simg,
+                                   simulated_charm=t_simc,weighting=t_wt)
             if t_greek==_GHEAVY: Z=np.abs(Z)
             elif t_greek==_GDECAY: Z=_decay_shift(Z,taus)
         except Exception as ex:
@@ -3124,8 +3270,16 @@ with tab_terr:
              else "bright = heavy book · direction UNKNOWN by design (roles come from behavior)" if t_greek==_GHEAVY
              else "orange = γ BUILDING into the close (pin energy) · purple = fading" if t_greek==_GDECAY
              else "gold = dealers must SELL as time passes · blue = must BUY")
+        _hp=""
+        if t_greek=="Gamma":
+            try:
+                _ch0t=latest["chain"]; _e0t=use_exps[0]
+                _ch0t=_ch0t[_ch0t["expiry"]==_e0t] if "expiry" in _ch0t.columns else _ch0t
+                _exT,_mnT=gamma_exposure_minis(_ch0t,spot,_e0t,now_naive)
+                if _mnT is not None: _hp=f" · ≈{_mnT:+,.0f} minis/$1 @spot"
+            except Exception: pass
         ax.set_title(f"TERRAIN · {t_greek} · {t_wt} · {_sgmode} · exps {len(use_exps)} · cap {st.session_state.get(capkey,0):,.0f}"
-                     f" · {t_int}({t_pow:g})" + (" · pockets" if t_rings else "") + f" · α{t_alpha:.2f}   [{pol}]",color=TXT,fontsize=10.5,loc="left")
+                     f" · {t_int}({t_pow:g})" + (" · pockets" if t_rings else "") + _hp + f" · α{t_alpha:.2f}   [{pol}]",color=TXT,fontsize=10.5,loc="left")
         # strike scale: 25-pt gridlines across the field + bright labels both sides
         _yt=np.arange(np.ceil(pg[0]/25)*25, pg[-1]+1, 25)
         for _y in _yt:
@@ -3149,8 +3303,8 @@ with tab_terr:
             try:
                 _,Zc,_=terrain_grid(latest["chain"],spot,use_exps,now_naive,greek="Charm",
                                     vol_adj=(0.01 if t_voladj=="+1%" else 0.0),
-                                    p_min=p_min,p_max=p_max,weighting=t_wt)
-                ck=f"terr_cap_Charm_{t_wt}"
+                                    p_min=p_min,p_max=p_max,simulated_charm=t_simc,weighting=t_wt)
+                ck=f"terr_cap_Charm_{t_wt}"+("_sim" if t_simc else "")
                 cseed=st.session_state.get(ck)
                 Vc,c_cap=terrain_scale(Zc,t_norm,cseed if t_norm=="Manual (fixed cap)" else None,t_pct)
                 if t_norm=="Manual (fixed cap)" and cseed is None:
@@ -3171,14 +3325,40 @@ with tab_terr:
                 for _y in _yt: axc.axhline(_y,color="#1a2330",lw=0.6,zorder=1)
                 axc.set_yticks(_yt); axc.tick_params(axis="y",colors="#9fb0c3",labelsize=10.5,length=3)
                 axc.set_ylim(_zl,_zh); style_time_axis(axc,x0,x1)
-                axc.set_title(f"CHARM · {t_wt} · {_sgmode} · cap {st.session_state.get(ck,0):,.0f}   "
+                # charm FLIP strike (zero-cross nearest spot at the current column) + minis/5min
+                _cflip=None
+                try:
+                    _jn=int(np.clip(round((mdates.date2num(now_naive)-x0)/(x1-x0)*(Zc.shape[1]-1)),0,Zc.shape[1]-1))
+                    _pc=Zc[:,_jn]; _zx=np.where(np.diff(np.sign(_pc))!=0)[0]
+                    if len(_zx):
+                        _cands=pg[_zx]; _cflip=float(_cands[np.argmin(np.abs(_cands-spot))])
+                        axc.axhline(_cflip,color="#e8e8e8",ls=(0,(4,3)),lw=1.1,alpha=.9,zorder=8)
+                        axc.text(x0+(x1-x0)*0.002,_cflip,f"charm flip {_cflip:.0f}",color="#e8e8e8",fontsize=8,
+                                 va="bottom",zorder=9,bbox=dict(boxstyle="round,pad=0.2",facecolor=DARK,edgecolor="#e8e8e8",alpha=.85,lw=.6))
+                except Exception: pass
+                _c5=""
+                try:
+                    _ch0c=latest["chain"]; _e0c=use_exps[0]
+                    _ch0c=_ch0c[_ch0c["expiry"]==_e0c] if "expiry" in _ch0c.columns else _ch0c
+                    _cx=_ch0c.dropna(subset=["strike"]); _Tc=_T_at(_e0c,now_naive); _db=0.0
+                    for _ty,_sg2 in (("call",+1),("put",-1)):
+                        _d=_cx[_cx.type==_ty]
+                        if _d.empty: continue
+                        _Kk=_d["strike"].values.astype(float)
+                        _iv=np.where(_d["iv"].fillna(0).values>0,_d["iv"].fillna(0).values,0.15)
+                        _w=np.where(_d["volume"].fillna(0).values>0,_d["volume"].fillna(0).values,_d["oi"].fillna(0).values)
+                        _db+=_sg2*(_w*bs_charm(spot,_Kk,_Tc,_iv)).sum()*100
+                    _c5=f" · ≈{abs(_db)/(365*24*12)*2/100:,.0f} minis/5min"
+                except Exception: pass
+                axc.set_title(f"CHARM{' ·sim5m' if t_simc else ''} · {t_wt} · {_sgmode} · cap {st.session_state.get(ck,0):,.0f}"
+                              +(f" · flip {_cflip:.0f}" if _cflip else "")+_c5+"   "
                               f"[gold = dealers must SELL as time passes · blue = must BUY]",
                               color=TXT,fontsize=10.5,loc="left")
                 emit("terrain",fc)
             except Exception as ex:
                 st.caption(f"charm panel unavailable: {ex}")
     _tsig=repr((t_fieldmode,sel_ts.isoformat(),t_greek,t_wt,t_norm,t_pct,t_int,round(t_pow,3),bool(t_rings),int(t_nblob),round(t_alpha,3),
-                t_cont,t_strad,t_lvls,t_voladj,t_simg,t_charm2,bool(GBT_SIGNED),round(float(st.session_state.get("terr_zoom",1.0)),3),int(num_expiries),round(window_pct,5),
+                t_cont,t_strad,t_lvls,t_voladj,t_simg,bool(t_simc),t_charm2,bool(GBT_SIGNED),round(float(st.session_state.get("terr_zoom",1.0)),3),int(num_expiries),round(window_pct,5),
                 st.session_state.get(f"terr_cap_{t_greek}_{t_wt}"),
                 st.session_state.get(f"terr_cap_Charm_{t_wt}") if t_charm2 else None))
     dispatch("terrain",_render_terrain,sig=_tsig)
@@ -3453,6 +3633,10 @@ with tab_read:
         lines=[]   # (text, color, size, bold)
         lines.append((f"SPX {v['spot']:,.2f}   {sel_ts:%H:%M:%S} EST   straddle {v['strad']}",WHT,13,False))
         lines.append(("",WHT,6,False))
+        try:
+            lines+=key_levels_lines(latest,spot,strad_now,v,WHT,BULL,BEAR,CYAN,DIM,WARN)
+        except Exception as _kx:
+            lines.append((f"key levels card unavailable: {type(_kx).__name__}",DIM,10.5,False))
         lines.append((("▲ " if up else "▼ ")+v["pat"],dirc,17,True))
         for i,w in enumerate(textwrap.wrap("NEXT  "+v["nxt"],96)):
             lines.append((w if i==0 else "      "+w, dirc if "WARNING" not in w and "tension" not in w else WARN, 12.5,False))
@@ -3464,7 +3648,7 @@ with tab_read:
         nb=int(round(v["conf"]/5))
         lines.append((f"CONFIDENCE {v['conf']}/100  "+"█"*nb+"─"*(20-nb),cc,14,True))
         lines.append(("",WHT,6,False))
-        for lab,val in [("γ env",v["env"]),("charm",v["lean"]),("straddle",v["decay"]),
+        for lab,val in [("γ env",v["env"]),("γ @spot",v.get("gexp","n/a")),("charm",v["lean"]),("straddle",v["decay"]),
                         ("clock",v["clock"]),("vix",v["vix"]),("structure",v["fish"])]:
             lines.append((f"  {lab:<10}{val}",gate_color(val),12,False))
         lines.append(("",WHT,6,False))
