@@ -1,5 +1,13 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.14
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.15
+
+vGBT-0.9.15 [DEFER POISON FIX — hotfix on 0.9.14]
+  • 0.9.14's after-close defer PERSISTED an empty seed under the resolved expiry
+    key; post-close that key can already be TOMORROW's expiry → morning would
+    skip seeding entirely (silently unseeded signed mode). Defer is now per-call
+    only: local empty seed, nothing written under seedk, meta still says
+    "deferred-postclose". Post-close snapshots re-defer at zero cost; the first
+    pre-close snapshot of the day seeds normally.
 
 vGBT-0.9.14 [SEED SWEEP UNSTUCK — deferrable, resumable, budgeted, visible]
   • Symptom: reboot after the close → container wiped /tmp state → full re-seed
@@ -2216,9 +2224,14 @@ def gbt_dsign_map(exp,strikes,spot,nvol=None):
         # ≈ 3.5-5 min clean — the old "~1-2 min" note undersold it.
         _nowe=now_est()
         if _nowe.time()>dt.time(16,10):
-            seed={}; ss[seedk]=seed
+            # vGBT-0.9.15: defer is PER-CALL ONLY — never persist an empty seed under
+            # seedk. After the close the resolver may already point at TOMORROW's
+            # expiry; persisting {} there would poison the morning (signed mode would
+            # skip seeding and run silently unseeded all day). Local empty seed,
+            # meta says deferred, every post-close snapshot re-defers at zero cost,
+            # and the first pre-close snapshot sweeps normally.
+            seed={}
             ss["gbt_seed_meta_"+exp]={"ok":0,"n":0,"errs":[],"mode":"deferred-postclose"}
-            save_day_state()
         else:
             _partk=seedk+"_partial"
             seed=dict(ss.get(_partk,{}))
@@ -2479,7 +2492,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.14 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.15 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
