@@ -1,5 +1,12 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.11
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.12
+
+vGBT-0.9.12 [CONTOURS SURFACED — ridge/trough visible at last]
+  • Root cause: ridge/trough chains drew at zorder 6 BEFORE the pockets (6-7);
+    equal zorder → later artist wins → pocket fill painted over the trough line.
+  • Both chains (local gamma MAX = ridge, local gamma MIN = trough) now bright
+    orange #ff9500, lw 1.6, dark-stroked, zorder 8 — the true last layer, above
+    pockets, spot line, and candles. Zero boundary unchanged (dotted white).
 
 vGBT-0.9.11 [DEFAULTS + REFRESH + COMBINED ALIGN — five tune-ups, one build]
   • Interval: default scope = ALL EXPIRIES (was 0DTE) · RTH display default OFF
@@ -1404,8 +1411,9 @@ def terrain_pockets(ax, Vn, x0, x1, pg, topn=3):
     except Exception: pass
 
 def terrain_contours(ax, Z, x0, x1, pg, cap, zero=True, ridges=True):
-    """§1.5: dotted zero boundary + RED ridge lines (local maxima through time)
-    and BLUE trough lines (local minima). Chains linked across adjacent columns."""
+    """§1.5: dotted zero boundary + ORANGE ridge/trough lines (local gamma
+    maxima/minima through time). Chains linked across adjacent columns; drawn
+    as the LAST layer (zorder 8) so pockets/candles can never bury them."""
     X=np.linspace(x0,x1,Z.shape[1])
     if zero:
         try: ax.contour(X,pg,Z,levels=[0.0],colors="#e8e8e8",linewidths=1.0,
@@ -1431,10 +1439,18 @@ def terrain_contours(ax, Z, x0, x1, pg, cap, zero=True, ridges=True):
                 if len(ch)>=8: out.append(ch)
         out.sort(key=len,reverse=True)
         return out[:4]                       # 0.9.7: VS3D draws 2-3 lines, not spaghetti
+    # vGBT-0.9.12: ridge/trough = the field's LOCAL MAX/MIN gamma chains. They were
+    # zorder-6 and drawn BEFORE the pockets (also 6-7) — equal zorder, later artist
+    # wins, so pocket fill painted OVER them. Now: bright orange, fatter, dark
+    # stroke for sharpness, zorder 8 = above pockets(7)/spot(7)/candles(5).
+    import matplotlib.patheffects as _pe
+    _stroke=[_pe.withStroke(linewidth=3.0,foreground="#140a02")]
     for ch in chains(+1):
-        ax.plot([X[j] for j,_ in ch],[pg[i] for _,i in ch],color="#ff5a6a",lw=0.9,alpha=.85,zorder=6)
+        ln,=ax.plot([X[j] for j,_ in ch],[pg[i] for _,i in ch],color="#ff9500",lw=1.6,alpha=1.0,zorder=8)
+        ln.set_path_effects(_stroke)
     for ch in chains(-1):
-        ax.plot([X[j] for j,_ in ch],[pg[i] for _,i in ch],color="#4aa8ff",lw=0.9,alpha=.85,zorder=6)
+        ln,=ax.plot([X[j] for j,_ in ch],[pg[i] for _,i in ch],color="#ff9500",lw=1.6,alpha=1.0,zorder=8)
+        ln.set_path_effects(_stroke)
 
 def terrain_straddle(chain0, spot):
     """ATM straddle (mid) from the 0DTE chain — Dan's range tool (§5.3)."""
@@ -2275,7 +2291,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.11 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.12 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -3008,7 +3024,7 @@ with tab_terr:
     emit_caption("terrain","VS3D Gradient Chart, guide-spec. Field = chosen greek across price×time for the "
         "WHOLE fetched book (each expiry decays on its own clock; 0DTE dominates via asymptotic gamma). "
         "Manual symmetric range (a loose day looks loose) · near-linear intensity · field behind price. "
-        "Contours: dotted = zero boundary · red = ridge (local max) · blue = trough. Sign is the "
+        "Contours: dotted = zero boundary · orange = ridge/trough (local gamma max/min, top layer). Sign is the "
         "calls+/puts− convention when Signed inference is OFF; when ON, per-leg signs are aggressor-flow inferred (seeded from yesterday's flow on today's expiry, refreshed live).")
     def _render_terrain():
         now_naive=sel_ts.replace(tzinfo=None) if getattr(sel_ts,'tzinfo',None) else sel_ts
