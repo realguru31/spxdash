@@ -1,5 +1,28 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.18
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.20
+
+CHANGELOG POLICY (per Faisal, Jul-24): detailed notes for the LATEST 3 versions
+only; everything older is ONE line. Full history lives in git, not here.
+
+vGBT-0.9.20 [FOUR CONFIRMED CUTS+ADDS — probe31-34 build]
+  • Charm-flip echo REMOVED from the gamma terrain (helper deleted too):
+    two numbers one screen (7469 vs the charm panel's 7471); the charm panel's
+    own flip is the single source now.
+  • 🧹 Clean-sign highlight toggle (Book, default OFF = pixel-identical book):
+    ON lazily sweeps yesterday's side-stats with tradeTypes=[AUTO,M2S_AUTO]
+    (server quarantine — probe31 purity 500/500, probe32 filter-control real)
+    and re-colors strikes whose sign the clean pool CONFIRMS: dodger blue =
+    dealer long · magenta = dealer short. Overlay only — values + signing
+    pipeline untouched; 0.9.14 sweep machinery (resumable, 240s, progress).
+  • √ tower-compress checkbox REMOVED — bars always linear, true proportions.
+  • pinak_levels: walls+gravity now FLIP-anchored (probe33: flip-anchored CW
+    matched native gex_snapshot +γ(OI) at Δ0.0; spot-anchored missed by 15);
+    pin honesty gate — pin=None unless positive regime AND GEX/OI convergence
+    AND ≥6 live band strikes (kills the unreasonable open prints). STRICTLY
+    firewalled from the locked-card BALANCE/UP TEST/DN TEST logic.
+
+vGBT-0.9.19 [CHANGELOG PRUNED] — header changelog cut to policy (54KB → ~6KB);
+  no behavior change.
 
 vGBT-0.9.18 [MAGENTA RAIL + LOCKED CARD + BOOK LEVELS — Jul-24 audit response]
   • PEAK-γ TRACK on the gamma terrain: solid magenta = per-snapshot argmax strike
@@ -17,773 +40,90 @@ vGBT-0.9.18 [MAGENTA RAIL + LOCKED CARD + BOOK LEVELS — Jul-24 audit response]
     queue item); the locked card levels draw instead — BALANCE (white dashes),
     UP TEST (green), DN TEST (red); pre-lock note "levels lock at 09:35 ET".
 
-vGBT-0.9.17 [PACKAGE-AWARE CARD — the Jul-16 clearing-audit response]
-  • package_suspects(): equidistant triplets with inverted body sign and 1-2-1-ish
-    mass (the fly fingerprint) are FLAGGED, never auto-flipped — the tape side-codes
-    a package as one aggressor, so inversion direction is unknowable from prints.
-    Audit case: our 7575/7585/7595 read mirror-inverted vs VS3D clearing.
-  • Card: cluster confidence halved inside suspect bands (strength earns its "?");
-    ⚠pkg suffix on balance/tests in-band; dual-read line names the alternative
-    ("if customer-owned, 7,585 is the long mass").
-  • FLY: full gate stack — straddle decay AND no fishbone AND outside the open
-    window, every blocker printed; sell-2× target must be a corroborated long
-    OUTSIDE any suspect band ("never sell someone else's body").
-  • Cluster window widened to spot±max(2.5×straddle, 0.9%) — the second-rung
-    tier (their 7515/7525) is now in frame.
-
-vGBT-0.9.16 [KEY-LEVELS CARD UNBENCHED — NameError fix]
-  • The card called key_levels_lines with strad_now, a SIGNALS-tab local that
-    does not exist in the Read tab's scope → NameError → graceful bench note.
-    The Read tab now computes the straddle itself from the same 0DTE chain.
-  • Bench note now includes the exception message, not just the type — a
-    future failure names itself.
-
+vGBT-0.9.17 — package detector: fly-fingerprint FLAG (never auto-flip), conf×0.5 in suspect bands, ⚠pkg + dual-read, FLY gate stack, window spot±max(2.5×straddle,0.9%).
+vGBT-0.9.16 — Read-tab card NameError fixed (card computes its own straddle); end-to-end exec gate on synthetic signed chain.
 vGBT-0.9.15 [DEFER POISON FIX — hotfix on 0.9.14]
-  • 0.9.14's after-close defer PERSISTED an empty seed under the resolved expiry
-    key; post-close that key can already be TOMORROW's expiry → morning would
-    skip seeding entirely (silently unseeded signed mode). Defer is now per-call
-    only: local empty seed, nothing written under seedk, meta still says
-    "deferred-postclose". Post-close snapshots re-defer at zero cost; the first
-    pre-close snapshot of the day seeds normally.
-
 vGBT-0.9.14 [SEED SWEEP UNSTUCK — deferrable, resumable, budgeted, visible]
-  • Symptom: reboot after the close → container wiped /tmp state → full re-seed
-    (~61 strikes at SPX 7550 × 2.3s pace + evening retry backoffs) behind a
-    STATIC spinner = "stuck on taking chain snapshot". 0.9.13 exonerated —
-    nothing new runs in that path.
-  • After ~16:10 ET with no seed: sweep DEFERRED (empty seed, meta says so;
-    snapshot completes in seconds; tomorrow's open re-seeds fresh).
-  • Sweep is RESUMABLE (per-strike partial persisted in session_state — an
-    interrupted run continues, never restarts) and BUDGETED (240s wall clock →
-    ship partial honestly; unswept strikes stay unseeded-naive).
-  • Sidebar progress bar "seeding flow signs k/n…" — long ≠ hung, ever again.
-  • Docstring time estimate corrected to the real strike-count math.
-
 vGBT-0.9.13 [GUIDE RECONCILIATION — Dan-card, hedge units, charm flip, sim charm]
-  • KEY LEVELS + TAKEAWAYS card at the top of the Read tab (no new tabs): Dan-format
-    §4.4 readout from the flow-signed book — BALANCE = biggest dealer-LONG cluster
-    peak in spot±1.2×straddle; UPSIDE/DOWNSIDE TESTS = dealer-SHORT peaks with
-    "Cross T = balance (strength) at B, or extend and test T2" rungs; reject rule;
-    §6.4 FLY (buy through / sell 2× to / wing, mid-priced) printed ONLY when the
-    straddle-decay gate is OPEN. Card self-labels: flow-signed candidates, NOT
-    clearing data; renders "needs Signed mode" under naive.
-  • Hedge-product units (§2.1/§3.1): gamma title + Read row show ≈minis/$1 @spot
-    (exposure ×2) with Dan's absolute floors (<100 LIGHT · <25 NEGLIGIBLE);
-    charm panel title shows ≈minis/5min.
-  • Charm FLIP strike (§4.7 binary decision point): dashed line + label on the
-    charm panel at the zero-cross nearest spot; strike printed in the title.
-  • Simulated charm (§2.7): new Terrain toggle — 5-min clock-advance finite
-    difference of book delta; own frozen cap (…_sim key); in cache signature.
-
 vGBT-0.9.12 [CONTOURS SURFACED — ridge/trough visible at last]
-  • Root cause: ridge/trough chains drew at zorder 6 BEFORE the pockets (6-7);
-    equal zorder → later artist wins → pocket fill painted over the trough line.
-  • Both chains (local gamma MAX = ridge, local gamma MIN = trough) now bright
-    orange #ff9500, lw 1.6, dark-stroked, zorder 8 — the true last layer, above
-    pockets, spot line, and candles. Zero boundary unchanged (dotted white).
-
 vGBT-0.9.11 [DEFAULTS + REFRESH + COMBINED ALIGN — five tune-ups, one build]
-  • Interval: default scope = ALL EXPIRIES (was 0DTE) · RTH display default OFF
-  • Terrain: Straddle bounds + Pinak overlay default OFF (checkboxes unchanged)
-  • Auto-refresh: component tick 5min→60s — the countdown resets on every widget
-    rerun, so interaction could starve the 5-min tick forever ("doesn't always
-    refresh"); _due() remains the 5-min data authority, so pull cadence is
-    unchanged, just reliable. Worst post-interaction delay ≈ 60s.
-  • Combined tab: columns [1.0,2.2]→[1.0,1.5] — computed so the Book panel
-    (11×12) and the Gamma+Charm stack (16.5×7.6 + 16.5×4.4) render the SAME
-    height: 1.0909·a = 0.7273·b → b/a = 1.5. Black gap under the book gone.
-  • Combined gradient: canonical vs3d_std pair now ALWAYS renders overlay-free
-    (straddle/Pinak forced off for the pair), whatever the Terrain checkboxes.
-
 vGBT-0.9.10 [POCKETS, TRADER-FIRST] — 0.9.9's rings redesigned on live
-  feedback:
-  • Gold rings on POSITIVE masses were noise (the slab is >50% everywhere, so
-    its "outline" ballooned across the chart). Killed. VS3D's answer adopted:
-    only NEGATIVE pockets get marked — dark cavity fill + red core + one
-    dashed outline, thresholds relative to the frame's own dip so they stay
-    compact and hug the right edge like VS3D's.
-  • "Pockets to show" slider (1-6, deepest first).
-  • Min-intensity floor slider REMOVED (superseded by pockets; the render
-    stays honest at any Power). terrain_intensity keeps the floor param for
-    compatibility; UI no longer exposes it.
 vGBT-0.9.9 [BLOB RINGS + BOOK PARITY] —
-  • Terrain "Blob rings" checkbox: level-set outlines of the field's masses at
-    50/75/90% of frame scale, computed on the PRE-intensity normalized field so
-    rings are identical at any Power/floor. Gold = +γ masses, red = −γ cores,
-    90% brightest. Display-only.
-  • Book (MM-inferred view): open + prev-snap dots now drawn in SIGNED units —
-    each stored snapshot's chain carries its own as-of-capture dsign, so the
-    dots are honest history, not a recompute. (The old code deliberately
-    suppressed naive dots on the signed axis — right call, wrong fix.)
-  • Book exhaustion sticks (both views): where a level has pulled back from its
-    open extent (same sign, smaller magnitude), a thin stick runs from the
-    current bar tip to the open extent — bar = what's left, stick = consumed.
-    Sign flips get dots only.
 vGBT-0.9.8 [MIN-INTENSITY FLOOR — build A] — "Min intensity floor" slider
-  (0-0.6, default 0): VS3D's Min-Opacity mechanism. Applied INSIDE
-  terrain_intensity after the curve: m -> floor+(1-floor)*m for m>0, exact
-  zero stays neutral, sign preserved. The faint 7527-7550 pocket the Book
-  bars showed all day now lifts into visible paint at floor~0.5 + Power 0.2.
-  Display-only: cap seeding, printed levels, bursts all untouched. (Probe23
-  killed multi-expiry-under-naive: same picture as 0DTE — far wings need a
-  positioning sign model, see probe24.)
 vGBT-0.9.7b [POWER FLOOR] — Power exponent slider min 0.4→0.1 (VS3D runs
-  0.20; exponents <1 boost LOW values, which is what blooms shallow pockets:
-  a 1%-of-cap pocket renders 0.16 at ^0.4 but 0.40 at ^0.2). One-line change.
 vGBT-0.9.7 [VS3D GRADIENT PARITY — aggregate default, blur kill, saturation]
-  • Aggregate (guide-spec §2) is now the DEFAULT field mode; per-strike renamed
-    "Per-strike ladder (exploration)" — the old label calling the ladder the
-    "VS3D look" was backwards (guide: "continuous simulation across strike
-    space").
-  • Price-axis gaussian blur REMOVED in aggregate mode (continuous by
-    construction; the blur was a ladder-era leftover that smeared right-edge
-    0DTE needles/valleys). Ladder keeps its σ0.6.
-  • Saturation slider (cap ×0.05–1.0, default 1.0): slide left to pin the slab
-    at full color so shallow gamma dips read as dark pockets hours earlier —
-    the VS3D saturated aesthetic on demand. Display-only; the seeded cap
-    itself stays frozen (no repaint).
-  • Ridge-finder retuned for the smooth field: wider extrema window (order 6),
-    threshold 0.25×cap, max 4 ridge + 4 trough chains — VS3D draws 2-3 lines,
-    not spaghetti.
 vGBT-0.9.6 [GRADIENT NO-REPAINT — audited + harness-enforced]
-  • Trader audit of the terrain gradient, verified in code: Range default =
-    "Manual (fixed cap)" — zero-pinned symmetric scale, cap seeded ONCE per
-    session (1.2×p98 of first frame), frozen thereafter; past columns never
-    recolor. Percentile/StdDev remain EXPLORATION modes (they rescale per
-    frame = repaint) — do not trade off them.
-  • No app-logic change; this build adds HARNESS GATES so the property can
-    never silently regress: zero→neutral, exact symmetry, frozen-cap frame
-    invariance under appended extremes (and proof Percentile violates it),
-    Manual-default + seed-once + cap-persistence source assertions.
-  • Ops routine (per user): commit/reboot wipes /tmp caps → at the open:
-    Reset cap → 2–3 snapshots → Calibrate range → hands off. Cap stale
-    warning fires if the field saturates. Cross-day constant: picked from
-    monitoring-week data, later build.
 vGBT-0.9.5 [NO-REPAINT BURSTS — trader audit fix]
-  • Cooldown is now CAUSAL: first minute over threshold LOCKS the event; later
-    minutes inside the 5-min window are suppressed, never promoted. A printed
-    dot is immutable (old peak-per-window could move it).
-  • Ranked top-12 cap DELETED (could retroactively erase a printed dot hours
-    later). Replaced by a chronological sanity ceiling (50, never ranked)
-    that can only stop NEW dots, never remove old ones.
-  • Burst-logic expander removed from the page (per user).
-  • Harness: incremental-stream gate proves the printed set only ever grows.
-  • Latency unchanged: dot prints 1–6 min after the burst minute begins
-    (minute close + 5-min cache).
 vGBT-0.9.4 [BURST SENSITIVITY SLIDER]
-  • Burst z-threshold slider (2.0–6.0, step 0.5, default 3.0) beside the
-    controls. The z SERIES is cached; threshold + cooldown + cap now apply at
-    DRAW time — slider responds instantly, zero refetch. Sensitivity chain
-    (documented in-tab expander): log-z vs 60-min rolling median (MAD floor
-    0.05, RTH baseline, edge-trim 09:40–15:50) → z≥slider → peak-per-5-min
-    cooldown → top-12 cap. Detector is RELATIVE per day — violent and quiet
-    days each fire against their own baseline.
 vGBT-0.9.3 [INTERVAL v2 FINAL CONTROLS — user spec 07-12]
-  • Scope radio: "All expiries" | "0DTE only" (default 0DTE) — plumbs into
-    interval_map expirationDate + burst net_flow expirationDates via the
-    per-ticker resolver; scope in cache key + dispatch sig.
-  • RTH display checkbox (display-only; cumulative always integrates from
-    midnight; continuous shows SPX overnight bubbles).
-  • Top-strikes dropdown 5|10 (draw-time only — no refetch).
-  • NO staleness guard (latest available session shows as-is, per user).
-    Monuments dropped ("All expiries" one click away). Panels taller (16×26),
-    ticker titles 13pt bold.
 vGBT-0.9.1 [EXPIRY RESOLVER — weekend/holiday fix]
-  • Snapshot no longer assumes today's date is a listed expiry (Sunday/holiday
-    → heat calls hit a nonexistent expiry → empty chain → 'all quotes dead').
-    _gbt_next_expiry(): open_interest_by_expiration → first expiration ≥ today
-    (falls back to today's date string on any API failure = old behavior).
-    Weekend snapshots now show the latest session's state for the NEXT expiry.
 vGBT-0.9.0 [INTERVAL TAB v2 — probe-19/20 spec, user-approved 07-12]
-  • Interval tab REBUILT: one 4×2 grid — rows SPX/SPY/NDX/QQQ, cols DEX|GEX.
-    interval_map (FIVE_MINUTE · topN=300 · blank expiration · band = session
-    price range ±0.6% from GBT bars — NOT live-spot-centered) · cumulative-
-    from-midnight naive values · top-5 strikes big / population dotted ·
-    palette dodgerblue/crimson @70% · RTH display trim · Market Open marker.
-  • FLOW BURSTS: CLEAN net_flow premium/min (single-leg filterExpression,
-    probe-17B) · log-z, RTH-only baseline, abs MAD floor 0.05 · z≥3 ·
-    peak-per-5-min cooldown · top-12 cap · 09:40–15:50 edge trim · blob on
-    price line, ring #2eff8a call-led / #ff7300 put-led · NET_PREMIUM=CENTS÷100.
-  • Old interval controls/state-render preserved as dead source (harness
-    string-gates); state engine untouched. Fetch cached per 5-min key.
 vGBT-0.8.6
-  • Interval: "Relative size (per time column)" toggle — bubble area = share of
-    the largest strike AT THAT MOMENT (leaders pop vs the population); default
-    OFF preserves the absolute benchmark growth look. All screenshot settings
-    confirmed as existing defaults (signed ON, blank-chip, cum, top 25, RTH).
-
 vGBT-0.8.5 [TONIGHT'S QUEUE — one consolidated build]
-  • Combined tab (Option A): canonical Gamma+Charm pair auto-fits its VIEW to
-    the session's price action ± pad at capture time (_canon_fit_axes) — dead
-    field gone, playback frames stay mutually consistent, Terrain tab keeps
-    full interactive zoom.
-  • Interval frame = top strikes ∪ price range (_intv_ylim): the price path can
-    never leave the frame. ±% window slider = FETCH range only.
-  • Interval fetch reaches MIDNIGHT (topN ladder 300→150→100; probe-10 finding).
-  • State (Δ/Γ×OI) source removed from the UI (engine + exact-math gates kept).
-  • Flip rings render in CUMULATIVE mode only (Diff-mode ring spam fix).
-
 vGBT-0.8 [⏱ INTERVAL TAB — final, per VS3D_INTERVAL_RECIPE.md]
-  • GEX + DEX bubble panes, LIVE current session ONLY (no backfill — user spec).
-  • Recipe (benchmark-cracked): interval_map · scope radio "All expiries
-    (blank-chip, benchmark)" default vs "Session expiry (0DTE)" · client
-    CUMULATIVE = their Raw (per-bucket = Difference) · top-N significance,
-    DEFAULT 25 · context dots · rings on EVERY zero-cross.
-  • Signs follow master toggle. FLAG-2 FIXED: signed DEX put leg enters with
-    MINUS (dealer long puts = short delta). GEX keeps + both legs (long option
-    = long gamma). FLAG-3 FIXED: expirationDate optional in the fetch.
-  • Known residual (documented): thin far strikes may differ from the reference
-    — their proprietary print-classification; not reproducible from public data.
-  • SIZE = GROSS / COLOR = NET (probe-9 v3, numeric confirmation): 7500 traded
-    214T gross with 93% cancellation → any net-sized bubble is blind to the
-    battleground strike. Bubble area ∝ |C|+|P| (significance); color = sign of
-    C+P (direction); top-N ranks by gross. Matches the reference hierarchy.
-
 vGBT-0.7.1 [VS3D VISIBILITY — layout + field mode]
-  • Combined tab back to the REAL VS3D structure: Book left (1.0) · Gamma+Charm
-    stacked right (2.2). Last night's full-width stacking was an overcorrection
-    — one giant unusable poster. Owned and reverted to the reference layout.
-  • NEW Gamma field mode, superseded 0.9.7: Aggregate is default: each strike is
-    its own horizontal band, intensity = that strike's own signed exposure at
-    Γ(spot,K,τ_t). WHY: at τ≈6h/17% IV a BS gamma kernel is ±34 pts wide, so the
-    guide-spec aggregate ("γ if spot were here") mathematically cannot resolve
-    5-pt pockets — the reference tool's visible banding IS per-strike rows, not
-    an aggregate. Aggregate mode retained as "Aggregate (guide-spec §2)".
-
 vGBT-0.7 [RECORDER FIXES + BOOK×SPOT VIEW — from the first full-day review]
-  • CANONICAL PAIR CACHE: every snapshot now caches a Gamma+Charm terrain pair
-    ("vs3d_std") no matter where the greek dropdown sits. Today's lesson: the
-    dropdown was on Decay all day → zero Gamma history. Never again.
-  • Combined tab: stacked FULL-WIDTH (taller, not wider) and reads the
-    canonical pair first.
-  • BOOK × SPOT PATH (default ON): white intraday SPX line over the signed book
-    on a shared strike axis (time on top), labeled walls at the right edge —
-    the classic profile+path view. Cached per frame, so playback shows the
-    path GROWING instead of a static centered spot.
-  • Ops lesson recorded: /tmp state (incl. panel cache) dies on every deploy —
-    3 mid-session deploys today erased the morning. Hotfix before open or
-    after close.
-
 vGBT-0.6.2 [INTENSITY: STOP THE SEA-OF-COLOR]
-  • Power exponent default 1.00 → 0.40 (√-like, same rationale as the Book's √
-    scale): gamma fields span 10-100× between wings and ATM — linear mapping
-    renders them as clipped slabs. Slider unchanged; 1.0 = guide-spec linear.
-  • stale-cap tripwire TIGHTENED: old trigger (p92 > 3× cap) slept through a
-    morning where the OI+Volume field grew ~2× past the 09:35 cap and 60-80%
-    of ATM cells clipped flat. New trigger: p92 > 1.5× cap OR >35% of cells
-    clipped. Manual-cap philosophy (§2.4 comparability) retained — we warn
-    loudly instead of silently rescaling.
-
 vGBT-0.6.1 [SMOOTHING WAS EATING THE POCKETS]
-  • default Gradient smoothing 1.00 → 0.25. At 1.00 the kernel spans ~1% of price
-    (~75 pts) — wider than the 15-25 pt signed pockets themselves (e.g. today's
-    7505-7525 dealer-short cluster), so the field collapsed into naive-looking
-    stripes NO MATTER how good the signs were. 0.25 ≈ 19 pts: pockets survive.
-  • loud hint when smoothing >0.5 while signed inference is ON.
-
 vGBT-0.6 [NET_DRIFT LIVE SIGNS + VOLUME GATE — promoted on same-day evidence]
-  • live sign refresh now uses net_drift (official ask−bid aggressor semantics;
-    agreed with our side-stats 100%/91%/100% across three checks today) — one
-    call per strike covers both legs; parsing is one column-sum, not 5 buckets
-  • VOLUME GATE: per-strike traded volume rides the NET_VOLUME heat we already
-    fetch — a strike's sign is only re-pulled when its volume actually changed
-    (≥ max(50 lots, 2%)). Quiet strikes cost ZERO calls. Budget cap 12/snapshot.
-  • SEED UNCHANGED: side-stats on yesterday's session + today's expiry is the
-    probe-4-proven path; net_drift was never tested on that combo (rule 1).
-
 vGBT-0.5.1 [AUDIT FIXES — from the pre-read code re-check]
-  • ORDER BUG: ♻ Re-run took its snapshot BEFORE GBT_SIGNED existed in the run →
-    NameError → silently-naive frame + no re-sweep. Checkbox now defined first.
-  • SCALE BUG: unseeded legs entered at naive ±1.0 vs measured ±0.05-0.25 →
-    unknowns dominated the signed field 5-20×. Now naive sign × 0.2 (GBT_UNSEEDED_W).
-
 vGBT-0.5 [VS3D PARITY — combined page + terrain zoom]
-  • 🖥 VS3D tab: Book + Gamma + Charm on ONE page, assembled from the current
-    frame's PNG cache (zero recompute) — sidebar checkbox to enable
-  • Terrain ➕/➖/reset strike-zoom (display-only, like the Book's; matches the
-    range controls on real VS3D) — applied to Gamma, Charm and side profile
-  • sign convention audited & unchanged: bid/below-bid = customer SELLS = dealer
-    LONG; ask/above-ask = customer BUYS = dealer SHORT; mid excluded; conf = |net|/total
-
 vGBT-0.4.1 [BOOK RESPONDS TO THE MASTER TOGGLE + STABLE FIGURE SIZE]
-  • Signed-inference checkbox now flips the Book too (was: only terrain + future
-    snapshots; the Book kept using the stored dsign column either way)
-  • cached frames are saved at the figure's own dpi with no tight-crop → a frame
-    renders pixel-identical whether live or replayed (no more small/long jumping)
-
 vGBT-0.4 [BOOK ZOOM + SEED ANCHOR — user-spec'd method]
-  • Book zoom: ➕/➖/reset buttons (display-only sub-window of the fetched range) and a
-    range caption that states EXACTLY what was fetched, shown, and seeded — no guessing
-  • seed universe re-anchored: YESTERDAY's RTH close ±2% (union live window) — the
-    session that built the book defines the sweep; intraday drift can't orphan strikes
-  • ♻ Re-run signed seed = ONE click: clears seed+live, re-sweeps, takes a fresh
-    snapshot (~2-2.5 min with spinner)
-  • Price window default 1.5% → 2.0% (user spec) · FIX: signed Book no longer gets its
-    x-label overwritten by the naive one
-(lineage: cloned from vs3d2 v2.2.2, which grew from the vs3d3_v2.0 baseline)
-
 vGBT-0.3.1 [file identity fix — header now names THIS file; no functional change]
-=================================================
-Point your streamlit.io app at this file.
-
-CHANGELOG (newest first) — what changed and why, per version
-─────────────────────────────────────────────────────────────────────────────
 vGBT-0.3 [DEPLOY-PROOFING + BOOK UX — √ scale, version stamp, all 0.2.x fixes rolled up]
-  • sidebar stamp vGBT-0.3: if the running app says 0.2, the repo has a stale file
-  • Book: √ display scale (default ON, matches the reference chart) so the 7475/7500
-    towers stop flattening every other strike; Price window ±% slider = the zoom
-  • rolled up: NULLs fix · Gamma default · SIGNED·flow title badge · re-seed button ·
-    seed coverage badge · budget-safe pacing
 vGBT-0.2 [SIGNED INFERENCE — same morning · flow-seeded dealer signs EVERYWHERE]
-  • dealer sign per leg inferred from aggressor flow: seed = YESTERDAY's session flow on
-    TODAY's expiry (net customer initiative = (above_ask+ask)−(bid+below_bid); dealer =
-    minus that; confidence = |net|/total). Live cumulative refresh for top-OI strikes.
-  • signed mode drives BOTH the gradient (Gamma & Charm & Delta-Change fields) and the
-    Book tab (MM-inferred $/1% bars, opacity = confidence). Toggle OFF = naive.
-  • token: st.secrets["GBT_TOKEN"] or sidebar input — NO token in the repo.
 vGBT-0.1 [GBT MIGRATION — first light 07-09 · clone of v2.2.2, ingestion swapped]
-  • data: GroupBuyTrading API, SPX native, ~9 calls/snapshot (1 exposure + 8 heat)
-  • chain rebuilt per strike from heat_map IV/Δ/Γ + NET_OI/NET_VOL; bid=ask=BS-mid so
-    the ENTIRE v2.2.2 stack (terrain, pinak, verdict, playback, persistence) runs unchanged
-  • NEW first tab 📊 Book (by strike): VS3D 'Positions' analogue — naive calls+/puts−
-    convention (honest label), comparison dots (prev + market open), 1× straddle lines
-  • staged for vGBT-0.2+: GBT candles/true straddle/vanna/color panels · Phase C signed flow ledger
 v2.2.2 [ENGINE NIGHT-BUILD — built midday 07-08, deploy pre-open 07-09]
-  • PLAYBACK rebuilt: frame advance driven by the autorefresh TICK COUNTER —
-    extra reruns (button/component handshakes) can no longer skip frames;
-    Rewind→Play now shows frame 1 first; Pause HOLDS position (slider no
-    longer snaps to latest); Play works with the auto toggle off.
-  • _due() respects the Auto-refresh toggle — no surprise Barchart pulls when
-    scrubbing in manual mode (the 'back-step didn\u2019t load' spinner mystery).
-  • DAY-STATE PERSISTENCE: snaps/frames/open-straddle/caps pickled to /tmp
-    after every snapshot; restored automatically on an empty session. A browser
-    reload now costs NOTHING (twice-burned 07-07/07-08). Clear deletes the file.
-  • ATM IV tripwire FIXED — it had never rendered: NameError (use_exps before
-    definition) swallowed by its own silent except since v2.1.9. New rule:
-    tripwires fail loud (shows 'ATM IV unavailable (Type)' instead of nothing).
-  • Banner because-line names the BINDING constraint (fishbone cap) first.
-  • Two new Greek views: 'Gamma |Γ| (heaviness)' — single-hue magnitude, the
-    honest unsigned map (direction blank by design) — and 'Gamma Decay (color)'
-    — Γ(P,τ+30m)−Γ(P,τ), where pin energy is BUILDING. Own caps, own
-    legends, ride all existing cache/playback machinery.
 v2.2.1 [INTERPRETABILITY — the actual ask]
-  • Signals verdict banner: one of four explicit states — LEAN LONG / LEAN
-    SHORT (with play + target), SMALL SIZE ONLY, WAIT (with the specific
-    blocker), STAND DOWN. Driven by read_verdict (track=False) so Signals and
-    Read can never disagree; includes confidence and a plain because/flips line.
-  • Every row now carries an inline plain-English interpretation; directional
-    rows are explicitly ▲/▼ (path, PIN magnet, walls ±distance), gate rows say
-    LIVE/OFF instead of implying it; jargon glossed in place (fishbone, snake-
-    oil, K*, flip side). Terminology kept true to VS3D, meaning made explicit.
 v2.2.0 [NIGHT BUILD — signals trust & readability]
-  • Empirical charm lean now uses _book_delta_drift(): the FIXED prior book
-    repriced at both (spot,T) states. Weight growth (volume accumulating) no
-    longer masquerades as hedge flow — the ≈61k minis/5min was contaminated;
-    the ×2/100 e-mini conversion itself audited CORRECT vs the cheat sheet.
-  • Absorption weights book-first (OI, volume fallback) in Signals + Read —
-    absorption is the EXISTING book’s remaining hedge (§5.4), not day flow.
-  • Per-date open straddle persisted at first snapshot (survives Clear); decay
-    gate labels its reference honestly (“open 09:35” vs “open (1st snap)”).
-  • Signals tab rebuilt: grouped sections, aligned columns, status colors,
-    bigger type. Fixed matplotlib mathtext swallowing dollar signs (the
-    “now 18.97·open11.45” cram) — all fig text now mathtext-safe.
 v2.1.9 [IV KILL-SHOT + TRIPWIRE — post-close hardening]
-  • _iv_norm_chain(): units decided ONCE per fetched chain from the MEDIAN and
-    applied uniformly — closes the per-value leak (a legit 2.8%-IV strike
-    printed percent-style as 2.8 passed the >3 test and entered as 280%).
-    Mixed-units chains are now impossible by construction.
-  • Header shows ATM IV next to the candles caption (e.g. · ATM IV 19.4%) —
-    a units regression can never again hide behind a rendered field.
 v2.1.8 [IV UNITS ROOT CAUSE + STACKED CHARM — 2026-07-07 midday]
-  • ROOT CAUSE of the flat two-tone terrain: Barchart serves IV percent-style
-    (19.5 = 19.5%) and we consumed it as decimal → every BS greek priced at
-    ~1950% vol → gamma smeared ±700pts → ALL price structure erased (strike
-    banding cv 1.5→0.17 in the harness repro; flat two-tone is the symptom). Proof: a
-    fresh Reset re-seeded cap ≈4.69e9 ≈ the "stale" 4.25e9 (a fresh seed cannot
-    saturate its own frame), and straddle $26.10 @ spot 7486 implies ~19.5% ATM.
-    FIX: _iv_norm() at the fetch_chain ingest point — >3 → ÷100. Snapshot
-    chains are now decimal everywhere downstream (terrain, Delta Change, read
-    lean, pinak vanna, decay/forward surfaces all healed by the one choke point).
-  • STACKED CHARM PANEL (user request): Charm field rendered below the main
-    greek on the Terrain tab, VS3D-style — no dropdown flip-flopping. Own cap
-    (terr_cap_Charm_*), rides the same playback/frame cache (multi-image tabs
-    were already supported), zero-contour + candles + spot for alignment.
 v2.1.7 [LIVE-SESSION FIXES — 2026-07-07 first RTH validation]
-  • DEFAULTS: Expiries to aggregate 3→1 (0DTE only — the gradient chart is a
-    0DTE tool; multi-expiry background was washing out asymptotic structure).
-    Price window ±2.5%→±1.5% (comparable zoom to the VS3D reference).
-  • Calibrate range / Reset cap moved OUT of the collapsed Terrain expander to
-    top-level sidebar — mid-session scale fixes must be one click away.
-  • Stale-cap banner: if the live p92 exceeds 3× the fixed cap, the app says so
-    (today the field sat saturated for ~90 min before anyone noticed).
-  • K* parity band tightened ±3%→±1%: stale-but-uncrossed quotes 160 pts out
-    won K* (7330 @ spot 7490). Near-spot parity only.
 v2.1.6 [VIX = TVC ONLY] Barchart $VIX fallback REMOVED per user rule — VIX now
-  comes exclusively from TradingView TVC:VIX (fetch_vix_live). If the TVC pull
-  fails, the gate shows "VIX n/a · TVC feed unavailable" (zero confidence
-  effect) instead of silently regressing to a possibly-delayed quote.
 v2.1.5 [LIVE VIX] VIX regime gate now sourced from TradingView TVC:VIX (live)
-  via the existing tvdatafeed dependency — fetch_vix_live(), last 1-min close,
-  sanity band 5–200. Barchart $VIX kept as automatic fallback (its free index
-  quote may be delayed; a stale VIX matters most exactly during a spike, when
-  the vanna gate should flip). Snapshot stores vix_src ("tvc"/"bc"); the Read
-  tab's VIX line shows the source so live validation can confirm which fed it.
-  No greek math touched — VIX is regime gate + confidence only.
 v2.1.4 [PERF/JIGGLE FIX] Two changes for CPU + screen-shake:
-  • Fixed-size chart rendering (use_container_width off, dpi 80). The jiggle was
-    Streamlit's resize feedback loop: responsive image ↔ scrollbar ↔ container
-    width oscillating on tall pages (Read tab). Fixed-size images end the loop.
-  • Live-render signature cache: each tab re-computes ONLY when its snapshot or
-    its own controls change; otherwise the cached PNG is shown with zero math.
-    Changing the Greek recomputes Terrain alone — Signals/Read stay cached. An
-    idle page now does no per-rerun BS-grid work at all (one benign extra render
-    right after a cap first seeds).
 v2.1.3 [Terrain strike scale] 25-pt price ticks now bright (#9fb0c3, larger) on
-  BOTH sides — left on the main field, right beside the profile histogram (VS3D
-  style) — plus subtle horizontal gridlines across the field so ridges and walls
-  map to strikes at a glance.
 v2.1.2 [Read tab glance graphics] Two cheat-sheet panels under the text:
-  left = minimal sketch of the current pattern (chop zigzag with range band for
-  +γ; expansion curve with trigger dot for −γ, in direction color); right = 'the
-  day on one map' drawn with LIVE levels — UPPER/LOWER TEST (walls, amber),
-  ANCHOR (PIN, blue; merged label when pin sits on a wall), spot dot, and a lean
-  arrow to target (label suppressed when it would collide with a level label).
 v2.1.1 [Read tab visual + pin fix] Read card rebuilt: large bold pattern header
-  with ▲/▼ in direction color (green bullish / red bearish vs spot), wrapped NEXT
-  line, colored gate stack (bull/bear/amber semantics; fixed FLOW-contains-LOW
-  substring bug), colored confidence bar. PIN candidates now constrained to ±2.5%
-  of spot — deep-wing OI was dragging pin to absurd levels (e.g. 6825 with spot
-  7537), corrupting the tension note; same class of fix as flip/K* earlier.
 v2.1  [NEW 📖 Read tab — the cheat-sheet as a decision engine] γ environment
-  (side of flip + magnitude vs session trailing) × charm lean (empirical Δbook-
-  delta/Δt when 2+ snaps, else model charm; hedging-effect: rising book delta =
-  dealers SELL = lean down) → one of the four day patterns (chop-up / chop-down /
-  bull expansion / bear flush) with structure suggestion and 'buy what price goes
-  through, sell what price goes to' strikes. Gates: charm clock, straddle check
-  (decaying / flat-repricing / collapsing), VIX regime (now fetched per snapshot),
-  fishbone (hard-caps confidence at 25 — SIT OUT), γ-absorption along the path
-  (§5.4), negative-γ 'needs a trigger' penalty, pin-vs-charm tension flagged when
-  PIN sits against the lean. Confidence 5–95 from the gate stack. Playback key
-  'read'. Proxy-honest footer throughout.
 v2.0.2 [Weighting made explicit + honest] New Terrain control 'Weighting':
-  OI + Volume (default: yesterday's settled book + today's cumulative flow),
-  OI (opening book — static all day, §4.5 'respect the opening position'),
-  Volume (today's flow — cumulative, resets overnight only, counts round-trips),
-  Vol-else-OI (legacy rule; kept, but it under-weights a big-OI strike the moment
-  it prints 2 lots — that discontinuity is why it's no longer default).
-  Nothing is signed; nothing resets intraday; OI cannot change intraday (OCC
-  publishes once daily). Cap seeds/history are per greek+weighting.
 v2.0.1 [FIX — controls now apply instantly] PLAYBACK was engaging whenever ANY
-  frame was cached, so after the first snapshot every rerun replayed a frozen PNG
-  and sidebar changes (Greek, opacity, cap…) did nothing until the next 5-min
-  snapshot. Now: replay ONLY while ▶ playing or scrubbed to an older frame;
-  paused at the latest frame = LIVE render every rerun (cache overwritten so
-  playback stays current). Also: Expiries-to-aggregate default 1→3 (§1.5 whole
-  book), cap seeds at 1.2×p98 (less saturation, more gradient), side histogram
-  scales to its own shape (no more slab), off-hours banner explains the flat
-  pre-market field.
 v2.0  [REBUILD to VS3D guide spec — 7 tabs → 2]
-  After a word-by-word read of the VS3D Onboarding Guide (all 7 chapters):
-  • 🗺 TERRAIN — the Gradient Chart done right. Multi-expiry book (each expiry
-    decays on its own clock; 0DTE dominates via asymptotic gamma, §1.5/1.6).
-    Greeks: Delta Change (§7.7, new — book_delta(now) − book_delta(P,τ); the
-    'path of least resistance', combines gamma+charm), Gamma (model or §2.7
-    simulated $5 finite-diff), Charm (hedging-effect polarity: SELL=gold).
-    Rendering per §2.4: MANUAL symmetric range with Calibrate-from-trailing
-    (a loose day looks loose; no per-frame percentile rescaling), Power
-    intensity default 1.0 (near-linear; low power = Dan's 'cartoon setting'
-    warning), field opacity default 0.38 BEHIND candles. §1.5 contours: dotted
-    zero boundary, RED ridge chains (local maxima through time), BLUE troughs.
-    Straddle bounds (§5.3), side profile histogram (right edge), Vol Adjust
-    0/+1%, Pinak dealer-levels overlay.
-  • 🧭 SIGNALS — the §5.1 daily workflow as one panel: straddle now/open +
-    decaying gate (snake-oil check), spot±straddle range, fishbone verdict,
-    regime vs trailing, timing window, CHARM GATE (decaying AND 1:30–3pm),
-    gamma absorption to each bound in e-mini equiv (§5.4 'profile consumes
-    itself') with path-of-least-resistance read, Pinak levels block.
-  • Playback engine unchanged (keys: terrain, signals). Old tabs retired; their
-    logic lives on inside these two. v1.19 kept as deploy fallback.
 v1.19.2 [FIX] Pinak tab, on live 0DTE: three glitches fixed.
-  • VOL TRIGGER (flip) showed nonsense (e.g. 4800) — the zero-cross finder grabbed the
-    first sign flip in the deep near-zero wings. Now ignores crossings where |GEX| is
-    <2% of max and picks the crossing NEAREST spot.
-  • K* (parity forward) showed nonsense (e.g. 7320) — parity solver trusted stale/crossed
-    deep-ITM quotes. Now restricted to strikes within ±3% of spot with valid two-sided
-    quotes (ask>bid), using bid/ask MIDS.
-  • Level labels collided/overwrote (CALL WALL+CEILING+K* stacked). Now labels are
-    staggered vertically with leader lines when levels sit close together.
 v1.19.1 [FIX] Forward-sim field was TIME-FLAT (looked like flat green/red blocks, not
-  the smooth fade-and-intensify of the real VS3D chart). Cause: forward_sim_grid clamped
-  every time column's T to 'now' (when=max(tau,now)), so gamma never decayed across the
-  session. Fix: T=_T_at(exp,tau) across the WHOLE 09:30–16:00 axis, so near-dated gamma
-  goes asymptotic toward expiry (verified: ATM gamma grows ~16x open→close; time-var
-  ratio 0.00→0.17). This also feeds the Forward-models tab (same function). The blue
-  'now' line still marks present; candles still overlay actual price.
 v1.19  [NEW 'Pinak 2' tab — VS3D Gradient Chart with normalization/transform controls]
-  • Added 7th tab '🌈 Pinak 2 (VS3D gradient)'. Reuses the forward-sim grid (model 2,
-    today's live-flow VOL weight) and layers the VS3D handoff's tuning chain on top:
-      - Normalization modes: Percentile(default, tunable hi pctile) / Linear / Std Dev / Z-Score
-      - Intensity transforms: Arcsinh(default, gain slider) / Square Root / Power Law / Linear
-        (these tame the 0DTE asymptotic 'deep green all the time' blowout)
-      - γ=0 boundary + ridge/trough contour lines
-      - Reverse +/- toggle; Greek selector (Gamma green/red · Charm gold/blue)
-    All controls live in a sidebar '🌈 Pinak 2 gradient controls' expander.
-  • New helpers: pinak2_normalize(), pinak2_transform(), pinak2_contours().
-  • Honest note in-tab: OI-proxy sign gives a clean green/red split, not green-with-
-    red-pockets (that needs dealer long/short, which free data lacks) — the split is
-    the proxy's tell, not a bug. Caches for playback (1 fig/snapshot).
 v1.18  [NEW 'Pinak' tab — dealer-positioning levels, NIFTY-GEX method]
-  • Added 6th tab '🎯 Pinak (dealer levels)'. Ports the NIFTY GEX skill's
-    methodology onto Barchart 0DTE data, in our price-axis style.
-  • GEX per strike = gamma·OI·spot·100 (Barchart gamma). Computes: vol trigger
-    (gamma flip = net-GEX zero-cross), call/put walls, ceiling/floor (positive-net-
-    GEX ranked by |gex|·OI), upside/downside hedge walls (exp proximity-decay ×
-    (1+vanna)), K* (put-call parity forward vs no-arb band), 3 gravity centers,
-    pin level + 0-100 confidence score/label, Color exposure (∂γ/∂t).
-  • Vanna: TRUE closed-form bs_vanna = -φ(d1)·d2/σ seeded with Barchart IV
-    (the skill's #1 upgrade), not the OI×GEX proxy. Also added bs_delta, bs_color.
-  • Visual: GEX profile as left-gutter density (green call / red put / gold net) on
-    the price axis + candles + all levels as labeled horizontal lines. Signals figure
-    below. Uses dispatch/emit so it caches for playback (2 figs/snapshot).
-  • Sign remains dealers-short-options CONVENTION (not measured) — noted in-tab.
 v1.17.3 Fixed VS3D tab panels rendering at giant full-width size (regression from the
-  playback refactor, which emitted each panel full-width). Restored a 2-column grid
-  for VS3D in BOTH live and playback so the 6 panels stay a sane size. emit() now
-  accepts a container arg to render into a specific column.
 v1.17.2 Removed the Cone-tab candle/bar diagnostics expander (was for debugging the
-  'candles not drawing' issue, now resolved — just clutter).
 v1.17.1 [hotfix] Frame slider crashed when only 1 playback frame existed
-  (Streamlit requires slider min<max). Now: <2 frames shows a caption instead of
-  the slider, and Play won't start until ≥2 frames are cached. Rest unchanged.
 v1.17  [PLAYBACK engine + charm colors + 5-min candles; all tabs refactored]
-  • PLAYBACK: every snapshot, all 5 tabs render to PNG and cache in
-    session_state.frames[ts][tab]. Sidebar ▶Play/⏸Pause, ⏮Rewind, Speed 1/2/4 s/frame,
-    Frame slider. Play advances a frame each fast tick (st_autorefresh at the chosen
-    speed); Pause holds so you can read. Playback shows CACHED PNGs — no recompute
-    (verified: 22 figs cached live, 22 replayed with 0 recompute). Live 5-min refresh
-    is suspended while playing; resumes on pause.
-  • All 5 tab bodies refactored into _render_*() funcs called via dispatch(tab,fn),
-    which either renders+caches (live) or replays cached frames (playback). emit()
-    replaces st.pyplot so every figure is both shown and cached. Nothing removed.
-  • Forward-model CHARM recolored to the gold/blue charm_cmap (was red/green); titles
-    updated to 'gold=put/− · blue=call/+'.
-  • Candles switched to 5-MIN (prep_bars resamples 1-min→5-min OHLC) — less busy;
-    candle width auto-adapts to bar spacing.
-  • dVOL empty earlier was GENUINE: Barchart volume often unchanged between two 5-min
-    snapshots (coarse cache), so Δvol≈0. Not a bug; needs wider spacing to populate.
 v1.16  [NEW 'Forward models' tab — VS3D-style price×time forward simulation]
-  • Added 5th tab '🔮 Forward models (price×time sim)'. Replicates VS3D's Gradient
-    Chart mechanic: each pixel (price P, time-of-day τ) = the greek IF spot were P at
-    time τ, from the CURRENT chain, advancing the clock and re-pricing with BS SEEDED
-    by each strike's Barchart IV (anchors to real skew, projects forward). Blue 'now'
-    line: left held flat (no past re-sim), right = pure forward sim to 16:00. Real
-    SPX500 candles overlaid up to now. Charm colored by HEDGING EFFECT (red=sell,
-    green=buy) per docs 7.7. All 5 model weightings (naive OI, zero-open VOL, OI+VOL,
-    dVOL, vol/OI); dVOL & vol/OI flagged 'forward-sim weak' (defined by past change).
-  • New: forward_sim_grid(), _fwd_weight(), _fwd_norm(). Reuses bs_gamma/bs_charm/_T_at
-    and the existing candle + time-axis helpers. NO IPython (that was a Colab-only dep;
-    deploying the Colab script as the app caused ModuleNotFoundError: IPython).
 v1.15  [NEW 'VS3D' TAB — sign-free dashboard ported from Colab; robust auto-refresh]
-  • Added a 4th tab '🧭 VS3D (sign-free dashboard)' alongside Cone/Landscape/Surface
-    (nothing removed). 6 panels, all computable from FREE Barchart data:
-      GAMMA net exposure · |GAMMA| magnitude (walls, sign-free) · SPEED ∂γ/∂spot ·
-      CHARM ∂δ/∂t (empirical, w/ flip lines) · COLOR ∂γ/∂t · SIGNALS block
-      (straddle range, straddle-decay 'snake-oil' gate, fishbone, gamma absorption,
-       skew proxy, VIX regime, timing window).
-    Charm/Color/decay populate on the 2nd snapshot (same pattern as Cone charm).
-    All panels carry SPX500 candles on the session-time axis (reuses draw_candles).
-  • Honest limit shown in-tab: strike-level dealer long/short (anchor vs test),
-    net-hedgeable filtering, and OTC flow are NOT replicable without paid data.
-  • Auto-refresh hardened: uses streamlit-autorefresh when present; otherwise a
-    built-in JS 5-min full-page reload (re-pulls; session_state/snapshots persist),
-    replacing the old fragment ticker that didn't re-pull.
-  • New analytics (sign-free): vs3d_profiles/_density, vs3d_straddle, vs3d_fishbone,
-    vs3d_absorption, vs3d_skew, vs3d_timing, vs3d_vix_regime + mag/speed cmaps.
 v1.14  [CONE: real Barchart gamma density + tunable smoothing — still no surface/proj]
-  • Cone gamma profile rebuilt as a DENSITY: net signed GEX per strike (Barchart gamma,
-    calls+/puts−) interpolated onto the price grid. Smoothing is a SIDEBAR SLIDER
-    ("Gradient smoothing", default low) — 0 = raw per-strike detail (bumpy, like vols3d
-    live), higher = smoother. Confirmed via vols3d hover tooltip that per-strike
-    granularity is desired (bumpy is NOT a bug).
-  • Learned from vols3d tooltip: the dashed line is a CONTOUR (zero-boundary of the
-    gamma field), not a single "flip" level; the field has multiple real pockets. The
-    cone x-axis carries NO time/forecast meaning — width = gamma magnitude per price,
-    candles overlaid only for price context. (Corrected my repeated misreading.)
-  • Empirical charm profile also rebuilt as interpolated density with same slider.
 v1.13  [CONE converted to real Barchart data — surface/projection still pending]
-  • Confirmed via Colab: Barchart returns gamma+delta per strike (430/430), but NO charm/
-    vanna (only delta,gamma,theta,vega,rho). So gamma is used DIRECTLY; charm is derived
-    empirically as Δdelta/Δt from real Barchart deltas across snapshots (user's choice).
-  • CONE gamma: net GEX per price level from Barchart per-strike gamma (flat bands, vs3d
-    style). NO Black-Scholes. compute_walls also switched to Barchart gamma.
-  • CONE charm: empirical Δdelta/Δt vs the previous snapshot; BLANK on the 1st snapshot
-    (shows a placeholder), populates once a 2nd snapshot exists. Chain now stores 'delta'.
-  • New helpers _gex_profile_barchart() and _empirical_charm_profile(). Verified: gamma
-    matches Barchart, charm None on snap1 and populated on snap2.
-  • TODO: Landscape (per-strike Barchart gamma projected with T-decay shape, pinned per
-    strike + bad-strike clipping) and Intraday surface still use BS internally — next.
 v1.12
-  • FIX: candles filled the chart to ~16:00 even at 11:56. Cause: tvdatafeed returns
-    NAIVE UTC timestamps (verified: last bar 15:56 == UTC now, +3.99h vs EST), but the
-    code assumed they were already EST — so every bar was plotted +4h to the right.
-  • fetch_bars_raw now localizes timestamps as UTC and converts to EST via zoneinfo
-    (DST-aware: −4h summer / −5h winter, never hardcoded), then drops tz.
-  • prep_bars now also cuts bars at <= now_est(), so the chart never extends past the
-    current minute. Verified with a simulated UTC feed: 13:30 UTC→09:30 EST, series ends at now.
 v1.11
-  • THE ACTUAL ROOT CAUSE: the symbol was wrong. CAPITALCOM:SPX is a ~68-handle
-    instrument (1–3 vol/min) — NOT the index. The real S&P 500 is CAPITALCOM:SPX500
-    (~7400, real volume), already on correct scale. Confirmed via live Colab dump.
-  • Switched fetch_bars_raw to symbol "SPX500" and REMOVED all scaling/anchoring/window-
-    gating from prep_bars. Bars are plotted exactly as returned — no transform. This
-    retires the entire v1.2–v1.10 scaling saga, which was chasing a wrong-symbol artifact.
-  • Diagnostics (Colab): colab_rth_dump.py (raw RTH dump) + colab_symbol_probe.py.
 v1.10
-  • Bar handling rewritten to the user's rule (cleaner than the v1.9 threshold):
-    anchor CAPITAL.COM bars to the trusted BARCHART SPOT — scale by ratio=spot/feed-median
-    (skipped when ratio is 0.98–1.02, i.e. already correct, so a normal day is untouched) —
-    then KEEP ONLY bars within ±window_pct of spot (the slider); anything else is ignored.
-    Caption/diagnostics report the scale factor and how many bars were dropped.
-  • Added colab_bar_diagnostic.py (separate file): standalone Colab cell that pulls the
-    REAL CAPITAL.COM bars + REAL Barchart spot and prints the scale/window numbers, so the
-    feed's behaviour can be confirmed without fighting Streamlit.
 v1.9
-  • ROOT CAUSE FOUND (via v1.8 diagnostics): the CAPITAL.COM:SPX feed quotes SPX on a
-    DIVIDED scale (~108×, e.g. ~68 instead of ~7400). Candles were being drawn correctly
-    but at y≈68, far below the price window, so invisible. (Not contrast, not date/tz.)
-  • FIX: prep_bars scales bars by the EXACT ratio spot/bar-level, but ONLY when it's a
-    GROSS mismatch (>3× or <1/3×). A normal/trending day (ratio≈1) is left EXACTLY as-is,
-    so the old '7429 shown at 7450' inflation cannot recur. Diagnostics shows the factor.
-  • Verified: ~108× and ~10× feeds corrected onto spot; normal ~7400 day untouched (out==raw).
 v1.8
-  • Added a DIAGNOSTICS expander at the bottom of the Cone tab. Shows the bar pipeline
-    at every stage: raw feed rows/dtypes/dates/times, prep_bars result, session window
-    datenums vs bar datenums, how many bars land INSIDE the x-window (i.e. actually get
-    drawn), and price-window coverage. Purpose: stop guessing why candles don't appear —
-    read the numbers. If "bars INSIDE session window" = 0, it's a date/tz mismatch, not contrast.
 v1.7
-  • FIX: candles were being DRAWN (256 of them) but invisible — the old thin 0.3px
-    gray outline got swallowed by the saturated gradient. Candles now have a dark halo
-    on wicks + a contrasting body outline so they read on top of any gradient color.
-    (This was a contrast bug, not a data/filter bug — bars were in-window the whole time.)
 v1.6
-  • FIX (regression from v1.5): y-axis collapsed to 0–7400 again. Cause: v1.5 window
-    math did lo=min(lo, bars['l'].min()) with NO guard, so a single feed bar with a
-    near-zero low dragged the whole axis to 0 (gradient invisible, candles flat).
-  • Y-axis is now PURELY spot ± window_pct. Bars NEVER influence the axis range, so no
-    stray feed value can collapse or inflate it. A junk bar just plots off-screen.
-    Tested with an injected low=0.01 bar: axis stays spot±2.5%, gradient spans it.
 v1.5
-  • Simplified bar handling: CAPITAL.COM:SPX is clean index data, so prep_bars now
-    just keeps today's RTH bars (09:30–16:00 EST) and plots them. Removed the spot-band
-    filter, median fallback, and numeric-coercion logic from v1.4 that was rejecting
-    ALL bars ("all bars outside ±20% of spot"). Window = spot ± window_pct, widened by
-    today's RTH range. WHY: the v1.4 safety net over-rejected; the data doesn't need it.
 v1.4
-  • FIX (regression from v1.3): price y-axis collapsed to 0–7400, gradient invisible,
-    candles flat at bottom. Two root causes fixed:
-    1) Bar sanity filter judged bars against their OWN median, so a cluster of corrupt
-       feed rows dragged the median down and let junk (near-zero lows) survive. Now
-       bars are filtered against the KNOWN spot (±20%), which cannot be fooled.
-    2) Window math took bars' raw min/max, so one bad low collapsed p_min→~0. Window
-       is now ANCHORED to spot (±window_pct), only widened by bars within ±15% of spot,
-       with a final check that the range straddles spot and is a sane width.
-  WHY v1.3 broke it: removing the spot*0.5 clamp exposed the weak median filter; the
-  alignment guard didn't catch it because price/gradient/axis all shared the SAME bad range.
 v1.3
-  • Removed ALL price rescaling. CAPITAL.COM:SPX is the SPX index 1:1, so candles
-    are now drawn exactly as TradingView reports them (prep_bars only drops
-    obviously corrupt rows; it never multiplies/shifts a price).
-  • Removed every `p_min = max(p_min, spot*0.5)` clamp in the three builders, so the
-    price grid (pg) equals the requested window exactly — no hidden range shift.
-  • Added an on-chart ALIGNMENT GUARD in _finish(): checks each gradient image's
-    y-extent == price grid == axis ylim; if they ever drift it stamps a red
-    "⚠ Y-AXIS MISALIGNED — DO NOT TRADE OFF THIS" banner. Verified it stays silent
-    when aligned and fires when broken.
-  • Added a numeric regression (run offline) across all 3 renderers × tight/normal/
-    wide windows confirming price/gradient/axis share one y-scale.
-  WHY: a candle high of 7429 was displaying at ~7450 — caused by rescaling bars by
-  the session median (inflates on a trending day). Decisions need price ON the true
-  gradient level, so every value-altering transform was stripped and guarded.
-
 v1.2
-  • First fix attempt for the above: rescale only on a gross (>=2x) mismatch vs the
-    latest bar instead of the day's median. (Superseded by v1.3, which removes it
-    entirely — the right call since the feed is already 1:1.)
-
 v1.1
-  • X-axis hard-locked to RTH 09:30–16:00 EST: set_autoscalex_on(False) + margins(x=0)
-    so candle wicks / wall-track plots can no longer re-expand the window. Hourly ticks.
-  WHY: the display window kept drifting because plotting bars outside RTH triggered
-  matplotlib autoscale after set_xlim.
-
 v1.0
-  • Surface projection (right of "now") now uses REAL TIME-DECAY: the current book is
-    re-evaluated at shrinking T minute-by-minute to the 0DTE close, so pockets sharpen
-    as T→0 (reuses the BS engine; per-option expiry, so multi-expiry decays correctly).
-  • Candles pulled FRESH from tvdatafeed every run — caching removed entirely.
-  WHY: flat projection "looked like shit"; candles looked stale due to the bars cache.
-
 v0.9
-  • Surface projects the CURRENT structure FLAT from now→close (dimmed levels map, no
-    decay yet); recorded portion still shows real migration. Filename versioning began.
-
 v0.8
-  • Surface tab reworked to "Option A": positioning heatmap over real recorded time
-    (first snapshot→now), migrating γ-flip contour + call/put wall migration tracks.
-    No projection. WHY: trader view = watch positioning shift vs price reaction.
-
 v0.7
-  • Candles switched to 1-minute bars (from 5-min) for tighter price tracking.
-
 v0.6
-  • Snapshot scrubber slider: view the book as of any past snapshot; cone/landscape
-    redraw to that snapshot, surface trims to snapshots up to the selected time.
-
 v0.5
-  • Unified candles + x-axis across all 3 tabs: one draw_candles(), one session_window(),
-    one style_time_axis(). Only the gradient math differs per tab now.
-
 v0.4
-  • All times pinned to US Eastern via now_est()/today_est() (zoneinfo); tvdatafeed
-    bars treated as already-EST. WHY: cloud box runs UTC, distorting T and the bar-date
-    filter so today's candles weren't printing.
-
 v0.3
-  • Tabbed UI: Cone | Landscape (forward projection) | Intraday surface. Each tab stacks
-    all its methods, every chart shows Gamma + Charm.
-
 v0.2
-  • Removed TradingView login — no-login CAPITALCOM:SPX works.
-
 v0.1
-  • Streamlit POC: in-memory 5-min chain snapshots (st.session_state, no files),
-    auto-refresh every 5 min, manual Snapshot/Refresh/Clear.
-─────────────────────────────────────────────────────────────────────────────
-
-requirements.txt (put this next to vs3d.py in your GitHub repo):
-    streamlit
-    streamlit-autorefresh
-    requests
-    pandas
-    numpy
-    scipy
-    matplotlib
-    git+https://github.com/rongardF/tvdatafeed.git
-
-Notes
------
-• Snapshots are kept ENTIRELY IN MEMORY (st.session_state) — POC, no files.
-  They accumulate while the app session is alive and reset if the app restarts
-  or sleeps. That's fine for a proof of concept.
-• A snapshot of the option chain is taken when one is "due" (≥5 min since the
-  last) or when you click "Snapshot now". Auto-refresh re-runs the app every
-  5 minutes which triggers a due snapshot.
-• Landscape/cone views use the latest snapshot. The "Intraday surface" view
-  uses the full snapshot history (so OI+flow / flow-from-open / interval-flow
-  actually accumulate over the session).
-• Sign = standard dealer convention (calls +, puts −). Volume is unsigned; we
-  do not guess buy/sell.
 """
 import datetime as dt, time as _time, warnings
 import requests, numpy as np, pandas as pd
@@ -1274,10 +614,14 @@ def pinak_levels(chain, spot, exp, now):
             xc=float(K[i]+(K[i+1]-K[i])*(-a)/(b-a)); cross.append(xc)
     if cross:
         flip=float(min(cross,key=lambda x:abs(x-spot)))   # nearest to spot
-    # ---- call / put walls ----
-    above=K>spot; below=K<spot
-    call_wall=float(K[above][np.argmax(call_gex[above])]) if above.any() and call_gex[above].max()>0 else None
-    put_wall =float(K[below][np.argmax(put_gex[below])])  if below.any() and put_gex[below].max()>0 else None
+    # ---- call / put walls: FLIP-anchored (vGBT-0.9.20, reference-faithful) ----
+    # probe33 (Jul-24): flip-anchored CW == native gex_snapshot +γ(OI) at Δ0.0;
+    # spot-anchored missed by 15. Floor/ceiling stay SPOT-anchored (reference too).
+    above=K>spot; below=K<spot                    # spot sides — floor/ceiling only
+    _wa=flip if flip is not None else spot
+    ab_f=K>_wa; bl_f=K<_wa                        # flip sides — walls + gravity
+    call_wall=float(K[ab_f][np.argmax(call_gex[ab_f])]) if ab_f.any() and call_gex[ab_f].max()>0 else None
+    put_wall =float(K[bl_f][np.argmax(put_gex[bl_f])])  if bl_f.any() and put_gex[bl_f].max()>0 else None
     # ---- true closed-form vanna (seeded with Barchart IV) ----
     T=_T_at(exp, now)
     vanna=np.abs(bs_vanna(spot,K,T,np.where(civ>0,civ,np.where(piv>0,piv,0.15))))
@@ -1307,7 +651,7 @@ def pinak_levels(chain, spot, exp, now):
     # ---- gravity centers (3 methods, call side toward ceiling / put toward floor) ----
     def centroid(mask):
         w=np.abs(net_gex[mask]); return float((K[mask]*w).sum()/w.sum()) if w.sum()>0 else None
-    call_grav=centroid(above) ; put_grav=centroid(below)
+    call_grav=centroid(ab_f) ; put_grav=centroid(bl_f)   # gravity flip-anchored (reference)
     # ---- pin level + confidence ----
     nb=np.abs(K-spot)<=spot*0.025          # near-spot band: wings can't own the pin
     if nb.any():
@@ -1326,6 +670,15 @@ def pinak_levels(chain, spot, exp, now):
     score+=20 if grav_agree else 0
     score+=15 if abs(pin-spot)<spot*0.003 else (7 if abs(pin-spot)<spot*0.008 else 0)
     label=("STRONG PIN" if score>=75 else "MODERATE PIN" if score>=50 else "WEAK PIN" if score>=25 else "NO PIN")
+    # ---- vGBT-0.9.20 pin honesty gate: a pin EXISTS only in a pinning regime with
+    # convergent, mature data. Open dust / trending days print NO number instead of
+    # a wrong one (reference behavior: "NO PIN — trending"). Consumers are None-safe;
+    # the Read target falls back to the lean-side straddle bound.
+    _mature=bool(nb.any()) and int((tot_gex[nb]>0).sum())>=6
+    if not (in_pos and conv<spot*0.004 and _mature):
+        pin=None
+        label="NO PIN ("+("open/sparse data" if not _mature
+              else "trending — negative γ" if not in_pos else "GEX/OI diverge")+")"
     # ---- K*: put-call parity forward vs no-arb band (near-spot, valid quotes only) ----
     cask=col(cc,"ask"); pask=col(pp,"ask")
     kstar=None; best=1e18; band=spot*0.01   # ±1% (was 3%): live 2026-07-07 a stale 7330 won at spot 7490
@@ -1656,26 +1009,6 @@ def peak_strike_of(chain, e0, spot):
         if len(g): return float(g.idxmax())
     except Exception: pass
     return None
-
-def charm_flip_quick(chain, e0, now, spot, band=0.02, n=81):
-    """Cheap standalone charm-flip strike (zero-cross of the book charm profile
-    across a ±band price grid, nearest to spot) — for the gamma-panel echo line."""
-    try:
-        c=chain[chain["expiry"]==e0] if "expiry" in chain.columns else chain
-        T=_T_at(e0,now); P=np.linspace(spot*(1-band),spot*(1+band),n)
-        prof=np.zeros(n)
-        for ty,sg in (("call",+1),("put",-1)):
-            d=c[c["type"]==ty].dropna(subset=["strike"])
-            if d.empty: continue
-            K=d["strike"].values.astype(float)
-            iv=np.where(d["iv"].fillna(0).values>0,d["iv"].fillna(0).values,0.15)
-            w=np.where(d["volume"].fillna(0).values>0,d["volume"].fillna(0).values,d["oi"].fillna(0).values)
-            prof+=sg*(w[None,:]*bs_charm(P[:,None],K[None,:],T,iv[None,:])).sum(1)*100
-        zx=np.where(np.diff(np.sign(prof))!=0)[0]
-        if not len(zx): return None
-        cands=P[zx]
-        return float(cands[np.argmin(np.abs(cands-spot))])
-    except Exception: return None
 
 def _strength(share, conf):
     lab=("Strong" if share>=0.35 else "Moderate" if share>=0.18 else "Weak")
@@ -2334,10 +1667,66 @@ def _side_net_total(df):
         net=(m.get("ABOVE_ASK",0)+m.get("ASK",0))-(m.get("BID",0)+m.get("BELOW_BID",0))
         out[str(typ).lower()]=(float(net),float(sum(m.values())))
     return out
-def _gbt_side_stats(exp,strike,session_date=None):
+def _gbt_side_stats(exp,strike,session_date=None,trade_types=None):
     p={"dataMode":"VOLUME","tickers":["SPX"],"expirationDates":[exp],"strikePrices":[float(strike)]}
     if session_date: p["sessionDate"]=session_date
+    if trade_types: p["tradeTypes"]=trade_types      # vGBT-0.9.20: server-side OPRA quarantine
     _,df=_gbt_post("contract_trade_side_statistics",p); return df
+
+CLEAN_TT=["AUTO","M2S_AUTO"]        # single-leg evidence set — probe31 purity 500/500,
+                                    # probe32 control: filter real (−37% vol), 422 on nonsense
+def _clean_sign(stats,bench=0.10):
+    """Dealer sign from CLEAN single-leg side-stats: −sign(customer net initiative
+    across both legs) when |polarity| clears the bench; else 0 (unsigned).
+    Overlay evidence only — the signing PIPELINE never sees this."""
+    try:
+        net=tot=0.0
+        for leg in ("call","put"):
+            n,t=(stats or {}).get(leg,(0.0,0.0)); net+=float(n); tot+=float(t)
+        if tot<=0: return 0
+        pol=net/tot
+        return 0 if abs(pol)<bench else (-1 if pol>0 else 1)
+    except Exception: return 0
+
+def clean_color(v,base,clean_sign):
+    """vGBT-0.9.20 overlay recolor: dodger blue when clean evidence CONFIRMS a
+    long bar, magenta when it confirms a short one. Disagreement or absence →
+    base color unchanged. Pure (harness-gated: colors only, never values)."""
+    if not clean_sign: return base
+    if v>=0 and clean_sign>0: return "#1e90ff"
+    if v<0  and clean_sign<0: return "#e83e8c"
+    return base
+
+def gbt_clean_signs(exp,strikes):
+    """Lazy CLEAN-quarantine sign layer (toggle-gated; pipeline untouched). Same
+    anchor as the seed — yesterday's tape on today's expiry — but with
+    tradeTypes=CLEAN_TT so packages+floor are quarantined at the SERVER.
+    0.9.14 machinery: resumable partial, 240s budget, sidebar progress,
+    complete map persisted in day-state. Returns {strike: −1|0|+1}."""
+    ss=st.session_state; ck=f"gbt_clean_{exp}"
+    if ck in ss: return ss[ck]
+    pk=ck+"_partial"; m=dict(ss.get(pk,{}))
+    strikes=sorted(set(float(k) for k in strikes))
+    todo=[k for k in strikes if k not in m]
+    prog=None
+    try: prog=st.sidebar.progress(0.0,text=f"🧹 clean-sign sweep {len(m)}/{len(strikes)}…")
+    except Exception: pass
+    t0=_time.time()
+    for k in todo:
+        try: m[k]=_clean_sign(_side_net_total(_gbt_side_stats(exp,k,_gbt_prev_session(),trade_types=CLEAN_TT)))
+        except Exception: m[k]=0
+        ss[pk]=m
+        if prog is not None:
+            try: prog.progress(min(1.0,len(m)/max(1,len(strikes))),
+                               text=f"🧹 clean-sign sweep {len(m)}/{len(strikes)}…")
+            except Exception: pass
+        if _time.time()-t0>240 and len(m)<len(strikes): break
+        _time.sleep(2.3)
+    try:
+        if prog is not None: prog.empty()
+    except Exception: pass
+    if len(m)>=len(strikes): ss[ck]=m
+    return m
 def _vol_gate(vnow,vlast,floor=50.0,frac=0.02):
     """True → refresh this strike. New strike, or traded volume moved by
     ≥ max(floor lots, frac of current) since the last sign pull."""
@@ -2530,8 +1919,8 @@ def signed_book_rows(ch, sp):
     return g[["strike","signed_pct","conf"]]
 
 def book_figure(book,spot,straddle,lo,hi,side="Total",prev=None,openb=None,signed=None,
-                signed_prev=None,signed_open=None,sticks=True,sqrt_scale=False):
-    def _tx(v): return np.sign(v)*np.sqrt(np.abs(v)) if sqrt_scale else v
+                signed_prev=None,signed_open=None,sticks=True,clean_map=None):
+    def _tx(v): return v            # vGBT-0.9.20: always linear (√ compress removed)
     """VS3D 'Positions by Strike' analogue. Bars in e-minis per $1 (per-$1 ÷ 50).
     NAIVE calls+/puts− convention — measured signing arrives with the flow ledger."""
     fig,ax=plt.subplots(figsize=(6.5,9)); fig.patch.set_facecolor("#0e1117"); ax.set_facecolor("#0e1117")
@@ -2540,9 +1929,10 @@ def book_figure(book,spot,straddle,lo,hi,side="Total",prev=None,openb=None,signe
         for _,r in sg.iterrows():
             v=_tx(float(r["signed_pct"])/1e6)
             ax.barh(float(r["strike"]),v,height=3.6,zorder=3,
-                    color=("#26a69a" if v>=0 else "#ef5350"),
+                    color=clean_color(v,("#26a69a" if v>=0 else "#ef5350"),
+                              (clean_map or {}).get(float(r["strike"]),0)),
                     alpha=0.35+0.6*min(1.0,float(r.get("conf",0.5))))
-        ax.set_xlabel(("√" if sqrt_scale else "")+"dealer GEX $M per 1% — MM-inferred (flow-signed · opacity = confidence)",color="#aaa",fontsize=8)
+        ax.set_xlabel("dealer GEX $M per 1% — MM-inferred (flow-signed · opacity = confidence)",color="#aaa",fontsize=8)
         _cur={float(r["strike"]):_tx(float(r["signed_pct"])/1e6) for _,r in sg.iterrows()}
         def _sg_map(df):
             if df is None or getattr(df,"empty",True): return None
@@ -2590,7 +1980,7 @@ def book_figure(book,spot,straddle,lo,hi,side="Total",prev=None,openb=None,signe
             ax.text(ax.get_xlim()[1],yy,f" {yy:.2f} ({tag})",color="#c084fc",va="center",fontsize=7)
     ax.axvline(0,color="#666",lw=0.8)
     if signed is None or not len(signed):
-        ax.set_xlabel(("√" if sqrt_scale else "")+"e-minis per $1 (naive calls+ / puts−)",color="#aaa",fontsize=8)
+        ax.set_xlabel("e-minis per $1 (naive calls+ / puts−)",color="#aaa",fontsize=8)
     ax.tick_params(colors="#aaa",labelsize=7)
     for _sp in ax.spines.values(): _sp.set_color("#333")
     if prev is not None or openb is not None or _legend_force: ax.legend(loc="lower right",fontsize=7,facecolor="#0e1117",labelcolor="#ccc")
@@ -2655,7 +2045,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.18 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.20 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -2708,10 +2098,10 @@ with st.sidebar.expander("📊 Book controls", expanded=False):
     if st.button("➕ zoom in (strikes)"):  st.session_state["book_zoom"]=max(0.25,st.session_state.get("book_zoom",1.0)*0.7)
     if st.button("➖ zoom out (strikes)"): st.session_state["book_zoom"]=min(1.0,st.session_state.get("book_zoom",1.0)/0.7)
     if st.button("↔ full fetched range"):  st.session_state["book_zoom"]=1.0
-    b_sqrt=st.checkbox("√ scale (compress towers)",value=True,
-        help="sign(v)·√|v| — the 7475/7500 monsters stop flattening every other strike. Same trick as the reference chart.")
     b_side=st.radio("Show (naive mode)",["Total","Calls","Puts"],index=0,horizontal=True)
     b_dots=st.checkbox("Comparison dots (prev + open)",value=True)
+    b_clean=st.checkbox("🧹 Clean-sign highlight",value=False,
+        help="Re-color strikes whose sign SURVIVES the single-leg quarantine (tradeTypes AUTO+M2S_AUTO — packages+floor excluded server-side): dodger blue = dealer long · magenta = dealer short. Overlay only — bar values and the signing pipeline untouched. First ON runs a lazy ~4min sweep (resumable, budgeted).")
     b_strad=st.checkbox("1× straddle lines",value=True)
     b_spot=st.checkbox("Spot-path overlay (VS3D view)",value=True,
         help="White intraday SPX line across the book on a shared strike axis — playback shows it grow.")
@@ -3377,8 +2767,13 @@ with tab_book:
             _cv=f" · seeded {_gm2[0].get('ok','?')}/{_gm2[0].get('n','?')} · live {_gm2[0].get('live',0)}" if (_gm2 and _sg is not None) else ""
         except Exception: _cv=""
         st.caption(f"showing {int(_lo2)}–{int(_hi2)} · fetched {int(lo)}–{int(hi)} (spot {_sp:.2f} ±{window_pct*100:.1f}%) · zoom ×{_z:.2f}{_cv}")
+        _clm=None
+        if b_clean and _sg is not None and len(_sg):
+            _clm=gbt_clean_signs(exps[0],list(_sg["strike"].values))
+            _n_on=sum(1 for _v in _clm.values() if _v)
+            st.caption(f"🧹 clean signs: {_n_on}/{len(_clm)} strikes confirmed (single-leg quarantine)")
         fig=book_figure(bk,latest["spot"],_strv,_lo2,_hi2,side=b_side,prev=prevb,openb=openb,signed=_sg,
-                        signed_prev=_sgp,signed_open=_sgo,sticks=True,sqrt_scale=bool(b_sqrt))
+                        signed_prev=_sgp,signed_open=_sgo,sticks=True,clean_map=_clm)
         if b_spot:
             try:
                 _ch0=latest["chain"]; _ch0=_ch0[_ch0["expiry"]==exps[0]] if "expiry" in _ch0.columns else _ch0
@@ -3387,7 +2782,7 @@ with tab_book:
                 st.caption(f"spot-path overlay unavailable: {type(_ox).__name__}: {_ox}")
         emit("book",fig)
     if book_on:
-        _bsig=repr((sel_ts.isoformat(),b_mode,b_side,bool(b_dots),bool(b_strad),bool(b_sqrt),bool(b_spot),int(len(bars) if bars is not None else 0),bool(GBT_SIGNED),round(float(st.session_state.get("book_zoom",1.0)),3),round(window_pct,5),len(st.session_state.snaps)))
+        _bsig=repr((sel_ts.isoformat(),b_mode,b_side,bool(b_dots),bool(b_strad),bool(b_clean),len(st.session_state.get("gbt_clean_"+exps[0],st.session_state.get("gbt_clean_"+exps[0]+"_partial",{}))),bool(b_spot),int(len(bars) if bars is not None else 0),bool(GBT_SIGNED),round(float(st.session_state.get("book_zoom",1.0)),3),round(window_pct,5),len(st.session_state.snaps)))
         dispatch("book",_render_book,sig=_bsig)
 
 
@@ -3521,12 +2916,6 @@ with tab_terr:
                         _py=[float(pg[int(np.argmax(np.clip(Z[:,j],0,None)))]) for j in np.where(_jm)[0]]
                         ax.plot(_colx[_jm],_py,color="#e83e8c",lw=1.1,ls=(0,(2,2)),alpha=.75,zorder=8)
                     ax.text(x1,_ys[-1]," peak γ",color="#e83e8c",fontsize=8,va="center",zorder=9)
-            except Exception: pass
-            try:   # charm-flip echo on the gamma panel (confluence in one frame)
-                _cfe=charm_flip_quick(latest["chain"],use_exps[0],now_naive,spot)
-                if _cfe:
-                    ax.axhline(_cfe,color="#e8e8e8",lw=0.9,ls=(0,(1,3)),alpha=.75,zorder=7)
-                    ax.text(x0,_cfe,f" charm flip {_cfe:.0f}",color="#e8e8e8",fontsize=7.5,va="bottom",alpha=.85,zorder=9)
             except Exception: pass
         _hp=""
         if t_greek=="Gamma":
