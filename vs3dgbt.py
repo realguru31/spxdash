@@ -1,5 +1,21 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.17
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.18
+
+vGBT-0.9.18 [MAGENTA RAIL + LOCKED CARD + BOOK LEVELS — Jul-24 audit response]
+  • PEAK-γ TRACK on the gamma terrain: solid magenta = per-snapshot argmax strike
+    of that snapshot's own positive signed mass (append-only, pure of later data
+    → no repaint); dotted magenta right of now = simulated argmax projection.
+    Peak-jump annotation on ≥15-pt discontinuities. Acceptance: Jul-24's ~7464
+    reversal rail. Charm-flip echo line added to the gamma panel (confluence in
+    one frame — it printed 7470 that day, 6 pts from the turn).
+  • LOCKED MORNING CARD: first ≥09:35 ET live-latest snapshot freezes BALANCE /
+    UPSIDE / DOWNSIDE levels for the session (🔒 locked-at header); pre-open =
+    PREVIEW (yesterday's book, by design); post-lock, tests wear ·TESTED/·CROSSED
+    from recorded closes (immutable levels × recorded prices = repaint-free).
+    Persisted in day-state; container restart re-locks with printed caveat.
+  • BOOK TAB: Pinak dealer-level lines retired (superseding the pinak-rewrite
+    queue item); the locked card levels draw instead — BALANCE (white dashes),
+    UP TEST (green), DN TEST (red); pre-lock note "levels lock at 09:35 ET".
 
 vGBT-0.9.17 [PACKAGE-AWARE CARD — the Jul-16 clearing-audit response]
   • package_suspects(): equidistant triplets with inverted body sign and 1-2-1-ish
@@ -1622,40 +1638,105 @@ def _in_band(K, bands):
         if b["lo"]<=K<=b["hi"]: return b
     return None
 
+def peak_strike_of(chain, e0, spot):
+    """0.9.18 magenta rail: the strike holding the book's peak positive signed
+    gamma mass (VS3D's argmax track). Falls back to unsigned Σγ·OI argmax when
+    signs are unavailable. PURE function of the snapshot's own stored chain →
+    recomputing a historical point always yields the same value (no repaint)."""
+    try:
+        c=chain[chain["expiry"]==e0] if "expiry" in chain.columns else chain
+        rows=signed_book_rows(c,spot)
+        if rows is not None and (rows["signed_pct"]>0).any():
+            return float(rows.loc[rows["signed_pct"].idxmax(),"strike"])
+    except Exception: pass
+    try:
+        c=chain[chain["expiry"]==e0] if "expiry" in chain.columns else chain
+        c=c.dropna(subset=["strike","gamma"])
+        g=(c["gamma"].fillna(0)*c["oi"].fillna(0)).groupby(c["strike"]).sum()
+        if len(g): return float(g.idxmax())
+    except Exception: pass
+    return None
+
+def charm_flip_quick(chain, e0, now, spot, band=0.02, n=81):
+    """Cheap standalone charm-flip strike (zero-cross of the book charm profile
+    across a ±band price grid, nearest to spot) — for the gamma-panel echo line."""
+    try:
+        c=chain[chain["expiry"]==e0] if "expiry" in chain.columns else chain
+        T=_T_at(e0,now); P=np.linspace(spot*(1-band),spot*(1+band),n)
+        prof=np.zeros(n)
+        for ty,sg in (("call",+1),("put",-1)):
+            d=c[c["type"]==ty].dropna(subset=["strike"])
+            if d.empty: continue
+            K=d["strike"].values.astype(float)
+            iv=np.where(d["iv"].fillna(0).values>0,d["iv"].fillna(0).values,0.15)
+            w=np.where(d["volume"].fillna(0).values>0,d["volume"].fillna(0).values,d["oi"].fillna(0).values)
+            prof+=sg*(w[None,:]*bs_charm(P[:,None],K[None,:],T,iv[None,:])).sum(1)*100
+        zx=np.where(np.diff(np.sign(prof))!=0)[0]
+        if not len(zx): return None
+        cands=P[zx]
+        return float(cands[np.argmin(np.abs(cands-spot))])
+    except Exception: return None
+
 def _strength(share, conf):
     lab=("Strong" if share>=0.35 else "Moderate" if share>=0.18 else "Weak")
     if conf<0.35: lab+="?"          # thin sign confidence — flag, don't hide
     return lab
 
-def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WARN):
+def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WARN,
+                     lock=None, status_prices=None, header_note=None, levels_out=None):
     """Dan-format KEY LEVELS + TAKEAWAYS from the flow-signed book (§4.4 test-anchor).
     Tests = dealer-SHORT cluster peaks · Balance = biggest dealer-LONG peak in range.
-    Signs are dsign (flow-inferred) — candidates, NOT CBOE clearing."""
+    Signs are dsign (flow-inferred) — candidates, NOT CBOE clearing.
+    0.9.18: lock=levels dict → render the FROZEN morning ladder (ignores the live
+    book); status_prices = post-lock closes → tests wear ·TESTED/·CROSSED;
+    header_note prints under the title (locked-at / PREVIEW); levels_out (dict)
+    receives the computed levels for the caller to lock."""
     L=[("KEY LEVELS + TAKEAWAYS  (flow-signed candidates — not clearing data)",WHT,14,True)]
-    rows=signed_book_rows(latest["chain"],spot)
-    if rows is None:
-        L.append(("  needs Signed mode — naive ± cannot define tests/anchors",DIM,11,False))
-        return L
-    half=max(2.5*(strad_now or 0.0), spot*0.009)   # 0.9.17: wide enough for the second-rung tier
-    bands=package_suspects(rows)
-    cl=signed_clusters(rows,spot-half,spot+half)
-    for c in cl:                                    # confidence haircut inside suspect bands
-        if _in_band(c["peak"],bands): c["conf"]*=0.5
-    longs =sorted([c for c in cl if c["sign"]>0],key=lambda c:-c["mass"])
-    shorts=[c for c in cl if c["sign"]<0]
-    if not longs and not shorts:
-        L.append(("  no clusters clear the noise floor in range — structureless book",DIM,11,False)); return L
-    bal=longs[0] if longs else None
+    if header_note: L.append((header_note,DIM,10.5,False))
+    if lock:
+        bands=lock.get("bands",[]); longs=lock.get("longs",[])
+        bal=lock.get("bal"); ups=lock.get("ups",[]); dns=lock.get("dns",[])
+        half=lock.get("half",spot*0.009); s0=lock.get("spot0",spot)
+    else:
+        rows=signed_book_rows(latest["chain"],spot)
+        if rows is None:
+            L.append(("  needs Signed mode — naive ± cannot define tests/anchors",DIM,11,False))
+            return L
+        half=max(2.5*(strad_now or 0.0), spot*0.009)   # 0.9.17: wide enough for the second-rung tier
+        bands=package_suspects(rows)
+        cl=signed_clusters(rows,spot-half,spot+half)
+        for c in cl:                                    # confidence haircut inside suspect bands
+            if _in_band(c["peak"],bands): c["conf"]*=0.5
+        longs =sorted([c for c in cl if c["sign"]>0],key=lambda c:-c["mass"])
+        shorts=[c for c in cl if c["sign"]<0]
+        if not longs and not shorts:
+            L.append(("  no clusters clear the noise floor in range — structureless book",DIM,11,False)); return L
+        bal=longs[0] if longs else None
+        ups=sorted([c for c in shorts if c["peak"]>spot],key=lambda c:c["peak"])[:2]
+        dns=sorted([c for c in shorts if c["peak"]<spot],key=lambda c:-c["peak"])[:2]
+        s0=spot
+        if isinstance(levels_out,dict) and (bal or ups or dns):
+            levels_out["ok"]=True
+            levels_out["levels"]=dict(bal=bal,longs=longs,ups=ups,dns=dns,bands=bands,half=half,spot0=spot)
+    _hi=max(status_prices) if status_prices else None
+    _lo=min(status_prices) if status_prices else None
+    def _status(t_peak, direction):
+        if _hi is None: return ""
+        if direction>0:
+            if _hi> t_peak+2: return " ·CROSSED"
+            if _hi>=t_peak-2: return " ·TESTED"
+        else:
+            if _lo< t_peak-2: return " ·CROSSED"
+            if _lo<=t_peak+2: return " ·TESTED"
+        return ""
     if bal:
         _pk=" ⚠pkg" if _in_band(bal["peak"],bands) else ""
         L.append((f"BALANCE: {bal['peak']:,.0f} ({_strength(bal['share'],bal['conf'])}){_pk}",WHT,13,True))
     for b in bands:
-        if spot-half<=b["body"]<=spot+half:
+        if s0-half<=b["body"]<=s0+half:
             _alt="long mass (their balance)" if b["sign_body"]<0 else "short mass (their test)"
             L.append((f"⚠ {b['lo']:,.0f}–{b['hi']:,.0f} fly-shaped — tape can't side packages; "
                       f"if customer-owned, {b['body']:,.0f} is the {_alt}",WARN,10.5,False))
-    ups=sorted([c for c in shorts if c["peak"]>spot],key=lambda c:c["peak"])[:2]
-    dns=sorted([c for c in shorts if c["peak"]<spot],key=lambda c:-c["peak"])[:2]
     def _bal_beyond(t_peak, direction):
         cands=[c for c in longs if (c["peak"]>t_peak if direction>0 else c["peak"]<t_peak)]
         if cands:
@@ -1665,7 +1746,7 @@ def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WAR
     def ladder(tests, direction, name, col):
         if not tests:
             L.append((f"{name}: none in range",DIM,11,False)); return
-        hdr=f"{name}: "+" >> ".join(f"{t['peak']:,.0f}"+("⚠" if _in_band(t["peak"],bands) else "") for t in tests)
+        hdr=f"{name}: "+" >> ".join(f"{t['peak']:,.0f}"+("⚠" if _in_band(t["peak"],bands) else "")+_status(t["peak"],direction) for t in tests)
         L.append((hdr,col,12.5,True))
         for i,t in enumerate(tests):
             b,bl=_bal_beyond(t["peak"],direction)
@@ -1720,6 +1801,7 @@ def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WAR
             L.append(("FLY: no clean target beyond the first test — skip",DIM,11,False))
     L.append(("",WHT,6,False))
     return L
+
 
 def gamma_exposure_minis(ch0, spot, e0, now):
     """§2.1 hedge product: exposure = Σ γ·pos (SPX contract-delta per $1, dsign-signed
@@ -2544,7 +2626,7 @@ def save_day_state():
         ss=st.session_state
         blob={"snaps":ss.get("snaps",[]),"frames":ss.get("frames",{}),"last_ts":ss.get("last_ts"),
               "keys":{k:ss[k] for k in list(ss.keys())
-                      if str(k).startswith(("strad_open_","terr_cap_","terr_hist_","read_gmag","gbt_seed_","gbt_live_"))}}
+                      if str(k).startswith(("strad_open_","terr_cap_","terr_hist_","read_gmag","gbt_seed_","gbt_live_","card_lock","peak_track"))}}
         with open(_state_path(),"wb") as f: _pickle.dump(blob,f,protocol=4)
         for _old in _glob.glob("/tmp/vs3dgbt_state_*.pkl"):
             if _old!=_state_path() and _os.path.getmtime(_old)<_time.time()-2*86400:
@@ -2573,7 +2655,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.17 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.18 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -3230,7 +3312,6 @@ def _book_spot_overlay(fig, bars, lo, hi, chain=None, spot=None, exp=None, nowv=
             ax2.tick_params(colors="#8a93a6",labelsize=8)
             for s in ax2.spines.values(): s.set_visible(False)
         try:
-            lv=pinak_levels(chain,spot,exp,nowv) if chain is not None else None
             tr=_mt.blended_transform_factory(ax.transAxes,ax.transData)
             def _line(y,lab,col,ls):
                 try: y=float(y)
@@ -3240,11 +3321,17 @@ def _book_spot_overlay(fig, bars, lo, hi, chain=None, spot=None, exp=None, nowv=
                     ax.text(0.995,y,f"{lab} {y:,.0f}",transform=tr,ha="right",va="bottom",
                             fontsize=8,color=col,zorder=7,
                             bbox=dict(fc="#0e1117",ec=col,lw=0.6,pad=1.5))
-            if isinstance(lv,dict):
-                _line(lv.get("call_wall"),"Call wall","#ef5350",(0,(5,3)))
-                _line(lv.get("put_wall"),"Put wall","#26a69a",(0,(5,3)))
-                _line(lv.get("flip") or lv.get("vol_trigger"),"Flip","#d9a90b",(0,(1,2)))
-                _line(lv.get("pin"),"PIN","#6f9bd1",(0,(1,2)))
+            # vGBT-0.9.18: Pinak dealer levels retired from the Book tab — replaced
+            # by the LOCKED morning card levels (balance + up/down tests).
+            _lkb=st.session_state.get("card_lock")
+            if isinstance(_lkb,dict):
+                _lv2=_lkb.get("levels",{})
+                if _lv2.get("bal"): _line(_lv2["bal"]["peak"],"BALANCE","#e8ecf2",(0,(6,3)))
+                for _t in _lv2.get("ups",[]): _line(_t["peak"],"UP TEST","#3fb950",(0,(5,3)))
+                for _t in _lv2.get("dns",[]): _line(_t["peak"],"DN TEST","#ef5350",(0,(5,3)))
+            else:
+                ax.text(0.995,0.02,"card levels lock at 09:35 ET",transform=ax.transAxes,
+                        ha="right",va="bottom",fontsize=8,color="#8a93a6",zorder=7)
         except Exception: pass
     except Exception: pass
     return fig
@@ -3409,6 +3496,38 @@ with tab_terr:
              else "bright = heavy book · direction UNKNOWN by design (roles come from behavior)" if t_greek==_GHEAVY
              else "orange = γ BUILDING into the close (pin energy) · purple = fading" if t_greek==_GDECAY
              else "gold = dealers must SELL as time passes · blue = must BUY")
+        # vGBT-0.9.18: PEAK-γ TRACK (the magenta rail). Historical: per stored
+        # snapshot, argmax strike of ITS OWN chain's positive signed mass —
+        # computed once per ts, append-only, pure of later data (no repaint).
+        # Right of now: simulated field's argmax per column, dotted (projection).
+        if t_greek=="Gamma":
+            try:
+                _pt=st.session_state.setdefault("peak_track",{})
+                for _s in st.session_state.get("snaps",[]):
+                    _k=str(_s["ts"])
+                    if _k not in _pt:
+                        _pt[_k]=peak_strike_of(_s["chain"],(_s.get("exps") or [None])[0],_s["spot"])
+                _pts=sorted((pd.Timestamp(k),vv) for k,vv in _pt.items() if vv is not None)
+                if _pts:
+                    _xs=[mdates.date2num(t_) for t_,_ in _pts]; _ys=[vv for _,vv in _pts]
+                    ax.plot(_xs,_ys,color="#e83e8c",lw=1.5,alpha=.95,zorder=8,solid_capstyle="round")
+                    ax.plot(_xs[-1],_ys[-1],"o",ms=3.5,color="#e83e8c",zorder=8)
+                    if len(_ys)>=2 and abs(_ys[-1]-_ys[-2])>=15:
+                        ax.text(_xs[-1],_ys[-1]+2,f"peak jump {_ys[-2]:.0f}→{_ys[-1]:.0f}",
+                                color="#e83e8c",fontsize=8,zorder=9)
+                    _colx=np.linspace(x0,x1,Z.shape[1]); _nowx=mdates.date2num(now_naive)
+                    _jm=_colx>=_nowx
+                    if _jm.any():
+                        _py=[float(pg[int(np.argmax(np.clip(Z[:,j],0,None)))]) for j in np.where(_jm)[0]]
+                        ax.plot(_colx[_jm],_py,color="#e83e8c",lw=1.1,ls=(0,(2,2)),alpha=.75,zorder=8)
+                    ax.text(x1,_ys[-1]," peak γ",color="#e83e8c",fontsize=8,va="center",zorder=9)
+            except Exception: pass
+            try:   # charm-flip echo on the gamma panel (confluence in one frame)
+                _cfe=charm_flip_quick(latest["chain"],use_exps[0],now_naive,spot)
+                if _cfe:
+                    ax.axhline(_cfe,color="#e8e8e8",lw=0.9,ls=(0,(1,3)),alpha=.75,zorder=7)
+                    ax.text(x0,_cfe,f" charm flip {_cfe:.0f}",color="#e8e8e8",fontsize=7.5,va="bottom",alpha=.85,zorder=9)
+            except Exception: pass
         _hp=""
         if t_greek=="Gamma":
             try:
@@ -3779,7 +3898,33 @@ with tab_read:
             _ch0r=_ch0r[_ch0r["expiry"]==_e0r] if "expiry" in _ch0r.columns else _ch0r
             try: _stn=terrain_straddle(_ch0r,spot)
             except Exception: _stn=None
-            lines+=key_levels_lines(latest,spot,_stn,v,WHT,BULL,BEAR,CYAN,DIM,WARN)
+            # vGBT-0.9.18: LOCKED MORNING CARD. First qualifying compute at the
+            # first ≥09:35 ET live snapshot freezes the ladder for the session;
+            # pre-open renders as PREVIEW (yesterday's book — expected); after a
+            # container restart the card re-locks with a printed caveat.
+            _lk=st.session_state.get("card_lock")
+            _hdr=None; _stp=None
+            if isinstance(_lk,dict):
+                _hdr=f"🔒 levels locked {_lk.get('locked_at','?')} ET — frozen for the session"
+                try:
+                    _lts=pd.Timestamp(_lk.get("ts"))
+                    _bb=bars[pd.to_datetime(bars["ts"]).dt.tz_localize(None)>=_lts.tz_localize(None) if hasattr(_lts,"tz_localize") else bars["ts"]>=_lts]
+                    _stp=[float(x) for x in _bb["closePrice"].dropna().values] or None
+                except Exception: _stp=None
+            elif now_est().time()<dt.time(9,35):
+                _hdr="PREVIEW — pre-open book (yesterday's OI/signs) · locks at first ≥09:35 ET snapshot"
+            _lvo={}
+            lines+=key_levels_lines(latest,spot,_stn,v,WHT,BULL,BEAR,CYAN,DIM,WARN,
+                                    lock=(_lk or {}).get("levels") if isinstance(_lk,dict) else None,
+                                    status_prices=_stp,header_note=_hdr,levels_out=_lvo)
+            if (_lk is None and not PLAYBACK and now_est().time()>=dt.time(9,35)
+                    and _lvo.get("ok")
+                    and st.session_state.get("snaps") and sel_ts==st.session_state.snaps[-1]["ts"]):
+                st.session_state["card_lock"]={"levels":_lvo["levels"],
+                                               "locked_at":now_est().strftime("%H:%M"),
+                                               "ts":str(sel_ts)}
+                save_day_state()
+                lines.append((f"🔒 levels locked at {now_est().strftime('%H:%M')} ET — frozen for the session",DIM,10.5,False))
         except Exception as _kx:
             lines.append((f"key levels card unavailable: {type(_kx).__name__}: {_kx}",DIM,10.5,False))
         lines.append((("▲ " if up else "▼ ")+v["pat"],dirc,17,True))
