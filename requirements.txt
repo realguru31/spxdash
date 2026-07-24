@@ -5,6 +5,7 @@ numpy==1.26.4
 pandas==2.2.3
 scipy==1.13.1
 matplotlib==3.9.2
-git+https://github.com/rongardF/tvdatafeed.git
-plotly>=5.18
+plotly>=5.18.0
+pytz>=2024.1
 tzdata
+git+https://github.com/rongardF/tvdatafeed.git
