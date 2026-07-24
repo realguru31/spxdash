@@ -7,7 +7,6 @@ font = "sans serif"
 
 [server]
 headless = true
-requirementsFile = "requirementsspxdash.txt"
 
 [browser]
 gatherUsageStats = false
