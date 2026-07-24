@@ -132,7 +132,7 @@ def color_pct(val):
     return ""
 
 
-def style_dashboard_table(df: pd.DataFrame) -> pd.io.formats.style.Styler:
+def style_dashboard_table(df: pd.DataFrame):
     """Apply conditional formatting to the dashboard DataFrame."""
     gex_cols = [c for c in df.columns if "gex" in c.lower() or "dex" in c.lower()]
     styled = df.style
