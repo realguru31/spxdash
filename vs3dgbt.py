@@ -1,40 +1,32 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.30
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.32
 
 CHANGELOG POLICY (per Faisal, Jul-24): detailed notes for the LATEST 3 versions
 only; everything older is ONE line. Full history lives in git, not here.
 
-vGBT-0.9.30 [TEST RADIUS 2× + DOMINANCE EXCEPTION (option c, user-chosen)]
-  • Named constants in one place: BAL_R=1.0 · TEST_R=2.0 · DOM_R=3.0 · DOM_X=2.0.
-  • Tests: two largest shorts within 2×S0 per side of the open. Dominance
-    exception: a short between 2× and 3×S0 joins the candidates ONLY if its
-    mass ≥ 2× the largest in-window short — a $29 cheap open can no longer
-    blind the ladder to the day's dominant mass (7,395 today), while random
-    far strikes never qualify. Admissions printed on the range line.
-  • Ladder/fly long-search window follows TEST_R; balance stays 1×S0.
+vGBT-0.9.32 [SIX LINES — the method as the user finally had to dictate it]
+  • ONE window: open ± 2.5× opening straddle. BALANCE = biggest long in it.
+    Tests = two biggest shorts per side of the open in it, nearest-first.
+  • Extension rule: a short BEYOND the window ≥2× the biggest in-window short
+    on that side moves the OUTER test only (UP2/DN2), marked ᵉˣᵗ and named on
+    the range line. Inner tests never move (guide: near test = boundary of the
+    current range; the far monster = Extension Zone target).
+  • DELETED: per-sign floors, separate balance radius, dominance pool, the
+    0.9.30/0.9.31 window/floor interactions — the machinery that kept eating
+    the ladder. Constants: WIN_R=2.5 · EXT_X=2.0. Nothing else.
 
-vGBT-0.9.29 [AUDIT FIXES — line-by-line review vs the guide]
-  • Radius leak: the ladder's beyond-test balances and the fly target searched
-    the 1×S0-filtered longs — a real long cluster between 1× and 1.5× was
-    silently replaced by the "thin" fallback. Both now search longs_ext (full
-    1.5×S0 window); the 1×S0 radius stays a BALANCE-selection rule only.
-    Locked ladders carry longs_ext for faithful replay.
-  • Stale text removed: dead 0.9.25 corridor/widening comment block deleted;
-    docstring now states the fixed-radii method. No other logic touched.
+vGBT-0.9.31 [FLOOR CONFINED TO THE TEST WINDOW — 0.9.30 regression fix]
+  • 0.9.30 measured the 20% per-sign floor over the 3×S0 dominance horizon:
+    the 7,395 monster raised the SHORT floor and deleted every small overhead
+    test ("UPSIDE none"); far long towers likewise erased BALANCE (bal=None,
+    line vanished). Floor is now computed strictly inside the 2×S0 test
+    window; dominance candidates compare RAW masses against the in-window
+    max and need no floor. Same ladder semantics, veto impossible by
+    construction — within sign as well as across signs.
 
-vGBT-0.9.28 [FIXED RADII — the final method, user-specified]
-  • S0 = OPENING straddle, fetched from GBT bars at ANY hour (ATM from the true
-    09:30 open; both legs' first ≥09:30 bar via option_price_over_time —
-    probe35b capability). Day-cached + persisted. Pre-open/fetch-fail → current
-    straddle stand-in, labeled on the card.
-  • BALANCE = largest long-γ cluster within 1.0×S0 of the open.
-  • TESTS = the TWO largest short clusters within 1.5×S0 per side of the open;
-    beyond 1.5×S0 = IGNORED. Adaptive widening DELETED — radii are fixed.
-  • The card prints its own range line: "range: open X · balance ≤ ±a (1×S0) ·
-    tests ≤ ±b (1.5×S0) · S0 $s" — the range question answered on-screen.
-  • Per-sign floor (0.9.27) retained; anchors (true open, opening straddle)
-    persist in day-state across reloads.
-
+vGBT-0.9.30 — dominance-exception experiment (superseded by 0.9.32 six-line method).
+vGBT-0.9.29 — audit: ladder/fly radius-leak fix; stale method text removed.
+vGBT-0.9.28 — fixed radii + opening straddle fetched from GBT bars; range line self-documents.
 vGBT-0.9.27 — per-sign noise floor (longs can't veto tests); tests selected by mass.
 vGBT-0.9.26 — true 09:30 open fetched from API bars; load time can't move the anchor.
 vGBT-0.9.25 — open-anchored ladder + adaptive window (superseded by 0.9.28 fixed radii).
@@ -1052,47 +1044,47 @@ def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WAR
         #             the open. Beyond 1.5×S0 = IGNORED. No widening. Fixed radii.
         #   Noise floor per sign (longs can never veto shorts): keep ≥20% of the
         #   largest same-sign cluster; min_share=0.01 kills strike dust.
-        # ── the radii, named (vGBT-0.9.30) — one place to tune ──
-        BAL_R  = 1.0     # balance:  largest long within BAL_R × S0 of the open
-        TEST_R = 2.0     # tests:    two largest shorts within TEST_R × S0 per side
-        DOM_R  = 3.0     # dominance exception may extend the test search to DOM_R × S0
-        DOM_X  = 2.0     # ...for a short ≥ DOM_X × the largest in-window short
+        # ═══ THE METHOD — six lines, nothing else (user-final, 2026-07-27 evening) ═══
+        # 1) Reference = the open (pre-market: current spot). S0 = opening straddle
+        #    (pre-market: current straddle).
+        # 2) ONE window: ref ± 2.5×S0.
+        # 3) BALANCE = biggest long cluster in the window.
+        # 4) UP1,UP2 = two biggest short clusters above the open in the window;
+        #    DN1,DN2 = same below. Displayed nearest-first.
+        # 5) Extension rule: a short BEYOND the window that is ≥2× the biggest
+        #    in-window short on that side moves the OUTER test (UP2/DN2) only,
+        #    marked "ext" on the card. Inner tests never move.
+        # 6) No per-sign floors, no separate balance radius, no other windows.
+        WIN_R = 2.5      # the window, in opening straddles
+        EXT_X = 2.0      # "crazy in size" = ≥ this × the biggest in-window short
         S0=float(open_strad) if open_strad else max(float(strad_now or 0.0), spot*0.004)
         if S0<=0: S0=spot*0.009
-        half=TEST_R*S0                                  # base test radius — stored in
-                                                        # levels_out for lock replay and
-                                                        # used by the fly-body window
+        half=WIN_R*S0                                   # stored for lock replay + fly window
         bands=package_suspects(rows)
-        def _side_keep(cs,frac=0.20):
-            if not cs: return cs
-            mx=max(c["mass"] for c in cs)
-            return [c for c in cs if c["mass"]>=frac*mx]
-        # cluster over the dominance horizon so the exception can see candidates
-        cl=signed_clusters(rows,ref-DOM_R*S0,ref+DOM_R*S0,min_share=0.01)
-        longs =_side_keep([c for c in cl if c["sign"]>0])
-        shorts=_side_keep([c for c in cl if c["sign"]<0])
-        for c in longs+shorts:                          # confidence haircut inside suspect bands
+        cl=signed_clusters(rows,ref-2*WIN_R*S0,ref+2*WIN_R*S0,min_share=0.01)
+        for c in cl:                                    # confidence haircut inside suspect bands
             if _in_band(c["peak"],bands): c["conf"]*=0.5
-        longs_ext=sorted([c for c in longs if abs(c["peak"]-ref)<=TEST_R*S0],
-                         key=lambda c:-c["mass"])         # ladder/fly search window
-        longs=sorted([c for c in longs if abs(c["peak"]-ref)<=BAL_R*S0],key=lambda c:-c["mass"])
-        if not longs and not shorts:
-            L.append(("  no clusters clear the noise floor in range — structureless book",DIM,11,False)); return L
+        _win=lambda c: abs(c["peak"]-ref)<=WIN_R*S0
+        longs_ext=sorted([c for c in cl if c["sign"]>0 and _win(c)],key=lambda c:-c["mass"])
+        longs=longs_ext                                  # BALANCE = biggest long in the window
+        shorts=[c for c in cl if c["sign"]<0]
+        if not longs and not [c for c in shorts if _win(c)]:
+            L.append(("  no clusters in range — structureless book",DIM,11,False)); return L
         def _tests(side):                               # side=+1 above the open, -1 below
-            _in =[c for c in shorts if 0<side*(c["peak"]-ref)<=TEST_R*S0]
-            _mx =max((c["mass"] for c in _in),default=0.0)
-            # dominance exception (option c — Dan reads the dominant mass even when a
-            # cheap open shrinks the ruler): a short beyond TEST_R but within DOM_R
-            # joins the candidates only if it dwarfs everything inside (≥ DOM_X ×).
-            _dom=[c for c in shorts
-                  if TEST_R*S0<side*(c["peak"]-ref)<=DOM_R*S0 and c["mass"]>=DOM_X*max(_mx,1e-9)]
-            _sel=sorted(_in+_dom,key=lambda c:-c["mass"])[:2]
-            return sorted(_sel,key=lambda c:side*c["peak"])
+            _in=sorted([c for c in shorts if _win(c) and side*(c["peak"]-ref)>0],
+                       key=lambda c:-c["mass"])[:2]
+            _mx=max((c["mass"] for c in _in),default=0.0)
+            _beyond=[c for c in shorts if side*(c["peak"]-ref)>WIN_R*S0 and c["mass"]>=EXT_X*max(_mx,1e-9)]
+            if _beyond:
+                _e=min(_beyond,key=lambda c:side*(c["peak"]-ref))   # nearest crazy mass
+                _e=dict(_e); _e["ext"]=True
+                _in=(_in[:1] if _in else [])+[_e]                    # OUTER rung only moves
+            return sorted(_in,key=lambda c:side*c["peak"])
         ups=_tests(+1); dns=_tests(-1)
-        _domn=[t["peak"] for t in ups+dns if abs(t["peak"]-ref)>TEST_R*S0]
-        L.append((f"  range: open {ref:,.0f} · balance ≤ ±{BAL_R*S0:,.0f} ({BAL_R:g}×S0) · tests ≤ ±{TEST_R*S0:,.0f} ({TEST_R:g}×S0) · S0 ${S0:.2f}"
+        _exs=[t["peak"] for t in ups+dns if t.get("ext")]
+        L.append((f"  range: open {ref:,.0f} ± {WIN_R*S0:,.0f} (2.5×S0) · S0 ${S0:.2f}"
                   +(" [opening straddle]" if open_strad else " [current straddle stand-in]")
-                  +(f" · dominance: {', '.join(f'{p:,.0f}' for p in _domn)} admitted (≥{DOM_X:g}× in-window mass)" if _domn else ""),
+                  +(f" · outer test extended to {', '.join(f'{p:,.0f}' for p in _exs)} (≥2× in-window mass)" if _exs else ""),
                   DIM,10,False))
         # BALANCE = largest long within 1×S0 (radius already applied above);
         # position annotation below still names it if it sits beyond a test.
@@ -1142,7 +1134,7 @@ def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WAR
     def ladder(tests, direction, name, col):
         if not tests:
             L.append((f"{name}: none in range",DIM,11,False)); return
-        hdr=f"{name}: "+" >> ".join(f"{t['peak']:,.0f}"+("⚠" if _in_band(t["peak"],bands) else "")+_status(t["peak"],direction) for t in tests)
+        hdr=f"{name}: "+" >> ".join(f"{t['peak']:,.0f}"+("ᵉˣᵗ" if t.get("ext") else "")+("⚠" if _in_band(t["peak"],bands) else "")+_status(t["peak"],direction) for t in tests)
         L.append((hdr,col,12.5,True))
         for i,t in enumerate(tests):
             b,bl=_bal_beyond(t["peak"],direction)
@@ -2263,7 +2255,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.30 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.32 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
