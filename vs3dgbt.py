@@ -1,8 +1,21 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.26
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.27
 
 CHANGELOG POLICY (per Faisal, Jul-24): detailed notes for the LATEST 3 versions
 only; everything older is ONE line. Full history lives in git, not here.
+
+vGBT-0.9.27 [PER-SIGN NOISE FLOOR — longs can no longer veto the tests]
+  • Root cause of "UPSIDE TEST: none" (twice today): signed_clusters' 5%-of-
+    TOTAL-mass floor. The widened window admits Friday's monster long towers;
+    every short above the open then fell under 5% of the combined pile and was
+    deleted before selection. Shorts now compete only with SHORTS: per-sign
+    floor = 20% of the largest same-sign cluster in window (min_share=0.01
+    passthrough keeps strike dust out).
+  • Tests per guide §4.4 "PEAK of short option cluster": the TWO LARGEST short
+    clusters each side of the open (selection by MASS, displayed nearest-
+    first) — previously nearest-first selection could pick minor blips.
+  • The range is now documented in one comment block: 1× straddle start →
+    ×1.35 widening until 2+2 → ±2% cap → per-sign floor. No hidden knobs.
 
 vGBT-0.9.26 [TRUE OPEN — load time can never move the anchor]
   • The open anchor now comes from the API's own bar history: gbt_true_open()
@@ -29,29 +42,7 @@ vGBT-0.9.25 [THE METHOD — user-final specification, 2026-07-27]
     first downside test; corridor empty → peak long in range with the position
     annotation. Frames unchanged: OPEN READ (Friday book × open) + 09:35 lock.
 
-vGBT-0.9.24 [GUIDE-LITERAL LEVELS RESTORED + LIVE GTH STRADDLE + OPEN READ]
-  • VS3D levels restored to guide §4.4 VERBATIM: BALANCE = peak long cluster in
-    range (0.9.21's corridor/nearest-spot experiment REVERTED — it replaced the
-    method that worked); window = spot ± 1× STRADDLE ("your range estimator" —
-    0.9.17's 2.5× let far monster longs dominate mass and the noise floor then
-    swallowed the short clusters: this morning's "UPSIDE TEST: none in range"
-    with visible red bars at 7,445-7,480). Two tests per side, as always. The
-    beyond-test drift tag remains as annotation only — selection untouched.
-  • Straddle: pre-open the card/Book/preview now price from the OVERNIGHT (GTH)
-    session — two option_price_over_time legs at the live ATM (probe35b: today's
-    session served pre-open; Friday-session pricing was +27.9% wrong). Guards:
-    fresh ≤60min, legs ≤45min apart, symmetry ≥0.10 (probe35b's 57min-apart
-    stale-strike lesson); quote unavailable → honest label "Friday-session
-    pricing". Source caption printed pre-open. 60s cache; playback never fetches.
-  • OPEN READ: first ≥09:30 live snapshot freezes "Friday's signed book ×
-    opening spot" (Dan's morning map) into day-state — immutable, REPAINT-clean.
-    Card gets a compact OPEN READ line; Book draws it dash-dot alongside (never
-    instead of) the 09:35 locked set.
-  • Book lines guarantee: overlay precedence locked(solid)+open(dash-dot) →
-    preview(dotted) → note; harness now EXECUTES book_figure and asserts the
-    axhlines exist at the level y-values in every state (rendering-class gate).
-  • Day-state now persists 🧹 clean-sweep maps and the open read across reloads.
-
+vGBT-0.9.24 — GTH live pre-market straddle + OPEN READ frame + unconditional Book levels overlay + day-state persistence for clean sweeps/open read.
 vGBT-0.9.23 — preview decoupled from the straddle checkbox; failures surface as captions.
 vGBT-0.9.22 — Book preview levels (pre-lock, card-identical), note off the legend.
 vGBT-0.9.21 — corridor/nearest-spot balance experiment (REVERTED in 0.9.24: guide §4.4 says peak long cluster, and it was right).
@@ -1066,23 +1057,37 @@ def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WAR
         # (cap ±2%) until two tests exist per side — a decayed midday straddle
         # must never erase the ladder (±$23 did exactly that today).
         ref=float(ref_spot) if ref_spot else spot
+        # THE RANGE, explicitly (the three knobs, no hidden ones):
+        #   start = guide §4.4 "spot ± straddle" estimator (1×)
+        #   widen ×1.35/step until TWO short clusters exist per side, cap ±2%
+        #   noise floor = PER SIGN: a short survives if ≥20% of the LARGEST
+        #     SHORT in window (longs compete with longs). The old floor was 5%
+        #     of TOTAL mass — Friday's long towers vetoed every upside test.
         half=max(1.0*(strad_now or 0.0), spot*0.009)
         bands=package_suspects(rows)
+        def _side_keep(cs,frac=0.20):
+            if not cs: return cs
+            mx=max(c["mass"] for c in cs)
+            return [c for c in cs if c["mass"]>=frac*mx]
         for _w in range(6):
-            cl=signed_clusters(rows,ref-half,ref+half)
-            _sh=[c for c in cl if c["sign"]<0]
-            if (sum(1 for c in _sh if c["peak"]>ref)>=2
-                    and sum(1 for c in _sh if c["peak"]<ref)>=2): break
+            cl=signed_clusters(rows,ref-half,ref+half,min_share=0.01)
+            longs =_side_keep([c for c in cl if c["sign"]>0])
+            shorts=_side_keep([c for c in cl if c["sign"]<0])
+            if (sum(1 for c in shorts if c["peak"]>ref)>=2
+                    and sum(1 for c in shorts if c["peak"]<ref)>=2): break
             if half>=spot*0.02: break
             half=min(half*1.35, spot*0.02)
-        for c in cl:                                    # confidence haircut inside suspect bands
+        for c in longs+shorts:                          # confidence haircut inside suspect bands
             if _in_band(c["peak"],bands): c["conf"]*=0.5
-        longs =sorted([c for c in cl if c["sign"]>0],key=lambda c:-c["mass"])
-        shorts=[c for c in cl if c["sign"]<0]
+        longs=sorted(longs,key=lambda c:-c["mass"])
         if not longs and not shorts:
             L.append(("  no clusters clear the noise floor in range — structureless book",DIM,11,False)); return L
-        ups=sorted([c for c in shorts if c["peak"]>ref],key=lambda c:c["peak"])[:2]
-        dns=sorted([c for c in shorts if c["peak"]<ref],key=lambda c:-c["peak"])[:2]
+        # TESTS per guide: the PEAK short clusters — the TWO LARGEST each side
+        # of the open (selection by mass; displayed nearest-first).
+        ups=sorted(sorted([c for c in shorts if c["peak"]>ref],key=lambda c:-c["mass"])[:2],
+                   key=lambda c:c["peak"])
+        dns=sorted(sorted([c for c in shorts if c["peak"]<ref],key=lambda c:-c["mass"])[:2],
+                   key=lambda c:-c["peak"])
         # BALANCE per the final method: peak long BETWEEN the first tests;
         # corridor empty → peak long in range (annotation below names position).
         _u1=ups[0]["peak"] if ups else None
@@ -2221,7 +2226,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.26 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.27 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
