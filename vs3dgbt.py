@@ -1,8 +1,21 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.24
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.25
 
 CHANGELOG POLICY (per Faisal, Jul-24): detailed notes for the LATEST 3 versions
 only; everything older is ONE line. Full history lives in git, not here.
+
+vGBT-0.9.25 [THE METHOD — user-final specification, 2026-07-27]
+  • Reference point for the ladder = THE OPEN, not the live spot (pre-open:
+    current pre-market spot; from 09:30: the opening print via open_read).
+    Today's lock anchored to a late-lock spot far off the 7,460 open and
+    printed BALANCE 7,510 / UP 7,485 with nothing below — never again.
+  • UPSIDE TESTS = the TWO short-cluster peaks ABOVE the open; DOWNSIDE = the
+    TWO below. Window starts at the guide's 1× straddle estimator and WIDENS
+    stepwise (cap ±2%) until two tests exist per side — a decayed midday
+    straddle can no longer erase the ladder (today's ±$23 → "none in range").
+  • BALANCE = peak LONG cluster (guide §4.4) BETWEEN the first upside and
+    first downside test; corridor empty → peak long in range with the position
+    annotation. Frames unchanged: OPEN READ (Friday book × open) + 09:35 lock.
 
 vGBT-0.9.24 [GUIDE-LITERAL LEVELS RESTORED + LIVE GTH STRADDLE + OPEN READ]
   • VS3D levels restored to guide §4.4 VERBATIM: BALANCE = peak long cluster in
@@ -35,17 +48,7 @@ vGBT-0.9.23 [PREVIEW HOTFIX — decouple from the straddle checkbox]
   • Preview failures now print a dim caption naming the reason instead of
     silently drawing nothing.
 
-vGBT-0.9.22 [BOOK PREVIEW LEVELS — pre-market parity with the Read card]
-  • Gap (user report, Mon pre-market): Read card prints PREVIEW levels from
-    yesterday's book; the Book tab drew nothing until the 09:35 lock (only the
-    corner note, which also collided with the legend).
-  • Fix: pre-lock the Book computes the IDENTICAL preview (same key_levels_lines,
-    same snapshot — Friday's mature book on a Monday) and draws BALANCE/UP/DN
-    dotted + dimmed with "(preview)" labels; note now reads "PREVIEW —
-    yesterday's book · locks 09:35 ET" and moved bottom-left off the legend.
-    At the first ≥09:35 snapshot the frozen solid set replaces it — lock
-    mechanics, day-state, Read card all untouched. Display only.
-
+vGBT-0.9.22 — Book preview levels (pre-lock, card-identical), note off the legend.
 vGBT-0.9.21 — corridor/nearest-spot balance experiment (REVERTED in 0.9.24: guide §4.4 says peak long cluster, and it was right).
 vGBT-0.9.20 — charm-echo removed; 🧹 clean-sign highlight toggle (dodger blue/magenta, quarantined side-stats); √ compress removed; pinak walls flip-anchored + pin honesty gate.
 vGBT-0.9.19 — changelog pruned to policy (latest 3 detailed, older one-liners); no code changes.
@@ -1025,7 +1028,7 @@ def _strength(share, conf):
     if conf<0.35: lab+="?"          # thin sign confidence — flag, don't hide
     return lab
 
-def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WARN,
+def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WARN, ref_spot=None,
                      lock=None, status_prices=None, header_note=None, levels_out=None):
     """Dan-format KEY LEVELS + TAKEAWAYS from the flow-signed book (§4.4 test-anchor).
     Tests = dealer-SHORT cluster peaks · Balance = biggest dealer-LONG peak in range.
@@ -1045,27 +1048,42 @@ def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WAR
         if rows is None:
             L.append(("  needs Signed mode — naive ± cannot define tests/anchors",DIM,11,False))
             return L
-        half=max(1.0*(strad_now or 0.0), spot*0.009)   # GUIDE §4.4 verbatim: "Spot ± straddle
-                                                       # price gives you a rough range. Within that
-                                                       # range, look for tests and anchors." 1×, not
-                                                       # 2.5× (0.9.17's widening let far monster longs
-                                                       # into the window and the noise floor then ate
-                                                       # the short clusters → "UPSIDE TEST: none").
+        # ═══ vGBT-0.9.25 — THE METHOD (user-final, 2026-07-27) ═══
+        # Reference point = THE OPEN (pre-open: current pre-market spot — "where
+        # spot is at pre-market determines where the balances are"; from 09:30:
+        # the opening print, frozen in open_read). NOT the live spot.
+        # UPSIDE TESTS   = the TWO short-cluster peaks ABOVE the reference.
+        # DOWNSIDE TESTS = the TWO short-cluster peaks BELOW the reference.
+        # BALANCE = peak LONG cluster (guide §4.4 "peak of long option cluster")
+        #           BETWEEN the first upside and first downside test; corridor
+        #           empty → peak long in range, position-annotated.
+        # Window: guide's 1× straddle estimator as the START, widened stepwise
+        # (cap ±2%) until two tests exist per side — a decayed midday straddle
+        # must never erase the ladder (±$23 did exactly that today).
+        ref=float(ref_spot) if ref_spot else spot
+        half=max(1.0*(strad_now or 0.0), spot*0.009)
         bands=package_suspects(rows)
-        cl=signed_clusters(rows,spot-half,spot+half)
+        for _w in range(6):
+            cl=signed_clusters(rows,ref-half,ref+half)
+            _sh=[c for c in cl if c["sign"]<0]
+            if (sum(1 for c in _sh if c["peak"]>ref)>=2
+                    and sum(1 for c in _sh if c["peak"]<ref)>=2): break
+            if half>=spot*0.02: break
+            half=min(half*1.35, spot*0.02)
         for c in cl:                                    # confidence haircut inside suspect bands
             if _in_band(c["peak"],bands): c["conf"]*=0.5
         longs =sorted([c for c in cl if c["sign"]>0],key=lambda c:-c["mass"])
         shorts=[c for c in cl if c["sign"]<0]
         if not longs and not shorts:
             L.append(("  no clusters clear the noise floor in range — structureless book",DIM,11,False)); return L
-        ups=sorted([c for c in shorts if c["peak"]>spot],key=lambda c:c["peak"])[:2]
-        dns=sorted([c for c in shorts if c["peak"]<spot],key=lambda c:-c["peak"])[:2]
-        # GUIDE §4.4 VERBATIM (0.9.24 restores it — the 0.9.21 corridor/nearest-spot
-        # experiment is REVERTED): "Anchor / Equilibrium — Peak of long option
-        # cluster." The peak long cluster in the spot±straddle range. Full stop.
-        # Tests: "Peak of short option cluster above/below spot" — two per side.
-        bal=longs[0] if longs else None
+        ups=sorted([c for c in shorts if c["peak"]>ref],key=lambda c:c["peak"])[:2]
+        dns=sorted([c for c in shorts if c["peak"]<ref],key=lambda c:-c["peak"])[:2]
+        # BALANCE per the final method: peak long BETWEEN the first tests;
+        # corridor empty → peak long in range (annotation below names position).
+        _u1=ups[0]["peak"] if ups else None
+        _d1=dns[0]["peak"] if dns else None
+        _corr=[c for c in longs if (_d1 is None or c["peak"]>_d1) and (_u1 is None or c["peak"]<_u1)]
+        bal=(max(_corr,key=lambda c:c["mass"]) if _corr else (longs[0] if longs else None))
         s0=spot
         if isinstance(levels_out,dict) and (bal or ups or dns):
             levels_out["ok"]=True
@@ -2175,7 +2193,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.24 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.25 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -2890,7 +2908,9 @@ with tab_book:
                 _po={}
                 key_levels_lines(latest,latest["spot"],_pstr,
                                  {"decay":"","fish":"","pat":"","clock":""},
-                                 "w","g","r","c","d","y",levels_out=_po)
+                                 "w","g","r","c","d","y",
+                                 ref_spot=(st.session_state.get("open_read") or {}).get("spot") or latest["spot"],
+                                 levels_out=_po)
                 _plv=_po.get("levels") if _po.get("ok") else None
                 if _plv is None: _plv_err="book has no level clusters yet (or signed mode off)"
             except Exception as _pe: _plv=None; _plv_err=f"{type(_pe).__name__}: {_pe}"
@@ -3434,7 +3454,8 @@ with tab_read:
             elif now_est().time()<dt.time(9,35):
                 _hdr="PREVIEW — pre-open book (yesterday's OI/signs) · locks at first ≥09:35 ET snapshot"
             _lvo={}
-            lines+=key_levels_lines(latest,spot,_stn,v,WHT,BULL,BEAR,CYAN,DIM,WARN,
+            _ref=(st.session_state.get("open_read") or {}).get("spot") or spot
+            lines+=key_levels_lines(latest,spot,_stn,v,WHT,BULL,BEAR,CYAN,DIM,WARN,ref_spot=_ref,
                                     lock=(_lk or {}).get("levels") if isinstance(_lk,dict) else None,
                                     status_prices=_stp,header_note=_hdr,levels_out=_lvo)
             # vGBT-0.9.24 OPEN READ: first ≥09:30 live snapshot freezes "Friday's
