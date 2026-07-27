@@ -1,8 +1,17 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.28
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.29
 
 CHANGELOG POLICY (per Faisal, Jul-24): detailed notes for the LATEST 3 versions
 only; everything older is ONE line. Full history lives in git, not here.
+
+vGBT-0.9.29 [AUDIT FIXES — line-by-line review vs the guide]
+  • Radius leak: the ladder's beyond-test balances and the fly target searched
+    the 1×S0-filtered longs — a real long cluster between 1× and 1.5× was
+    silently replaced by the "thin" fallback. Both now search longs_ext (full
+    1.5×S0 window); the 1×S0 radius stays a BALANCE-selection rule only.
+    Locked ladders carry longs_ext for faithful replay.
+  • Stale text removed: dead 0.9.25 corridor/widening comment block deleted;
+    docstring now states the fixed-radii method. No other logic touched.
 
 vGBT-0.9.28 [FIXED RADII — the final method, user-specified]
   • S0 = OPENING straddle, fetched from GBT bars at ANY hour (ATM from the true
@@ -30,18 +39,7 @@ vGBT-0.9.27 [PER-SIGN NOISE FLOOR — longs can no longer veto the tests]
   • The range is now documented in one comment block: 1× straddle start →
     ×1.35 widening until 2+2 → ±2% cap → per-sign floor. No hidden knobs.
 
-vGBT-0.9.26 [TRUE OPEN — load time can never move the anchor]
-  • The open anchor now comes from the API's own bar history: gbt_true_open()
-    fetches the actual 09:30 print (sessionDate=today, probe35-validated) —
-    load the app at noon and the ladder still anchors to the true open.
-    Previously "the open" = spot of the first ≥09:30 snapshot the app happened
-    to take (today: a 09:54 lock anchored 60 points off the open).
-  • Reference chain everywhere (card + Book preview): frozen open_read →
-    true 09:30 print → live spot (pre-open only). open_read records its
-    provenance ("bars@09:30" vs "first snapshot"). Playback never fetches.
-  • User's principle, now literally true in code: levels depend on the prior
-    session's positions + the open — WHEN you load is irrelevant.
-
+vGBT-0.9.26 — true 09:30 open fetched from API bars; load time can't move the anchor.
 vGBT-0.9.25 — open-anchored ladder + adaptive window (superseded by 0.9.28 fixed radii).
 vGBT-0.9.24 — GTH live pre-market straddle + OPEN READ frame + unconditional Book levels overlay + day-state persistence for clean sweeps/open read.
 vGBT-0.9.23 — preview decoupled from the straddle checkbox; failures surface as captions.
@@ -1028,7 +1026,9 @@ def _strength(share, conf):
 def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WARN, ref_spot=None, open_strad=None,
                      lock=None, status_prices=None, header_note=None, levels_out=None):
     """Dan-format KEY LEVELS + TAKEAWAYS from the flow-signed book (§4.4 test-anchor).
-    Tests = dealer-SHORT cluster peaks · Balance = biggest dealer-LONG peak in range.
+    Tests = the TWO largest dealer-SHORT clusters within 1.5×S0 per side of the
+    OPEN · Balance = largest dealer-LONG cluster within 1×S0 of the open
+    (S0 = opening straddle). Fixed radii — see THE METHOD block below.
     Signs are dsign (flow-inferred) — candidates, NOT CBOE clearing.
     0.9.18: lock=levels dict → render the FROZEN morning ladder (ignores the live
     book); status_prices = post-lock closes → tests wear ·TESTED/·CROSSED;
@@ -1039,24 +1039,13 @@ def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WAR
     if lock:
         bands=lock.get("bands",[]); longs=lock.get("longs",[])
         bal=lock.get("bal"); ups=lock.get("ups",[]); dns=lock.get("dns",[])
+        longs_ext=lock.get("longs_ext",longs)
         half=lock.get("half",spot*0.009); s0=lock.get("spot0",spot)
     else:
         rows=signed_book_rows(latest["chain"],spot)
         if rows is None:
             L.append(("  needs Signed mode — naive ± cannot define tests/anchors",DIM,11,False))
             return L
-        # ═══ vGBT-0.9.25 — THE METHOD (user-final, 2026-07-27) ═══
-        # Reference point = THE OPEN (pre-open: current pre-market spot — "where
-        # spot is at pre-market determines where the balances are"; from 09:30:
-        # the opening print, frozen in open_read). NOT the live spot.
-        # UPSIDE TESTS   = the TWO short-cluster peaks ABOVE the reference.
-        # DOWNSIDE TESTS = the TWO short-cluster peaks BELOW the reference.
-        # BALANCE = peak LONG cluster (guide §4.4 "peak of long option cluster")
-        #           BETWEEN the first upside and first downside test; corridor
-        #           empty → peak long in range, position-annotated.
-        # Window: guide's 1× straddle estimator as the START, widened stepwise
-        # (cap ±2%) until two tests exist per side — a decayed midday straddle
-        # must never erase the ladder (±$23 did exactly that today).
         ref=float(ref_spot) if ref_spot else spot
         # ═══ THE METHOD — final (user spec, 2026-07-27 pm) ═══
         #   S0 = OPENING straddle (GBT bars, fetchable any hour); pre-open or
@@ -1081,6 +1070,8 @@ def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WAR
         shorts=_side_keep([c for c in cl if c["sign"]<0])
         for c in longs+shorts:                          # confidence haircut inside suspect bands
             if _in_band(c["peak"],bands): c["conf"]*=0.5
+        longs_ext=sorted(longs,key=lambda c:-c["mass"])   # full 1.5×S0 window — for the
+                                                          # ladder's beyond-test balances + fly
         longs=sorted([c for c in longs if abs(c["peak"]-ref)<=1.0*S0],key=lambda c:-c["mass"])
         if not longs and not shorts:
             L.append(("  no clusters clear the noise floor in range — structureless book",DIM,11,False)); return L
@@ -1096,7 +1087,7 @@ def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WAR
         s0=spot
         if isinstance(levels_out,dict) and (bal or ups or dns):
             levels_out["ok"]=True
-            levels_out["levels"]=dict(bal=bal,longs=longs,ups=ups,dns=dns,bands=bands,half=half,spot0=spot)
+            levels_out["levels"]=dict(bal=bal,longs=longs,longs_ext=longs_ext,ups=ups,dns=dns,bands=bands,half=half,spot0=spot)
     _hi=max(status_prices) if status_prices else None
     _lo=min(status_prices) if status_prices else None
     def _status(t_peak, direction):
@@ -1127,7 +1118,10 @@ def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WAR
             L.append((f"⚠ {b['lo']:,.0f}–{b['hi']:,.0f} fly-shaped — tape can't side packages; "
                       f"if customer-owned, {b['body']:,.0f} is the {_alt}",WARN,10.5,False))
     def _bal_beyond(t_peak, direction):
-        cands=[c for c in longs if (c["peak"]>t_peak if direction>0 else c["peak"]<t_peak)]
+        # vGBT-0.9.29: search the FULL 1.5×S0 window — the 1×S0 radius is a
+        # BALANCE-selection rule and must not leak into the ladder (a real long
+        # between 1× and 1.5× was silently replaced by the "thin" fallback).
+        cands=[c for c in longs_ext if (c["peak"]>t_peak if direction>0 else c["peak"]<t_peak)]
         if cands:
             c=min(cands,key=lambda c:abs(c["peak"]-t_peak))
             return c["peak"],_strength(c["share"],c["conf"])
@@ -1158,7 +1152,7 @@ def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WAR
     else:
         buy=round(spot/5.0)*5.0
         def _bal_clean(t_peak, direction):
-            cands=[c for c in longs if (c["peak"]>t_peak if direction>0 else c["peak"]<t_peak)
+            cands=[c for c in longs_ext if (c["peak"]>t_peak if direction>0 else c["peak"]<t_peak)
                    and not _in_band(c["peak"],bands)]        # never sell 2× into a suspect band
             if cands:
                 return min(cands,key=lambda c:abs(c["peak"]-t_peak))["peak"]
@@ -2256,7 +2250,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.28 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.29 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
