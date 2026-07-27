@@ -1,8 +1,19 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.21
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.22
 
 CHANGELOG POLICY (per Faisal, Jul-24): detailed notes for the LATEST 3 versions
 only; everything older is ONE line. Full history lives in git, not here.
+
+vGBT-0.9.22 [BOOK PREVIEW LEVELS — pre-market parity with the Read card]
+  • Gap (user report, Mon pre-market): Read card prints PREVIEW levels from
+    yesterday's book; the Book tab drew nothing until the 09:35 lock (only the
+    corner note, which also collided with the legend).
+  • Fix: pre-lock the Book computes the IDENTICAL preview (same key_levels_lines,
+    same snapshot — Friday's mature book on a Monday) and draws BALANCE/UP/DN
+    dotted + dimmed with "(preview)" labels; note now reads "PREVIEW —
+    yesterday's book · locks 09:35 ET" and moved bottom-left off the legend.
+    At the first ≥09:35 snapshot the frozen solid set replaces it — lock
+    mechanics, day-state, Read card all untouched. Display only.
 
 vGBT-0.9.21 [VS3D LEVELS — the sandwich, per guide §4.4 + positions transcript]
   • BUG: BALANCE was longs[0] (biggest long ANYWHERE in window) while tests are
@@ -35,9 +46,7 @@ vGBT-0.9.20 [FOUR CONFIRMED CUTS+ADDS — probe31-34 build]
     AND ≥6 live band strikes (kills the unreasonable open prints). STRICTLY
     firewalled from the locked-card BALANCE/UP TEST/DN TEST logic.
 
-vGBT-0.9.19 [CHANGELOG PRUNED] — header changelog cut to policy (54KB → ~6KB);
-  no behavior change.
-
+vGBT-0.9.19 — changelog pruned to policy (latest 3 detailed, older one-liners); no code changes.
 vGBT-0.9.18 — magenta rail (charm-panel spot path), 09:35 locked card (BALANCE/UP/DN frozen, ·TESTED/·CROSSED status), pre-open PREVIEW, book pinak lines retired for locked levels.
 vGBT-0.9.17 — package detector: fly-fingerprint FLAG (never auto-flip), conf×0.5 in suspect bands, ⚠pkg + dual-read, FLY gate stack, window spot±max(2.5×straddle,0.9%).
 vGBT-0.9.16 — Read-tab card NameError fixed (card computes its own straddle); end-to-end exec gate on synthetic signed chain.
@@ -1937,7 +1946,7 @@ def signed_book_rows(ch, sp):
     return g[["strike","signed_pct","conf"]]
 
 def book_figure(book,spot,straddle,lo,hi,side="Total",prev=None,openb=None,signed=None,
-                signed_prev=None,signed_open=None,sticks=True,clean_map=None):
+                signed_prev=None,signed_open=None,sticks=True,clean_map=None,preview_levels=None):
     def _tx(v): return v            # vGBT-0.9.20: always linear (√ compress removed)
     """VS3D 'Positions by Strike' analogue. Bars in e-minis per $1 (per-$1 ÷ 50).
     NAIVE calls+/puts− convention — measured signing arrives with the flow ledger."""
@@ -2063,7 +2072,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.21 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.22 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -2721,11 +2730,11 @@ def _book_spot_overlay(fig, bars, lo, hi, chain=None, spot=None, exp=None, nowv=
             for s in ax2.spines.values(): s.set_visible(False)
         try:
             tr=_mt.blended_transform_factory(ax.transAxes,ax.transData)
-            def _line(y,lab,col,ls):
+            def _line(y,lab,col,ls,alpha=0.85):
                 try: y=float(y)
                 except Exception: return
                 if y and lo<y<hi:
-                    ax.axhline(y,color=col,lw=1.0,ls=ls,alpha=0.85,zorder=5)
+                    ax.axhline(y,color=col,lw=1.0,ls=ls,alpha=alpha,zorder=5)
                     ax.text(0.995,y,f"{lab} {y:,.0f}",transform=tr,ha="right",va="bottom",
                             fontsize=8,color=col,zorder=7,
                             bbox=dict(fc="#0e1117",ec=col,lw=0.6,pad=1.5))
@@ -2737,9 +2746,20 @@ def _book_spot_overlay(fig, bars, lo, hi, chain=None, spot=None, exp=None, nowv=
                 if _lv2.get("bal"): _line(_lv2["bal"]["peak"],"BALANCE","#e8ecf2",(0,(6,3)))
                 for _t in _lv2.get("ups",[]): _line(_t["peak"],"UP TEST","#3fb950",(0,(5,3)))
                 for _t in _lv2.get("dns",[]): _line(_t["peak"],"DN TEST","#ef5350",(0,(5,3)))
+            elif preview_levels:
+                # vGBT-0.9.22: pre-lock the Book draws the SAME preview the Read card
+                # prints (same key_levels_lines, same yesterday's-book snapshot) —
+                # dotted + dimmed so provisional reads as provisional. Display only;
+                # lock mechanics untouched.
+                if preview_levels.get("bal"):
+                    _line(preview_levels["bal"]["peak"],"BALANCE (preview)","#e8ecf2",(0,(2,3)),alpha=0.55)
+                for _t in preview_levels.get("ups",[]): _line(_t["peak"],"UP TEST (preview)","#3fb950",(0,(2,3)),alpha=0.55)
+                for _t in preview_levels.get("dns",[]): _line(_t["peak"],"DN TEST (preview)","#ef5350",(0,(2,3)),alpha=0.55)
+                ax.text(0.005,0.02,"PREVIEW — yesterday's book · locks 09:35 ET",transform=ax.transAxes,
+                        ha="left",va="bottom",fontsize=8,color="#8a93a6",zorder=7)
             else:
-                ax.text(0.995,0.02,"card levels lock at 09:35 ET",transform=ax.transAxes,
-                        ha="right",va="bottom",fontsize=8,color="#8a93a6",zorder=7)
+                ax.text(0.005,0.02,"card levels lock at 09:35 ET",transform=ax.transAxes,
+                        ha="left",va="bottom",fontsize=8,color="#8a93a6",zorder=7)
         except Exception: pass
     except Exception: pass
     return fig
@@ -2785,13 +2805,23 @@ with tab_book:
             _cv=f" · seeded {_gm2[0].get('ok','?')}/{_gm2[0].get('n','?')} · live {_gm2[0].get('live',0)}" if (_gm2 and _sg is not None) else ""
         except Exception: _cv=""
         st.caption(f"showing {int(_lo2)}–{int(_hi2)} · fetched {int(lo)}–{int(hi)} (spot {_sp:.2f} ±{window_pct*100:.1f}%) · zoom ×{_z:.2f}{_cv}")
+        _plv=None
+        if not isinstance(st.session_state.get("card_lock"),dict):
+            try:    # vGBT-0.9.22: identical computation to the Read card's preview —
+                    # same function, same snapshot (pre-open = yesterday's mature book)
+                _po={}
+                key_levels_lines(latest,latest["spot"],_strv,
+                                 {"decay":"","fish":"","pat":"","clock":""},
+                                 "w","g","r","c","d","y",levels_out=_po)
+                _plv=_po.get("levels") if _po.get("ok") else None
+            except Exception: _plv=None
         _clm=None
         if b_clean and _sg is not None and len(_sg):
             _clm=gbt_clean_signs(exps[0],list(_sg["strike"].values))
             _n_on=sum(1 for _v in _clm.values() if _v)
             st.caption(f"🧹 clean signs: {_n_on}/{len(_clm)} strikes confirmed (single-leg quarantine)")
         fig=book_figure(bk,latest["spot"],_strv,_lo2,_hi2,side=b_side,prev=prevb,openb=openb,signed=_sg,
-                        signed_prev=_sgp,signed_open=_sgo,sticks=True,clean_map=_clm)
+                        signed_prev=_sgp,signed_open=_sgo,sticks=True,clean_map=_clm,preview_levels=_plv)
         if b_spot:
             try:
                 _ch0=latest["chain"]; _ch0=_ch0[_ch0["expiry"]==exps[0]] if "expiry" in _ch0.columns else _ch0
@@ -2800,7 +2830,7 @@ with tab_book:
                 st.caption(f"spot-path overlay unavailable: {type(_ox).__name__}: {_ox}")
         emit("book",fig)
     if book_on:
-        _bsig=repr((sel_ts.isoformat(),b_mode,b_side,bool(b_dots),bool(b_strad),bool(b_clean),len(st.session_state.get("gbt_clean_"+exps[0],st.session_state.get("gbt_clean_"+exps[0]+"_partial",{}))),bool(b_spot),int(len(bars) if bars is not None else 0),bool(GBT_SIGNED),round(float(st.session_state.get("book_zoom",1.0)),3),round(window_pct,5),len(st.session_state.snaps)))
+        _bsig=repr((sel_ts.isoformat(),b_mode,b_side,bool(b_dots),bool(b_strad),int(isinstance(st.session_state.get("card_lock"),dict)),bool(b_clean),len(st.session_state.get("gbt_clean_"+exps[0],st.session_state.get("gbt_clean_"+exps[0]+"_partial",{}))),bool(b_spot),int(len(bars) if bars is not None else 0),bool(GBT_SIGNED),round(float(st.session_state.get("book_zoom",1.0)),3),round(window_pct,5),len(st.session_state.snaps)))
         dispatch("book",_render_book,sig=_bsig)
 
 
