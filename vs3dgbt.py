@@ -1,8 +1,20 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.25
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.26
 
 CHANGELOG POLICY (per Faisal, Jul-24): detailed notes for the LATEST 3 versions
 only; everything older is ONE line. Full history lives in git, not here.
+
+vGBT-0.9.26 [TRUE OPEN — load time can never move the anchor]
+  • The open anchor now comes from the API's own bar history: gbt_true_open()
+    fetches the actual 09:30 print (sessionDate=today, probe35-validated) —
+    load the app at noon and the ladder still anchors to the true open.
+    Previously "the open" = spot of the first ≥09:30 snapshot the app happened
+    to take (today: a 09:54 lock anchored 60 points off the open).
+  • Reference chain everywhere (card + Book preview): frozen open_read →
+    true 09:30 print → live spot (pre-open only). open_read records its
+    provenance ("bars@09:30" vs "first snapshot"). Playback never fetches.
+  • User's principle, now literally true in code: levels depend on the prior
+    session's positions + the open — WHEN you load is irrelevant.
 
 vGBT-0.9.25 [THE METHOD — user-final specification, 2026-07-27]
   • Reference point for the ladder = THE OPEN, not the live spot (pre-open:
@@ -40,14 +52,7 @@ vGBT-0.9.24 [GUIDE-LITERAL LEVELS RESTORED + LIVE GTH STRADDLE + OPEN READ]
     axhlines exist at the level y-values in every state (rendering-class gate).
   • Day-state now persists 🧹 clean-sweep maps and the open read across reloads.
 
-vGBT-0.9.23 [PREVIEW HOTFIX — decouple from the straddle checkbox]
-  • 0.9.22's Book preview reused _strv, which only exists when "1× straddle
-    lines" is checked → unchecked box = collapsed ±0.9% window = wrong or
-    missing preview. Now computes its own straddle exactly like the Read card
-    (same terrain_straddle call) — card-identical in all control states.
-  • Preview failures now print a dim caption naming the reason instead of
-    silently drawing nothing.
-
+vGBT-0.9.23 — preview decoupled from the straddle checkbox; failures surface as captions.
 vGBT-0.9.22 — Book preview levels (pre-lock, card-identical), note off the legend.
 vGBT-0.9.21 — corridor/nearest-spot balance experiment (REVERTED in 0.9.24: guide §4.4 says peak long cluster, and it was right).
 vGBT-0.9.20 — charm-echo removed; 🧹 clean-sign highlight toggle (dodger blue/magenta, quarantined side-stats); √ compress removed; pinak walls flip-anchored + pin honesty gate.
@@ -1811,6 +1816,29 @@ def gbt_gth_straddle(spot,exp):
     ss[ck]=(_time.time(),out)
     return out
 
+def gbt_true_open():
+    """vGBT-0.9.26: the ACTUAL 09:30 opening print from the API's own bars, so
+    load time never moves the anchor — open at noon and the ladder still hangs
+    on the true open (probe35: sessionDate=today serves full session history).
+    Returns (open_price,'HH:MM') or None. Cached per day in session."""
+    ss=st.session_state; ck="gbt_true_open_"+today_est().strftime("%Y-%m-%d")
+    if ck in ss: return ss[ck]
+    v=None
+    try:
+        _,b=_gbt_post("stock_price_over_time",{"ticker":"SPX","aggregationPeriod":"ONE_MINUTE",
+                                               "sessionDate":today_est().strftime("%Y-%m-%d")})
+        if b is not None and len(b):
+            _t=pd.to_datetime(pd.to_numeric(b["timestamp"],errors="coerce"),unit="ms",utc=True)                 .dt.tz_convert("America/New_York").dt.tz_localize(None)
+            b=b.assign(_t=_t)
+            rth=b[b["_t"].dt.time>=dt.time(9,30)]
+            if len(rth):
+                r=rth.iloc[0]
+                px=float(r["openPrice"]) if "openPrice" in rth.columns and pd.notna(r.get("openPrice")) else float(r["closePrice"])
+                v=(px,r["_t"].strftime("%H:%M"))
+    except Exception: v=None
+    if v: ss[ck]=v          # cache only success; retry next rerun otherwise
+    return v
+
 def straddle_for(chain,spot,exp,live_ok=True):
     """vGBT-0.9.24: ONE straddle source for card/Book/preview. Pre-open (<09:30)
     with live_ok: GTH quote (labeled 'GTH live @HH:MM'); quote unavailable or
@@ -2193,7 +2221,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.25 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.26 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -2909,7 +2937,10 @@ with tab_book:
                 key_levels_lines(latest,latest["spot"],_pstr,
                                  {"decay":"","fish":"","pat":"","clock":""},
                                  "w","g","r","c","d","y",
-                                 ref_spot=(st.session_state.get("open_read") or {}).get("spot") or latest["spot"],
+                                 ref_spot=((st.session_state.get("open_read") or {}).get("spot")
+                                           or ((gbt_true_open() or (None,))[0]
+                                               if ((not PLAYBACK) and now_est().time()>=dt.time(9,30)) else None)
+                                           or latest["spot"]),
                                  levels_out=_po)
                 _plv=_po.get("levels") if _po.get("ok") else None
                 if _plv is None: _plv_err="book has no level clusters yet (or signed mode off)"
@@ -3454,7 +3485,14 @@ with tab_read:
             elif now_est().time()<dt.time(9,35):
                 _hdr="PREVIEW — pre-open book (yesterday's OI/signs) · locks at first ≥09:35 ET snapshot"
             _lvo={}
-            _ref=(st.session_state.get("open_read") or {}).get("spot") or spot
+            _orx0=st.session_state.get("open_read")
+            _to=None
+            if isinstance(_orx0,dict) and _orx0.get("spot"):
+                _ref=float(_orx0["spot"])
+            elif (not PLAYBACK) and now_est().time()>=dt.time(9,30):
+                _to=gbt_true_open(); _ref=float(_to[0]) if _to else spot
+            else:
+                _ref=spot
             lines+=key_levels_lines(latest,spot,_stn,v,WHT,BULL,BEAR,CYAN,DIM,WARN,ref_spot=_ref,
                                     lock=(_lk or {}).get("levels") if isinstance(_lk,dict) else None,
                                     status_prices=_stp,header_note=_hdr,levels_out=_lvo)
@@ -3465,8 +3503,9 @@ with tab_read:
                     and now_est().time()>=dt.time(9,30) and not isinstance(_lk,dict)
                     and _lvo.get("ok")
                     and st.session_state.get("snaps") and sel_ts==st.session_state.snaps[-1]["ts"]):
-                st.session_state["open_read"]={"levels":_lvo["levels"],"spot":float(spot),
-                                               "at":now_est().strftime("%H:%M")}
+                st.session_state["open_read"]={"levels":_lvo["levels"],"spot":float(_ref),
+                                               "at":(_to[1] if _to else now_est().strftime("%H:%M")),
+                                               "src":("bars@09:30" if _to else "first snapshot")}
                 save_day_state()
             _orx=st.session_state.get("open_read")
             if isinstance(_orx,dict):
