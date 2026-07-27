@@ -1,8 +1,21 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.27
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.28
 
 CHANGELOG POLICY (per Faisal, Jul-24): detailed notes for the LATEST 3 versions
 only; everything older is ONE line. Full history lives in git, not here.
+
+vGBT-0.9.28 [FIXED RADII — the final method, user-specified]
+  • S0 = OPENING straddle, fetched from GBT bars at ANY hour (ATM from the true
+    09:30 open; both legs' first ≥09:30 bar via option_price_over_time —
+    probe35b capability). Day-cached + persisted. Pre-open/fetch-fail → current
+    straddle stand-in, labeled on the card.
+  • BALANCE = largest long-γ cluster within 1.0×S0 of the open.
+  • TESTS = the TWO largest short clusters within 1.5×S0 per side of the open;
+    beyond 1.5×S0 = IGNORED. Adaptive widening DELETED — radii are fixed.
+  • The card prints its own range line: "range: open X · balance ≤ ±a (1×S0) ·
+    tests ≤ ±b (1.5×S0) · S0 $s" — the range question answered on-screen.
+  • Per-sign floor (0.9.27) retained; anchors (true open, opening straddle)
+    persist in day-state across reloads.
 
 vGBT-0.9.27 [PER-SIGN NOISE FLOOR — longs can no longer veto the tests]
   • Root cause of "UPSIDE TEST: none" (twice today): signed_clusters' 5%-of-
@@ -29,19 +42,7 @@ vGBT-0.9.26 [TRUE OPEN — load time can never move the anchor]
   • User's principle, now literally true in code: levels depend on the prior
     session's positions + the open — WHEN you load is irrelevant.
 
-vGBT-0.9.25 [THE METHOD — user-final specification, 2026-07-27]
-  • Reference point for the ladder = THE OPEN, not the live spot (pre-open:
-    current pre-market spot; from 09:30: the opening print via open_read).
-    Today's lock anchored to a late-lock spot far off the 7,460 open and
-    printed BALANCE 7,510 / UP 7,485 with nothing below — never again.
-  • UPSIDE TESTS = the TWO short-cluster peaks ABOVE the open; DOWNSIDE = the
-    TWO below. Window starts at the guide's 1× straddle estimator and WIDENS
-    stepwise (cap ±2%) until two tests exist per side — a decayed midday
-    straddle can no longer erase the ladder (today's ±$23 → "none in range").
-  • BALANCE = peak LONG cluster (guide §4.4) BETWEEN the first upside and
-    first downside test; corridor empty → peak long in range with the position
-    annotation. Frames unchanged: OPEN READ (Friday book × open) + 09:35 lock.
-
+vGBT-0.9.25 — open-anchored ladder + adaptive window (superseded by 0.9.28 fixed radii).
 vGBT-0.9.24 — GTH live pre-market straddle + OPEN READ frame + unconditional Book levels overlay + day-state persistence for clean sweeps/open read.
 vGBT-0.9.23 — preview decoupled from the straddle checkbox; failures surface as captions.
 vGBT-0.9.22 — Book preview levels (pre-lock, card-identical), note off the legend.
@@ -1024,7 +1025,7 @@ def _strength(share, conf):
     if conf<0.35: lab+="?"          # thin sign confidence — flag, don't hide
     return lab
 
-def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WARN, ref_spot=None,
+def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WARN, ref_spot=None, open_strad=None,
                      lock=None, status_prices=None, header_note=None, levels_out=None):
     """Dan-format KEY LEVELS + TAKEAWAYS from the flow-signed book (§4.4 test-anchor).
     Tests = dealer-SHORT cluster peaks · Balance = biggest dealer-LONG peak in range.
@@ -1057,43 +1058,41 @@ def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WAR
         # (cap ±2%) until two tests exist per side — a decayed midday straddle
         # must never erase the ladder (±$23 did exactly that today).
         ref=float(ref_spot) if ref_spot else spot
-        # THE RANGE, explicitly (the three knobs, no hidden ones):
-        #   start = guide §4.4 "spot ± straddle" estimator (1×)
-        #   widen ×1.35/step until TWO short clusters exist per side, cap ±2%
-        #   noise floor = PER SIGN: a short survives if ≥20% of the LARGEST
-        #     SHORT in window (longs compete with longs). The old floor was 5%
-        #     of TOTAL mass — Friday's long towers vetoed every upside test.
-        half=max(1.0*(strad_now or 0.0), spot*0.009)
+        # ═══ THE METHOD — final (user spec, 2026-07-27 pm) ═══
+        #   S0 = OPENING straddle (GBT bars, fetchable any hour); pre-open or
+        #        fetch-fail → current straddle as stand-in (labeled).
+        #   BALANCE = largest long-γ cluster within 1.0×S0 of the open.
+        #   TESTS   = the TWO largest short clusters within 1.5×S0 per side of
+        #             the open. Beyond 1.5×S0 = IGNORED. No widening. Fixed radii.
+        #   Noise floor per sign (longs can never veto shorts): keep ≥20% of the
+        #   largest same-sign cluster; min_share=0.01 kills strike dust.
+        S0=float(open_strad) if open_strad else max(float(strad_now or 0.0), spot*0.004)
+        if S0<=0: S0=spot*0.009
+        half=1.5*S0                                     # test radius — also stored in
+                                                        # levels_out for lock replay and
+                                                        # used by the fly-body window
         bands=package_suspects(rows)
         def _side_keep(cs,frac=0.20):
             if not cs: return cs
             mx=max(c["mass"] for c in cs)
             return [c for c in cs if c["mass"]>=frac*mx]
-        for _w in range(6):
-            cl=signed_clusters(rows,ref-half,ref+half,min_share=0.01)
-            longs =_side_keep([c for c in cl if c["sign"]>0])
-            shorts=_side_keep([c for c in cl if c["sign"]<0])
-            if (sum(1 for c in shorts if c["peak"]>ref)>=2
-                    and sum(1 for c in shorts if c["peak"]<ref)>=2): break
-            if half>=spot*0.02: break
-            half=min(half*1.35, spot*0.02)
+        cl=signed_clusters(rows,ref-1.5*S0,ref+1.5*S0,min_share=0.01)
+        longs =_side_keep([c for c in cl if c["sign"]>0])
+        shorts=_side_keep([c for c in cl if c["sign"]<0])
         for c in longs+shorts:                          # confidence haircut inside suspect bands
             if _in_band(c["peak"],bands): c["conf"]*=0.5
-        longs=sorted(longs,key=lambda c:-c["mass"])
+        longs=sorted([c for c in longs if abs(c["peak"]-ref)<=1.0*S0],key=lambda c:-c["mass"])
         if not longs and not shorts:
             L.append(("  no clusters clear the noise floor in range — structureless book",DIM,11,False)); return L
-        # TESTS per guide: the PEAK short clusters — the TWO LARGEST each side
-        # of the open (selection by mass; displayed nearest-first).
-        ups=sorted(sorted([c for c in shorts if c["peak"]>ref],key=lambda c:-c["mass"])[:2],
+        ups=sorted(sorted([c for c in shorts if 0<c["peak"]-ref<=1.5*S0],key=lambda c:-c["mass"])[:2],
                    key=lambda c:c["peak"])
-        dns=sorted(sorted([c for c in shorts if c["peak"]<ref],key=lambda c:-c["mass"])[:2],
+        dns=sorted(sorted([c for c in shorts if 0<ref-c["peak"]<=1.5*S0],key=lambda c:-c["mass"])[:2],
                    key=lambda c:-c["peak"])
-        # BALANCE per the final method: peak long BETWEEN the first tests;
-        # corridor empty → peak long in range (annotation below names position).
-        _u1=ups[0]["peak"] if ups else None
-        _d1=dns[0]["peak"] if dns else None
-        _corr=[c for c in longs if (_d1 is None or c["peak"]>_d1) and (_u1 is None or c["peak"]<_u1)]
-        bal=(max(_corr,key=lambda c:c["mass"]) if _corr else (longs[0] if longs else None))
+        L.append((f"  range: open {ref:,.0f} · balance ≤ ±{1.0*S0:,.0f} (1×S0) · tests ≤ ±{1.5*S0:,.0f} (1.5×S0) · S0 ${S0:.2f}"
+                  +(" [opening straddle]" if open_strad else " [current straddle stand-in]"),DIM,10,False))
+        # BALANCE = largest long within 1×S0 (radius already applied above);
+        # position annotation below still names it if it sits beyond a test.
+        bal=longs[0] if longs else None
         s0=spot
         if isinstance(levels_out,dict) and (bal or ups or dns):
             levels_out["ok"]=True
@@ -1844,6 +1843,37 @@ def gbt_true_open():
     if v: ss[ck]=v          # cache only success; retry next rerun otherwise
     return v
 
+def gbt_open_straddle(exp):
+    """vGBT-0.9.28: the OPENING straddle, fetchable at any hour — ATM strike from
+    the true 09:30 open, both legs' first bar at/after 09:30 via
+    option_price_over_time (probe35b: full per-contract session history served
+    on demand). Returns (straddle,atm) or None. Day-cached + persisted."""
+    ss=st.session_state; ck="gbt_open_straddle_"+today_est().strftime("%Y-%m-%d")
+    if ck in ss: return ss[ck]
+    v=None
+    try:
+        _to=gbt_true_open()
+        if _to:
+            K=round(float(_to[0])/5.0)*5.0
+            sd=today_est().strftime("%Y-%m-%d")
+            legs={}
+            for ct in ("CALL","PUT"):
+                _,d=_gbt_post("option_price_over_time",{"ticker":"SPX","expirationDate":exp,
+                     "strikePrice":float(K),"contractType":ct,"aggregationPeriod":"ONE_MINUTE",
+                     "sessionDate":sd})
+                if d is not None and len(d):
+                    _t=pd.to_datetime(pd.to_numeric(d["timestamp"],errors="coerce"),unit="ms",utc=True)                         .dt.tz_convert("America/New_York").dt.tz_localize(None)
+                    d=d.assign(_t=_t)
+                    rth=d[d["_t"].dt.time>=dt.time(9,30)]
+                    if len(rth):
+                        r=rth.iloc[0]
+                        legs[ct]=float(r["openPrice"]) if "openPrice" in rth.columns and pd.notna(r.get("openPrice")) else float(r["closePrice"])
+            if len(legs)==2 and legs["CALL"]>0 and legs["PUT"]>0:
+                v=(legs["CALL"]+legs["PUT"],K)
+    except Exception: v=None
+    if v: ss[ck]=v
+    return v
+
 def straddle_for(chain,spot,exp,live_ok=True):
     """vGBT-0.9.24: ONE straddle source for card/Book/preview. Pre-open (<09:30)
     with live_ok: GTH quote (labeled 'GTH live @HH:MM'); quote unavailable or
@@ -2197,7 +2227,7 @@ def save_day_state():
         ss=st.session_state
         blob={"snaps":ss.get("snaps",[]),"frames":ss.get("frames",{}),"last_ts":ss.get("last_ts"),
               "keys":{k:ss[k] for k in list(ss.keys())
-                      if str(k).startswith(("strad_open_","terr_cap_","terr_hist_","read_gmag","gbt_seed_","gbt_live_","gbt_clean_","card_lock","open_read","peak_track"))}}
+                      if str(k).startswith(("strad_open_","terr_cap_","terr_hist_","read_gmag","gbt_seed_","gbt_live_","gbt_clean_","gbt_true_open_","gbt_open_straddle_","card_lock","open_read","peak_track"))}}
         with open(_state_path(),"wb") as f: _pickle.dump(blob,f,protocol=4)
         for _old in _glob.glob("/tmp/vs3dgbt_state_*.pkl"):
             if _old!=_state_path() and _os.path.getmtime(_old)<_time.time()-2*86400:
@@ -2226,7 +2256,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.27 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.28 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -2942,6 +2972,8 @@ with tab_book:
                 key_levels_lines(latest,latest["spot"],_pstr,
                                  {"decay":"","fish":"","pat":"","clock":""},
                                  "w","g","r","c","d","y",
+                                 open_strad=((gbt_open_straddle(exps[0]) or (None,))[0]
+                                             if ((not PLAYBACK) and now_est().time()>=dt.time(9,30)) else None),
                                  ref_spot=((st.session_state.get("open_read") or {}).get("spot")
                                            or ((gbt_true_open() or (None,))[0]
                                                if ((not PLAYBACK) and now_est().time()>=dt.time(9,30)) else None)
@@ -3498,7 +3530,10 @@ with tab_read:
                 _to=gbt_true_open(); _ref=float(_to[0]) if _to else spot
             else:
                 _ref=spot
-            lines+=key_levels_lines(latest,spot,_stn,v,WHT,BULL,BEAR,CYAN,DIM,WARN,ref_spot=_ref,
+            _os0=None
+            if (not PLAYBACK) and now_est().time()>=dt.time(9,30):
+                _q0=gbt_open_straddle(use_exps[0]); _os0=(_q0[0] if _q0 else None)
+            lines+=key_levels_lines(latest,spot,_stn,v,WHT,BULL,BEAR,CYAN,DIM,WARN,ref_spot=_ref,open_strad=_os0,
                                     lock=(_lk or {}).get("levels") if isinstance(_lk,dict) else None,
                                     status_prices=_stp,header_note=_hdr,levels_out=_lvo)
             # vGBT-0.9.24 OPEN READ: first ≥09:30 live snapshot freezes "Friday's
