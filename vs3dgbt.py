@@ -1,8 +1,31 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.23
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.24
 
 CHANGELOG POLICY (per Faisal, Jul-24): detailed notes for the LATEST 3 versions
 only; everything older is ONE line. Full history lives in git, not here.
+
+vGBT-0.9.24 [GUIDE-LITERAL LEVELS RESTORED + LIVE GTH STRADDLE + OPEN READ]
+  • VS3D levels restored to guide §4.4 VERBATIM: BALANCE = peak long cluster in
+    range (0.9.21's corridor/nearest-spot experiment REVERTED — it replaced the
+    method that worked); window = spot ± 1× STRADDLE ("your range estimator" —
+    0.9.17's 2.5× let far monster longs dominate mass and the noise floor then
+    swallowed the short clusters: this morning's "UPSIDE TEST: none in range"
+    with visible red bars at 7,445-7,480). Two tests per side, as always. The
+    beyond-test drift tag remains as annotation only — selection untouched.
+  • Straddle: pre-open the card/Book/preview now price from the OVERNIGHT (GTH)
+    session — two option_price_over_time legs at the live ATM (probe35b: today's
+    session served pre-open; Friday-session pricing was +27.9% wrong). Guards:
+    fresh ≤60min, legs ≤45min apart, symmetry ≥0.10 (probe35b's 57min-apart
+    stale-strike lesson); quote unavailable → honest label "Friday-session
+    pricing". Source caption printed pre-open. 60s cache; playback never fetches.
+  • OPEN READ: first ≥09:30 live snapshot freezes "Friday's signed book ×
+    opening spot" (Dan's morning map) into day-state — immutable, REPAINT-clean.
+    Card gets a compact OPEN READ line; Book draws it dash-dot alongside (never
+    instead of) the 09:35 locked set.
+  • Book lines guarantee: overlay precedence locked(solid)+open(dash-dot) →
+    preview(dotted) → note; harness now EXECUTES book_figure and asserts the
+    axhlines exist at the level y-values in every state (rendering-class gate).
+  • Day-state now persists 🧹 clean-sweep maps and the open read across reloads.
 
 vGBT-0.9.23 [PREVIEW HOTFIX — decouple from the straddle checkbox]
   • 0.9.22's Book preview reused _strv, which only exists when "1× straddle
@@ -23,37 +46,8 @@ vGBT-0.9.22 [BOOK PREVIEW LEVELS — pre-market parity with the Read card]
     At the first ≥09:35 snapshot the frozen solid set replaces it — lock
     mechanics, day-state, Read card all untouched. Display only.
 
-vGBT-0.9.21 [VS3D LEVELS — the sandwich, per guide §4.4 + positions transcript]
-  • BUG: BALANCE was longs[0] (biggest long ANYWHERE in window) while tests are
-    spot-relative → balance could print ABOVE the UP TEST. Guide §4.4 diagram:
-    UPPER TEST / LONG cluster = ANCHOR / LOWER TEST — the anchor lives BETWEEN.
-  • Fix: corridor-first (largest long strictly between nearest DN and UP tests);
-    corridor empty → fallback = long NEAREST SPOT (user option b), and the
-    BALANCE line names its true role when beyond a test: "— above UP TEST
-    7,455: drift target while it holds" (Dan: hold the level → drift to longs;
-    expiring OI buys above / sells below). Strength label semantics unchanged
-    (mass share + sign confidence — flow magnitude, not geometry).
-  • Applies to live previews and the NEXT 09:35 lock; frozen ladders untouched.
-  • Naming: these are the VS3D levels (locked card + Key Levels) — fully
-    firewalled from Pinak levels and native GEX per standing constraint.
-
-vGBT-0.9.20 [FOUR CONFIRMED CUTS+ADDS — probe31-34 build]
-  • Charm-flip echo REMOVED from the gamma terrain (helper deleted too):
-    two numbers one screen (7469 vs the charm panel's 7471); the charm panel's
-    own flip is the single source now.
-  • 🧹 Clean-sign highlight toggle (Book, default OFF = pixel-identical book):
-    ON lazily sweeps yesterday's side-stats with tradeTypes=[AUTO,M2S_AUTO]
-    (server quarantine — probe31 purity 500/500, probe32 filter-control real)
-    and re-colors strikes whose sign the clean pool CONFIRMS: dodger blue =
-    dealer long · magenta = dealer short. Overlay only — values + signing
-    pipeline untouched; 0.9.14 sweep machinery (resumable, 240s, progress).
-  • √ tower-compress checkbox REMOVED — bars always linear, true proportions.
-  • pinak_levels: walls+gravity now FLIP-anchored (probe33: flip-anchored CW
-    matched native gex_snapshot +γ(OI) at Δ0.0; spot-anchored missed by 15);
-    pin honesty gate — pin=None unless positive regime AND GEX/OI convergence
-    AND ≥6 live band strikes (kills the unreasonable open prints). STRICTLY
-    firewalled from the locked-card BALANCE/UP TEST/DN TEST logic.
-
+vGBT-0.9.21 — corridor/nearest-spot balance experiment (REVERTED in 0.9.24: guide §4.4 says peak long cluster, and it was right).
+vGBT-0.9.20 — charm-echo removed; 🧹 clean-sign highlight toggle (dodger blue/magenta, quarantined side-stats); √ compress removed; pinak walls flip-anchored + pin honesty gate.
 vGBT-0.9.19 — changelog pruned to policy (latest 3 detailed, older one-liners); no code changes.
 vGBT-0.9.18 — magenta rail (charm-panel spot path), 09:35 locked card (BALANCE/UP/DN frozen, ·TESTED/·CROSSED status), pre-open PREVIEW, book pinak lines retired for locked levels.
 vGBT-0.9.17 — package detector: fly-fingerprint FLAG (never auto-flip), conf×0.5 in suspect bands, ⚠pkg + dual-read, FLY gate stack, window spot±max(2.5×straddle,0.9%).
@@ -1051,7 +1045,12 @@ def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WAR
         if rows is None:
             L.append(("  needs Signed mode — naive ± cannot define tests/anchors",DIM,11,False))
             return L
-        half=max(2.5*(strad_now or 0.0), spot*0.009)   # 0.9.17: wide enough for the second-rung tier
+        half=max(1.0*(strad_now or 0.0), spot*0.009)   # GUIDE §4.4 verbatim: "Spot ± straddle
+                                                       # price gives you a rough range. Within that
+                                                       # range, look for tests and anchors." 1×, not
+                                                       # 2.5× (0.9.17's widening let far monster longs
+                                                       # into the window and the noise floor then ate
+                                                       # the short clusters → "UPSIDE TEST: none").
         bands=package_suspects(rows)
         cl=signed_clusters(rows,spot-half,spot+half)
         for c in cl:                                    # confidence haircut inside suspect bands
@@ -1062,16 +1061,11 @@ def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WAR
             L.append(("  no clusters clear the noise floor in range — structureless book",DIM,11,False)); return L
         ups=sorted([c for c in shorts if c["peak"]>spot],key=lambda c:c["peak"])[:2]
         dns=sorted([c for c in shorts if c["peak"]<spot],key=lambda c:-c["peak"])[:2]
-        # vGBT-0.9.21: guide §4.4 — the anchor is the long cluster BETWEEN the tests
-        # (UPPER TEST / LONG=ANCHOR / LOWER TEST sandwich). Corridor pick first;
-        # when no long lives between the tests, fall back to the long NEAREST SPOT
-        # (Dan: longs beyond a held level are drift targets, not pathology) and let
-        # the BALANCE line say its true role. Strength label semantics untouched.
-        _u1=ups[0]["peak"] if ups else None
-        _d1=dns[0]["peak"] if dns else None
-        _corr=[c for c in longs if (_d1 is None or c["peak"]>_d1) and (_u1 is None or c["peak"]<_u1)]
-        bal=(max(_corr,key=lambda c:c["mass"]) if _corr else
-             (min(longs,key=lambda c:abs(c["peak"]-spot)) if longs else None))
+        # GUIDE §4.4 VERBATIM (0.9.24 restores it — the 0.9.21 corridor/nearest-spot
+        # experiment is REVERTED): "Anchor / Equilibrium — Peak of long option
+        # cluster." The peak long cluster in the spot±straddle range. Full stop.
+        # Tests: "Peak of short option cluster above/below spot" — two per side.
+        bal=longs[0] if longs else None
         s0=spot
         if isinstance(levels_out,dict) and (bal or ups or dns):
             levels_out["ok"]=True
@@ -1089,9 +1083,9 @@ def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WAR
         return ""
     if bal:
         _pk=" ⚠pkg" if _in_band(bal["peak"],bands) else ""
-        # vGBT-0.9.21 geometry tag (shared: live + locked renders) — when the balance
-        # sits beyond a test it is a CONDITIONAL drift target, per the transcript
-        # ("hold above the level → drift toward these longs"), not an equilibrium.
+        # Annotation only (never changes selection): when the guide-selected balance
+        # sits beyond a test, name its role per Dan's transcript ("hold the level →
+        # drift toward these longs").
         _u1t=ups[0]["peak"] if ups else None
         _d1t=dns[0]["peak"] if dns else None
         _off=""
@@ -1762,6 +1756,58 @@ def gbt_clean_signs(exp,strikes):
     except Exception: pass
     if len(m)>=len(strikes): ss[ck]=m
     return m
+
+def gbt_gth_straddle(spot,exp):
+    """vGBT-0.9.24: LIVE pre-market straddle from the overnight (GTH) session.
+    probe35b: sessionDate=today serves the reopen tape (SPX trades ~23h — Dan's
+    'series reopen'); Friday-session pricing was +27.9% wrong this morning.
+    Guards (probe35b lesson — legs printed 57min apart at a stale strike):
+    both legs present, fresh (≤60min), contemporaneous (≤45min apart), rough
+    symmetry (min/max ≥ 0.10). Returns (straddle,'HH:MM') or None. 60s cache."""
+    ss=st.session_state; ck="gbt_gth_strad"
+    c=ss.get(ck)
+    if c and (_time.time()-c[0])<60: return c[1]
+    out=None
+    try:
+        K=round(float(spot)/5.0)*5.0
+        sd=today_est().strftime("%Y-%m-%d")
+        legs={}
+        for ct in ("CALL","PUT"):
+            _,d=_gbt_post("option_price_over_time",{"ticker":"SPX","expirationDate":exp,
+                 "strikePrice":float(K),"contractType":ct,"aggregationPeriod":"ONE_MINUTE",
+                 "sessionDate":sd})
+            if d is not None and len(d):
+                r=d.iloc[-1]
+                legs[ct]=(float(r["closePrice"]),
+                          pd.to_datetime(float(r["timestamp"]),unit="ms",utc=True)
+                            .tz_convert("America/New_York").tz_localize(None))
+        if len(legs)==2:
+            (cv,ctm),(pv,ptm)=legs["CALL"],legs["PUT"]
+            _now=now_est()
+            fresh=max((_now-ctm).total_seconds(),(_now-ptm).total_seconds())<=3600
+            together=abs((ctm-ptm).total_seconds())<=2700
+            sym=(min(cv,pv)/max(cv,pv))>=0.10 if max(cv,pv)>0 else False
+            if fresh and together and sym and cv>0 and pv>0:
+                out=(cv+pv,max(ctm,ptm).strftime("%H:%M"))
+    except Exception: out=None
+    ss[ck]=(_time.time(),out)
+    return out
+
+def straddle_for(chain,spot,exp,live_ok=True):
+    """vGBT-0.9.24: ONE straddle source for card/Book/preview. Pre-open (<09:30)
+    with live_ok: GTH quote (labeled 'GTH live @HH:MM'); quote unavailable or
+    ≥09:30: chain-based terrain_straddle (pre-open label: 'Friday-session
+    pricing — GTH quote unavailable'). Label in session gth_strad_lbl."""
+    ss=st.session_state
+    if live_ok and now_est().time()<dt.time(9,30):
+        q=gbt_gth_straddle(spot,exp)
+        if q:
+            ss["gth_strad_lbl"]=f"GTH live quote @ {q[1]} ET"
+            return float(q[0])
+        ss["gth_strad_lbl"]="Friday-session pricing — GTH quote unavailable"
+    else:
+        ss.pop("gth_strad_lbl",None)
+    return terrain_straddle(chain,spot)
 def _vol_gate(vnow,vlast,floor=50.0,frac=0.02):
     """True → refresh this strike. New strike, or traded volume moved by
     ≥ max(floor lots, frac of current) since the last sign pull."""
@@ -2019,7 +2065,56 @@ def book_figure(book,spot,straddle,lo,hi,side="Total",prev=None,openb=None,signe
     ax.tick_params(colors="#aaa",labelsize=7)
     for _sp in ax.spines.values(): _sp.set_color("#333")
     if prev is not None or openb is not None or _legend_force: ax.legend(loc="lower right",fontsize=7,facecolor="#0e1117",labelcolor="#ccc")
-    ax.set_ylim(lo,hi); fig.tight_layout(); return fig
+    ax.set_ylim(lo,hi)
+    # ══ vGBT-0.9.24: CARD LEVELS OVERLAY — lives in book_figure itself, drawn on
+    # EVERY Book render, independent of any checkbox. (0.9.18 had buried it inside
+    # the Spot-path overlay feature; with that box off — or after 0.9.22's param
+    # landed in the wrong function — BALANCE/UP/DN never drew. Failures now print
+    # ON the chart instead of dying in a silent except.)
+    try:
+        import matplotlib.transforms as _mt24
+        _ax24=fig.axes[0]
+        _tr24=_mt24.blended_transform_factory(_ax24.transAxes,_ax24.transData)
+        def _line24(y,lab,col,ls,alpha=0.85):
+            try: y=float(y)
+            except Exception: return
+            if y and lo<y<hi:
+                _ax24.axhline(y,color=col,lw=1.0,ls=ls,alpha=alpha,zorder=5)
+                _ax24.text(0.995,y,f"{lab} {y:,.0f}",transform=_tr24,ha="right",va="bottom",
+                        fontsize=8,color=col,zorder=7,
+                        bbox=dict(fc="#0e1117",ec=col,lw=0.6,pad=1.5))
+        _lkb=st.session_state.get("card_lock")
+        _orb=st.session_state.get("open_read")
+        _drew=False
+        if isinstance(_lkb,dict):
+            _lv2=_lkb.get("levels",{})
+            if _lv2.get("bal"): _line24(_lv2["bal"]["peak"],"BALANCE","#e8ecf2",(0,(6,3)))
+            for _t in _lv2.get("ups",[]): _line24(_t["peak"],"UP TEST","#3fb950",(0,(5,3)))
+            for _t in _lv2.get("dns",[]): _line24(_t["peak"],"DN TEST","#ef5350",(0,(5,3)))
+            _drew=True
+        if isinstance(_orb,dict):
+            _lv4=_orb.get("levels",{})
+            if _lv4.get("bal"): _line24(_lv4["bal"]["peak"],"BAL (open)","#e8ecf2",(0,(4,2,1,2)),alpha=0.5)
+            for _t in _lv4.get("ups",[])[:1]: _line24(_t["peak"],"UP (open)","#3fb950",(0,(4,2,1,2)),alpha=0.5)
+            for _t in _lv4.get("dns",[])[:1]: _line24(_t["peak"],"DN (open)","#ef5350",(0,(4,2,1,2)),alpha=0.5)
+            _drew=True
+        if (not _drew) and preview_levels:
+            if preview_levels.get("bal"):
+                _line24(preview_levels["bal"]["peak"],"BALANCE (preview)","#e8ecf2",(0,(2,3)),alpha=0.55)
+            for _t in preview_levels.get("ups",[]): _line24(_t["peak"],"UP TEST (preview)","#3fb950",(0,(2,3)),alpha=0.55)
+            for _t in preview_levels.get("dns",[]): _line24(_t["peak"],"DN TEST (preview)","#ef5350",(0,(2,3)),alpha=0.55)
+            _ax24.text(0.005,0.02,"PREVIEW — yesterday's book · locks 09:35 ET",transform=_ax24.transAxes,
+                    ha="left",va="bottom",fontsize=8,color="#8a93a6",zorder=7)
+            _drew=True
+        if not _drew:
+            _ax24.text(0.005,0.02,"card levels lock at 09:35 ET",transform=_ax24.transAxes,
+                    ha="left",va="bottom",fontsize=8,color="#8a93a6",zorder=7)
+    except Exception as _le24:
+        try:
+            fig.axes[0].text(0.005,0.05,f"⚠ levels overlay error: {type(_le24).__name__}: {_le24}",
+                    transform=fig.axes[0].transAxes,ha="left",va="bottom",fontsize=8,color="#ef5350",zorder=9)
+        except Exception: pass
+    fig.tight_layout(); return fig
 
 def take_snapshot(num_expiries):
     # vGBT-0.1: GBT is the chain source; num_expiries kept for UI compat (0DTE only).
@@ -2051,7 +2146,7 @@ def save_day_state():
         ss=st.session_state
         blob={"snaps":ss.get("snaps",[]),"frames":ss.get("frames",{}),"last_ts":ss.get("last_ts"),
               "keys":{k:ss[k] for k in list(ss.keys())
-                      if str(k).startswith(("strad_open_","terr_cap_","terr_hist_","read_gmag","gbt_seed_","gbt_live_","card_lock","peak_track"))}}
+                      if str(k).startswith(("strad_open_","terr_cap_","terr_hist_","read_gmag","gbt_seed_","gbt_live_","gbt_clean_","card_lock","open_read","peak_track"))}}
         with open(_state_path(),"wb") as f: _pickle.dump(blob,f,protocol=4)
         for _old in _glob.glob("/tmp/vs3dgbt_state_*.pkl"):
             if _old!=_state_path() and _os.path.getmtime(_old)<_time.time()-2*86400:
@@ -2080,7 +2175,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.23 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.24 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -2665,6 +2760,7 @@ def _canon_fit_axes(fig, pad_frac=0.35, pad_min=10.0):
             if y1>y0 and (y0<=yhi and y1>=ylo) and (y1-y0)>(yhi-ylo):
                 _ax.set_ylim(max(y0,ylo),min(y1,yhi))
     except Exception: pass
+
     return fig
 
 def _intv_relsize(dT, mag):
@@ -2736,39 +2832,8 @@ def _book_spot_overlay(fig, bars, lo, hi, chain=None, spot=None, exp=None, nowv=
             ax2.xaxis.set_major_formatter(_md.DateFormatter("%H:%M"))
             ax2.tick_params(colors="#8a93a6",labelsize=8)
             for s in ax2.spines.values(): s.set_visible(False)
-        try:
-            tr=_mt.blended_transform_factory(ax.transAxes,ax.transData)
-            def _line(y,lab,col,ls,alpha=0.85):
-                try: y=float(y)
-                except Exception: return
-                if y and lo<y<hi:
-                    ax.axhline(y,color=col,lw=1.0,ls=ls,alpha=alpha,zorder=5)
-                    ax.text(0.995,y,f"{lab} {y:,.0f}",transform=tr,ha="right",va="bottom",
-                            fontsize=8,color=col,zorder=7,
-                            bbox=dict(fc="#0e1117",ec=col,lw=0.6,pad=1.5))
-            # vGBT-0.9.18: Pinak dealer levels retired from the Book tab — replaced
-            # by the LOCKED morning card levels (balance + up/down tests).
-            _lkb=st.session_state.get("card_lock")
-            if isinstance(_lkb,dict):
-                _lv2=_lkb.get("levels",{})
-                if _lv2.get("bal"): _line(_lv2["bal"]["peak"],"BALANCE","#e8ecf2",(0,(6,3)))
-                for _t in _lv2.get("ups",[]): _line(_t["peak"],"UP TEST","#3fb950",(0,(5,3)))
-                for _t in _lv2.get("dns",[]): _line(_t["peak"],"DN TEST","#ef5350",(0,(5,3)))
-            elif preview_levels:
-                # vGBT-0.9.22: pre-lock the Book draws the SAME preview the Read card
-                # prints (same key_levels_lines, same yesterday's-book snapshot) —
-                # dotted + dimmed so provisional reads as provisional. Display only;
-                # lock mechanics untouched.
-                if preview_levels.get("bal"):
-                    _line(preview_levels["bal"]["peak"],"BALANCE (preview)","#e8ecf2",(0,(2,3)),alpha=0.55)
-                for _t in preview_levels.get("ups",[]): _line(_t["peak"],"UP TEST (preview)","#3fb950",(0,(2,3)),alpha=0.55)
-                for _t in preview_levels.get("dns",[]): _line(_t["peak"],"DN TEST (preview)","#ef5350",(0,(2,3)),alpha=0.55)
-                ax.text(0.005,0.02,"PREVIEW — yesterday's book · locks 09:35 ET",transform=ax.transAxes,
-                        ha="left",va="bottom",fontsize=8,color="#8a93a6",zorder=7)
-            else:
-                ax.text(0.005,0.02,"card levels lock at 09:35 ET",transform=ax.transAxes,
-                        ha="left",va="bottom",fontsize=8,color="#8a93a6",zorder=7)
-        except Exception: pass
+        # vGBT-0.9.24: levels overlay MOVED into book_figure (unconditional).
+        # This function now draws ONLY the spot path.
     except Exception: pass
     return fig
 
@@ -2795,7 +2860,7 @@ with tab_book:
             except Exception: pass
         _strv=None
         if b_strad:
-            try: _strv=terrain_straddle(latest["chain"],latest["spot"])
+            try: _strv=straddle_for(latest["chain"],latest["spot"],exps[0],live_ok=(not PLAYBACK))
             except Exception: _strv=None
         _sg=None
         if b_mode.startswith("MM") and not GBT_SIGNED:
@@ -2820,7 +2885,7 @@ with tab_book:
                     # reused _strv, which is None when the straddle checkbox is off →
                     # collapsed window → wrong/missing preview). Failures surface as
                     # a caption instead of dying silently.
-                try: _pstr=terrain_straddle(latest["chain"],latest["spot"])
+                try: _pstr=straddle_for(latest["chain"],latest["spot"],exps[0],live_ok=(not PLAYBACK))
                 except Exception: _pstr=None
                 _po={}
                 key_levels_lines(latest,latest["spot"],_pstr,
@@ -2846,7 +2911,7 @@ with tab_book:
                 st.caption(f"spot-path overlay unavailable: {type(_ox).__name__}: {_ox}")
         emit("book",fig)
     if book_on:
-        _bsig=repr((sel_ts.isoformat(),b_mode,b_side,bool(b_dots),bool(b_strad),int(isinstance(st.session_state.get("card_lock"),dict)),bool(b_clean),len(st.session_state.get("gbt_clean_"+exps[0],st.session_state.get("gbt_clean_"+exps[0]+"_partial",{}))),bool(b_spot),int(len(bars) if bars is not None else 0),bool(GBT_SIGNED),round(float(st.session_state.get("book_zoom",1.0)),3),round(window_pct,5),len(st.session_state.snaps)))
+        _bsig=repr((sel_ts.isoformat(),b_mode,b_side,bool(b_dots),bool(b_strad),int(isinstance(st.session_state.get("card_lock"),dict)),int(isinstance(st.session_state.get("open_read"),dict)),bool(b_clean),len(st.session_state.get("gbt_clean_"+exps[0],st.session_state.get("gbt_clean_"+exps[0]+"_partial",{}))),bool(b_spot),int(len(bars) if bars is not None else 0),bool(GBT_SIGNED),round(float(st.session_state.get("book_zoom",1.0)),3),round(window_pct,5),len(st.session_state.snaps)))
         dispatch("book",_render_book,sig=_bsig)
 
 
@@ -3349,8 +3414,10 @@ with tab_read:
             # HERE from the same chain (the NameError that benched the card).
             _ch0r=latest["chain"]; _e0r=(latest.get("exps") or [None])[0]
             _ch0r=_ch0r[_ch0r["expiry"]==_e0r] if "expiry" in _ch0r.columns else _ch0r
-            try: _stn=terrain_straddle(_ch0r,spot)
+            try: _stn=straddle_for(_ch0r,spot,use_exps[0],live_ok=(not PLAYBACK))
             except Exception: _stn=None
+            if st.session_state.get("gth_strad_lbl"):
+                st.caption("straddle source: "+st.session_state["gth_strad_lbl"])
             # vGBT-0.9.18: LOCKED MORNING CARD. First qualifying compute at the
             # first ≥09:35 ET live snapshot freezes the ladder for the session;
             # pre-open renders as PREVIEW (yesterday's book — expected); after a
@@ -3370,6 +3437,26 @@ with tab_read:
             lines+=key_levels_lines(latest,spot,_stn,v,WHT,BULL,BEAR,CYAN,DIM,WARN,
                                     lock=(_lk or {}).get("levels") if isinstance(_lk,dict) else None,
                                     status_prices=_stp,header_note=_hdr,levels_out=_lvo)
+            # vGBT-0.9.24 OPEN READ: first ≥09:30 live snapshot freezes "Friday's
+            # signed book × opening spot" (Dan's morning map). Immutable once
+            # written — separate frame from the 09:35 operational lock; both render.
+            if (st.session_state.get("open_read") is None and not PLAYBACK
+                    and now_est().time()>=dt.time(9,30) and not isinstance(_lk,dict)
+                    and _lvo.get("ok")
+                    and st.session_state.get("snaps") and sel_ts==st.session_state.snaps[-1]["ts"]):
+                st.session_state["open_read"]={"levels":_lvo["levels"],"spot":float(spot),
+                                               "at":now_est().strftime("%H:%M")}
+                save_day_state()
+            _orx=st.session_state.get("open_read")
+            if isinstance(_orx,dict):
+                _ol=_orx.get("levels",{}); _ob=_ol.get("bal")
+                _ou=[t["peak"] for t in _ol.get("ups",[])][:1]
+                _od=[t["peak"] for t in _ol.get("dns",[])][:1]
+                lines.append((f"OPEN READ {_orx.get('at','09:30')} — Friday's book × open "
+                              f"{_orx.get('spot',0):,.0f}: "
+                              +(f"BAL {_ob['peak']:,.0f}" if _ob else "BAL —")
+                              +(f" · UP {_ou[0]:,.0f}" if _ou else " · UP —")
+                              +(f" · DN {_od[0]:,.0f}" if _od else " · DN —"),CYAN,11,False))
             if (_lk is None and not PLAYBACK and now_est().time()>=dt.time(9,35)
                     and _lvo.get("ok")
                     and st.session_state.get("snaps") and sel_ts==st.session_state.snaps[-1]["ts"]):
