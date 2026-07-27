@@ -1,8 +1,16 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.22
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.23
 
 CHANGELOG POLICY (per Faisal, Jul-24): detailed notes for the LATEST 3 versions
 only; everything older is ONE line. Full history lives in git, not here.
+
+vGBT-0.9.23 [PREVIEW HOTFIX — decouple from the straddle checkbox]
+  • 0.9.22's Book preview reused _strv, which only exists when "1× straddle
+    lines" is checked → unchecked box = collapsed ±0.9% window = wrong or
+    missing preview. Now computes its own straddle exactly like the Read card
+    (same terrain_straddle call) — card-identical in all control states.
+  • Preview failures now print a dim caption naming the reason instead of
+    silently drawing nothing.
 
 vGBT-0.9.22 [BOOK PREVIEW LEVELS — pre-market parity with the Read card]
   • Gap (user report, Mon pre-market): Read card prints PREVIEW levels from
@@ -2072,7 +2080,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.22 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.23 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -2805,16 +2813,24 @@ with tab_book:
             _cv=f" · seeded {_gm2[0].get('ok','?')}/{_gm2[0].get('n','?')} · live {_gm2[0].get('live',0)}" if (_gm2 and _sg is not None) else ""
         except Exception: _cv=""
         st.caption(f"showing {int(_lo2)}–{int(_hi2)} · fetched {int(lo)}–{int(hi)} (spot {_sp:.2f} ±{window_pct*100:.1f}%) · zoom ×{_z:.2f}{_cv}")
-        _plv=None
+        _plv=None; _plv_err=None
         if not isinstance(st.session_state.get("card_lock"),dict):
-            try:    # vGBT-0.9.22: identical computation to the Read card's preview —
-                    # same function, same snapshot (pre-open = yesterday's mature book)
+            try:    # vGBT-0.9.23: identical computation to the Read card's preview —
+                    # same function, same snapshot, and its OWN straddle (0.9.22 bug:
+                    # reused _strv, which is None when the straddle checkbox is off →
+                    # collapsed window → wrong/missing preview). Failures surface as
+                    # a caption instead of dying silently.
+                try: _pstr=terrain_straddle(latest["chain"],latest["spot"])
+                except Exception: _pstr=None
                 _po={}
-                key_levels_lines(latest,latest["spot"],_strv,
+                key_levels_lines(latest,latest["spot"],_pstr,
                                  {"decay":"","fish":"","pat":"","clock":""},
                                  "w","g","r","c","d","y",levels_out=_po)
                 _plv=_po.get("levels") if _po.get("ok") else None
-            except Exception: _plv=None
+                if _plv is None: _plv_err="book has no level clusters yet (or signed mode off)"
+            except Exception as _pe: _plv=None; _plv_err=f"{type(_pe).__name__}: {_pe}"
+        if _plv_err:
+            st.caption(f"preview levels unavailable — {_plv_err}")
         _clm=None
         if b_clean and _sg is not None and len(_sg):
             _clm=gbt_clean_signs(exps[0],list(_sg["strike"].values))
