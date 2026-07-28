@@ -1,9 +1,24 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.34
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.35
 
 CHANGELOG POLICY (per Faisal, Jul-24): detailed notes for the LATEST 3 versions
 only; everything older is ONE line. Full history lives in git, not here.
 
+vGBT-0.9.35 [DAN-MINIMAL CHART — ONE LADDER, FAMILIES OPT-IN]
+  • Book axis now carries ONE ladder (locked > open-read > preview) plus bars,
+    straddle bounds, dots, spot. With a lock present, the 09:30 open read folds
+    into a bottom-left note instead of a second line family — same morning
+    anchor, drawn once. [GUIDE §5.2 "position and straddle price"; Charm
+    session: "way too much resolution… it's not sincere"]
+  • Orange Δ ladder OFF by default → "Δ ladder" toggle in Book controls. Dan
+    keeps the intraday-vs-open call manual [Q&A Jul-24]; a ⚡ badge fires on
+    the one structural trigger he names (a side's net sign flipping vs the
+    open book) — parameter-free, advisory only, decision stays with the trader.
+  • DP yellow OFF by default ([ENGINEERING], no Dan provenance; fetch also
+    gated by the toggle). Label de-confliction: colliding labels rotate
+    right/bottom → left/bottom → right/top → left/top; 5th collider draws
+    its line unlabeled. All display-only: no selection, lock, or repaint
+    semantics touched.
 vGBT-0.9.34 [ORDERED LADDER — 5 LEVELS, FLOOR DEMOTED TO ANNOTATION]
   • Ladder is now ordered by construction: DN2 < DN1 < BALANCE < UP1 < UP2.
     T1 = biggest short cluster per side in the window (§4.4 "peak"); T2 =
@@ -2207,7 +2222,8 @@ def signed_book_rows(ch, sp):
     return g[["strike","signed_pct","conf"]]
 
 def book_figure(book,spot,straddle,lo,hi,side="Total",prev=None,openb=None,signed=None,
-                signed_prev=None,signed_open=None,sticks=True,clean_map=None,preview_levels=None,intraday_levels=None):
+                signed_prev=None,signed_open=None,sticks=True,clean_map=None,preview_levels=None,intraday_levels=None,
+                show_delta=False,show_dp=False):
     def _tx(v): return v            # vGBT-0.9.20: always linear (√ compress removed)
     """VS3D 'Positions by Strike' analogue. Bars in e-minis per $1 (per-$1 ÷ 50).
     NAIVE calls+/puts− convention — measured signing arrives with the flow ledger."""
@@ -2282,12 +2298,27 @@ def book_figure(book,spot,straddle,lo,hi,side="Total",prev=None,openb=None,signe
         import matplotlib.transforms as _mt24
         _ax24=fig.axes[0]
         _tr24=_mt24.blended_transform_factory(_ax24.transAxes,_ax24.transData)
+        _placed24=[]                               # vGBT-0.9.35 label de-confliction
+        def _place24(y):
+            # labels within ~2% of the axis height (≈ one label box) of an
+            # already-placed label rotate through slots: right/bottom →
+            # left/bottom → right/top → left/top; a 5th collider draws its
+            # line unlabeled. Display-only geometry.
+            _gap=(hi-lo)*0.02
+            for _slot in range(4):
+                if not any(abs(y-_py)<_gap and _ps==_slot for _py,_ps in _placed24):
+                    _placed24.append((y,_slot)); return _slot
+            _placed24.append((y,4)); return None
         def _line24(y,lab,col,ls,alpha=0.85):
             try: y=float(y)
             except Exception: return
             if y and lo<y<hi:
                 _ax24.axhline(y,color=col,lw=1.0,ls=ls,alpha=alpha,zorder=5)
-                _ax24.text(0.995,y,f"{lab} {y:,.0f}",transform=_tr24,ha="right",va="bottom",
+                _s=_place24(y)
+                if _s is None: return
+                _x,_ha=((0.995,"right") if _s in (0,2) else (0.005,"left"))
+                _va=("bottom" if _s in (0,1) else "top")
+                _ax24.text(_x,y,f"{lab} {y:,.0f}",transform=_tr24,ha=_ha,va=_va,
                         fontsize=8,color=col,zorder=7,
                         bbox=dict(fc="#0e1117",ec=col,lw=0.6,pad=1.5))
         _lkb=st.session_state.get("card_lock")
@@ -2299,12 +2330,19 @@ def book_figure(book,spot,straddle,lo,hi,side="Total",prev=None,openb=None,signe
             for _t in _lv2.get("ups",[]): _line24(_t["peak"],"UP TEST","#3fb950",(0,(5,3)))
             for _t in _lv2.get("dns",[]): _line24(_t["peak"],"DN TEST","#ef5350",(0,(5,3)))
             _drew=True
-        if isinstance(_orb,dict):
+        # vGBT-0.9.35 [Dan-minimal: ONE ladder on the axis — GUIDE §5.2 "I just look
+        # at the position and the straddle price"; the 09:30 read and the 09:35 lock
+        # are the same morning anchor, so with a lock present the open read folds
+        # into a note instead of a second line family]
+        if isinstance(_orb,dict) and not _drew:
             _lv4=_orb.get("levels",{})
             if _lv4.get("bal"): _line24(_lv4["bal"]["peak"],"BAL (open)","#e8ecf2",(0,(4,2,1,2)),alpha=0.5)
             for _t in _lv4.get("ups",[])[:1]: _line24(_t["peak"],"UP (open)","#3fb950",(0,(4,2,1,2)),alpha=0.5)
             for _t in _lv4.get("dns",[])[:1]: _line24(_t["peak"],"DN (open)","#ef5350",(0,(4,2,1,2)),alpha=0.5)
             _drew=True
+        elif isinstance(_orb,dict) and _drew:
+            _ax24.text(0.005,0.045,f"open read {_orb.get('spot',0):,.2f} @ {_orb.get('at','09:30')} — folded into locked ladder",
+                    transform=_ax24.transAxes,ha="left",va="bottom",fontsize=7.5,color="#8a93a6",zorder=7)
         if (not _drew) and preview_levels:
             if preview_levels.get("bal"):
                 _line24(preview_levels["bal"]["peak"],"BALANCE (preview)","#e8ecf2",(0,(2,3)),alpha=0.55)
@@ -2316,10 +2354,15 @@ def book_figure(book,spot,straddle,lo,hi,side="Total",prev=None,openb=None,signe
         if not _drew:
             _ax24.text(0.005,0.02,"card levels lock at 09:35 ET",transform=_ax24.transAxes,
                     ha="left",va="bottom",fontsize=8,color="#8a93a6",zorder=7)
-        # vGBT-0.9.33: dark-pool clusters (yellow) + intraday-Δ levels (orange)
-        for _p,_nv in (st.session_state.get("gbt_dp_lines") or []):
-            _line24(_p,"DP","#ffd54a",(0,(1,1)),alpha=0.6)
-        if intraday_levels:
+        # vGBT-0.9.33 dark-pool clusters (yellow) + intraday-Δ levels (orange);
+        # vGBT-0.9.35: both are OFF-BY-DEFAULT toggles. DP is [ENGINEERING] with no
+        # Dan provenance; the Δ ladder is Dan's intraday-divergence read, which he
+        # keeps MANUAL ("there's not like a perfect rule… a very manual thing",
+        # Q&A Jul-24) — so it renders only when the trader asks for it.
+        if show_dp:
+            for _p,_nv in (st.session_state.get("gbt_dp_lines") or []):
+                _line24(_p,"DP","#ffd54a",(0,(1,1)),alpha=0.6)
+        if show_delta and intraday_levels:
             if intraday_levels.get("bal"):
                 _line24(intraday_levels["bal"]["peak"],"BAL Δ","#ff9f1a",(0,(3,2)),alpha=0.85)
             for _t in intraday_levels.get("ups",[]): _line24(_t["peak"],"UPΔ","#ff9f1a",(0,(3,2)),alpha=0.6)
@@ -2390,7 +2433,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.34 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.35 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -2448,6 +2491,13 @@ with st.sidebar.expander("📊 Book controls", expanded=False):
     b_clean=st.checkbox("🧹 Clean-sign highlight",value=False,
         help="Re-color strikes whose sign SURVIVES the single-leg quarantine (tradeTypes AUTO+M2S_AUTO — packages+floor excluded server-side): dodger blue = dealer long · magenta = dealer short. Overlay only — bar values and the signing pipeline untouched. First ON runs a lazy ~4min sweep (resumable, budgeted).")
     b_strad=st.checkbox("1× straddle lines",value=True)
+    b_delta=st.checkbox("Δ ladder — intraday-change METHOD (orange)",value=False,
+        help="Dan keeps the intraday-vs-open read MANUAL: \"when there's a big divergence between the "
+             "intraday position and the open position, you can't ignore it… there's not like a perfect rule\" "
+             "[Q&A Jul-24]. A ⚡ badge appears under the chart when the Δ-book shows a structural divergence "
+             "(a side's net sign flipped vs the open book); the call to look stays yours.")
+    b_dp=st.checkbox("DP level — SPY dark-pool proxy (yellow)",value=False,
+        help="[ENGINEERING] No Dan provenance (SPX prints no off-exchange; this is an equity proxy import). Off by default.")
     b_spot=st.checkbox("Spot-path overlay (VS3D view)",value=True,
         help="White intraday SPX line across the book on a shared strike axis — playback shows it grow.")
 with st.sidebar.expander("🗺 Terrain controls", expanded=False):
@@ -3121,8 +3171,9 @@ with tab_book:
         # vGBT-0.9.33: yellow dark-pool lines + orange intraday-Δ levels (live only)
         _ilv=None
         if (not PLAYBACK) and now_est().time()>=dt.time(9,35):
-            try: st.session_state["gbt_dp_lines"]=gbt_darkpool_levels(latest["spot"])
-            except Exception: pass
+            if b_dp:                                   # 0.9.35: fetch only when the DP toggle is on
+                try: st.session_state["gbt_dp_lines"]=gbt_darkpool_levels(latest["spot"])
+                except Exception: pass
             try:
                 if len(st.session_state.snaps)>=2:
                     _s0c=st.session_state.snaps[0]
@@ -3135,14 +3186,31 @@ with tab_book:
                         _q0=gbt_open_straddle(exps[0])
                         _S0I=float(_q0[0]) if _q0 else float(_strv or latest["spot"]*0.009)
                         _ilv=dan_levels_from_rows(_mg[["strike","signed_pct","conf"]],float(_refI),_S0I)
+                        # 0.9.35 divergence badge [Q&A Jul-24 "all the upside flipped
+                        # dealer short" — the one parameter-free structural trigger Dan
+                        # names]: a side's NET sign in the current book vs the open book.
+                        _div=None
+                        try:
+                            _sAc=float(_rC.loc[_rC["strike"]>float(_refI),"signed_pct"].sum())
+                            _sAo=float(_r0.loc[_r0["strike"]>float(_refI),"signed_pct"].sum())
+                            _sBc=float(_rC.loc[_rC["strike"]<float(_refI),"signed_pct"].sum())
+                            _sBo=float(_r0.loc[_r0["strike"]<float(_refI),"signed_pct"].sum())
+                            if _sAc*_sAo<0: _div="upside net sign flipped vs open book"
+                            elif _sBc*_sBo<0: _div="downside net sign flipped vs open book"
+                        except Exception: _div=None
+                        st.session_state["delta_divergence"]=_div
             except Exception: _ilv=None
+        if st.session_state.get("delta_divergence"):
+            st.caption(f"⚡ Δ-book structural divergence — {st.session_state['delta_divergence']} "
+                       f"(Dan: \"you can't ignore the intraday position\" — Δ ladder toggle is in Book controls)")
         _clm=None
         if b_clean and _sg is not None and len(_sg):
             _clm=gbt_clean_signs(exps[0],list(_sg["strike"].values))
             _n_on=sum(1 for _v in _clm.values() if _v)
             st.caption(f"🧹 clean signs: {_n_on}/{len(_clm)} strikes confirmed (single-leg quarantine)")
         fig=book_figure(bk,latest["spot"],_strv,_lo2,_hi2,side=b_side,prev=prevb,openb=openb,signed=_sg,
-                        signed_prev=_sgp,signed_open=_sgo,sticks=True,clean_map=_clm,preview_levels=_plv,intraday_levels=_ilv)
+                        signed_prev=_sgp,signed_open=_sgo,sticks=True,clean_map=_clm,preview_levels=_plv,intraday_levels=_ilv,
+                        show_delta=b_delta,show_dp=b_dp)
         if b_spot:
             try:
                 _ch0=latest["chain"]; _ch0=_ch0[_ch0["expiry"]==exps[0]] if "expiry" in _ch0.columns else _ch0
@@ -3151,7 +3219,7 @@ with tab_book:
                 st.caption(f"spot-path overlay unavailable: {type(_ox).__name__}: {_ox}")
         emit("book",fig)
     if book_on:
-        _bsig=repr((sel_ts.isoformat(),b_mode,b_side,bool(b_dots),bool(b_strad),int(isinstance(st.session_state.get("card_lock"),dict)),int(isinstance(st.session_state.get("open_read"),dict)),len(st.session_state.get("gbt_dp_lines") or []),bool(b_clean),len(st.session_state.get("gbt_clean_"+exps[0],st.session_state.get("gbt_clean_"+exps[0]+"_partial",{}))),bool(b_spot),int(len(bars) if bars is not None else 0),bool(GBT_SIGNED),round(float(st.session_state.get("book_zoom",1.0)),3),round(window_pct,5),len(st.session_state.snaps)))
+        _bsig=repr((sel_ts.isoformat(),b_mode,b_side,bool(b_dots),bool(b_strad),int(isinstance(st.session_state.get("card_lock"),dict)),int(isinstance(st.session_state.get("open_read"),dict)),len(st.session_state.get("gbt_dp_lines") or []),bool(b_clean),len(st.session_state.get("gbt_clean_"+exps[0],st.session_state.get("gbt_clean_"+exps[0]+"_partial",{}))),bool(b_spot),bool(b_delta),bool(b_dp),str(st.session_state.get("delta_divergence")),int(len(bars) if bars is not None else 0),bool(GBT_SIGNED),round(float(st.session_state.get("book_zoom",1.0)),3),round(window_pct,5),len(st.session_state.snaps)))
         dispatch("book",_render_book,sig=_bsig)
 
 
