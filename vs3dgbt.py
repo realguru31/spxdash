@@ -1,9 +1,24 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.33
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.34
 
 CHANGELOG POLICY (per Faisal, Jul-24): detailed notes for the LATEST 3 versions
 only; everything older is ONE line. Full history lives in git, not here.
 
+vGBT-0.9.34 [ORDERED LADDER — 5 LEVELS, FLOOR DEMOTED TO ANNOTATION]
+  • Ladder is now ordered by construction: DN2 < DN1 < BALANCE < UP1 < UP2.
+    T1 = biggest short cluster per side in the window (§4.4 "peak"); T2 =
+    biggest short STRICTLY beyond T1 — in-window first, else beyond-window
+    marked ᵉˣᵗ (rung-fill). "none" only when zero short mass exists beyond.
+    [USER 07-28 "always 5 levels in order" + GUIDE §4.4 "the next test
+    level" + TRANSCRIPT Jul-21 Dan live-calls 7505 an upside test]
+  • 0.9.33 dust floor REMOVED as a deleter (no Dan provenance — his filter
+    is delta/actionability, §2.5 "check your delta"; his answer to a weak
+    level is conviction, §4.6). 20% of side max survives as the ᵗʰⁱⁿ tag.
+  • Sunday-night blip class still dead: a smear above the open but under
+    UP1 can never be a rung (ordering does the floor's old job).
+  • ≥2× extension unchanged (displaces the outer rung only). Both selectors
+    (card + orange Δ-layer) updated identically. Morning-of Jul-28 book
+    encoded as the harness gate: 7380<7400<7445<7475<7505ᵗʰⁱⁿ.
 vGBT-0.9.33 [SANDWICH ENFORCED + DP YELLOW + INTRADAY-Δ ORANGE]
   • Dust floor [USER]: a short is a TEST only if ≥20% of the biggest short on
     its own side in the window (kills 3AM blip-as-UP-TEST).
@@ -1023,25 +1038,36 @@ def _strength(share, conf):
 def dan_levels_from_rows(rows,ref,S0,WIN_R=2.5,EXT_X=2.0):
     """vGBT-0.9.33: THE METHOD as a pure selector over any signed-rows frame —
     used by the ORANGE intraday-Δ layer (rows = current book MINUS open book).
-    Identical rules to the card: 2.5×S0 window, two biggest shorts/side with
-    the 20% dust floor, outer-rung extension (≥2× in-window side max),
-    BALANCE = biggest long between UP1 and DN1."""
+    Identical rules to the card (0.9.34 ordered ladder): 2.5×S0 window,
+    T1 = biggest short per side, T2 = biggest short strictly beyond T1
+    (in-window first, ext-fill beyond; ≥2× beyond-window mass displaces),
+    thin tag <20% side max, BALANCE = biggest long between UP1 and DN1."""
     try:
         cl=signed_clusters(rows,ref-2*WIN_R*S0,ref+2*WIN_R*S0,min_share=0.01)
     except Exception:
         return None
     W=WIN_R*S0
     sh=[c for c in cl if c["sign"]<0]; lg=[c for c in cl if c["sign"]>0 and abs(c["peak"]-ref)<=W]
-    def _tests(side):
-        _inall=sorted([c for c in sh if abs(c["peak"]-ref)<=W and side*(c["peak"]-ref)>0],
-                      key=lambda c:-c["mass"])
-        mx=_inall[0]["mass"] if _inall else 0.0
-        _in=[c for c in _inall if c["mass"]>=0.20*mx][:2]
-        bey=[c for c in sh if side*(c["peak"]-ref)>W and c["mass"]>=EXT_X*max(mx,1e-9)]
-        if bey:
-            e=dict(min(bey,key=lambda c:side*(c["peak"]-ref))); e["ext"]=True
-            _in=(_in[:1] if _in else [])+[e]
-        return sorted(_in,key=lambda c:side*c["peak"])
+    def _tests(side):                                  # 0.9.34 ordered ladder (card-identical)
+        cand=[c for c in sh if side*(c["peak"]-ref)>0]
+        inw=[c for c in cand if abs(c["peak"]-ref)<=W]
+        mx=max((c["mass"] for c in inw),default=0.0)
+        out=[]
+        if inw: t1=dict(max(inw,key=lambda c:c["mass"]))
+        elif cand: t1=dict(max(cand,key=lambda c:c["mass"])); t1["ext"]=True
+        else: return out
+        out.append(t1)
+        a_in =[c for c in inw  if side*(c["peak"]-t1["peak"])>0]
+        a_out=[c for c in cand if abs(c["peak"]-ref)>W and side*(c["peak"]-t1["peak"])>0]
+        crz=[c for c in a_out if mx>0 and c["mass"]>=EXT_X*mx]
+        if crz: t2=dict(min(crz,key=lambda c:side*(c["peak"]-ref))); t2["ext"]=True
+        elif a_in: t2=dict(max(a_in,key=lambda c:c["mass"]))
+        elif a_out: t2=dict(max(a_out,key=lambda c:c["mass"])); t2["ext"]=True
+        else: t2=None
+        if t2 is not None: out.append(t2)
+        for c in out:
+            if mx>0 and c["mass"]<0.20*mx: c["thin"]=True
+        return out
     ups=_tests(+1); dns=_tests(-1)
     u1=ups[0]["peak"] if ups else None; d1=dns[0]["peak"] if dns else None
     corr=[c for c in lg if (u1 is None or c["peak"]<u1) and (d1 is None or c["peak"]>d1)]
@@ -1051,9 +1077,9 @@ def dan_levels_from_rows(rows,ref,S0,WIN_R=2.5,EXT_X=2.0):
 def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WARN, ref_spot=None, open_strad=None,
                      lock=None, status_prices=None, header_note=None, levels_out=None):
     """Dan-format KEY LEVELS + TAKEAWAYS from the flow-signed book (§4.4 test-anchor).
-    Tests = the TWO largest dealer-SHORT clusters within 1.5×S0 per side of the
-    OPEN · Balance = largest dealer-LONG cluster within 1×S0 of the open
-    (S0 = opening straddle). Fixed radii — see THE METHOD block below.
+    Ordered ladder: T1 = biggest dealer-SHORT cluster per side of the OPEN in the
+    2.5×S0 window; T2 = biggest short STRICTLY beyond T1 (ext-fill beyond window);
+    BALANCE = biggest dealer-LONG between DN1 and UP1 — see THE METHOD block below.
     Signs are dsign (flow-inferred) — candidates, NOT CBOE clearing.
     0.9.18: lock=levels dict → render the FROZEN morning ladder (ignores the live
     book); status_prices = post-lock closes → tests wear ·TESTED/·CROSSED;
@@ -1072,25 +1098,27 @@ def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WAR
             L.append(("  needs Signed mode — naive ± cannot define tests/anchors",DIM,11,False))
             return L
         ref=float(ref_spot) if ref_spot else spot
-        # ═══ THE METHOD — final (user spec, 2026-07-27 pm) ═══
-        #   S0 = OPENING straddle (GBT bars, fetchable any hour); pre-open or
-        #        fetch-fail → current straddle as stand-in (labeled).
-        #   BALANCE = largest long-γ cluster within 1.0×S0 of the open.
-        #   TESTS   = the TWO largest short clusters within 1.5×S0 per side of
-        #             the open. Beyond 1.5×S0 = IGNORED. No widening. Fixed radii.
-        #   Noise floor per sign (longs can never veto shorts): keep ≥20% of the
-        #   largest same-sign cluster; min_share=0.01 kills strike dust.
-        # ═══ THE METHOD — six lines, nothing else (user-final, 2026-07-27 evening) ═══
+        # ═══ THE METHOD — eight lines (user-final 07-27 · 0.9.34 ordered ladder 07-28) ═══
         # 1) Reference = the open (pre-market: current spot). S0 = opening straddle
-        #    (pre-market: current straddle).
-        # 2) ONE window: ref ± 2.5×S0.
-        # 3) BALANCE = biggest long cluster in the window.
-        # 4) UP1,UP2 = two biggest short clusters above the open in the window;
-        #    DN1,DN2 = same below. Displayed nearest-first.
-        # 5) Extension rule: a short BEYOND the window that is ≥2× the biggest
-        #    in-window short on that side moves the OUTER test (UP2/DN2) only,
-        #    marked "ext" on the card. Inner tests never move.
-        # 6) No per-sign floors, no separate balance radius, no other windows.
+        #    (pre-market: current straddle stand-in, labeled). [USER]
+        # 2) ONE window: ref ± 2.5×S0. [USER "2 or 2.5x straddle"]
+        # 3) UP1 = biggest short cluster above the open in the window; DN1 = same
+        #    below. [GUIDE §4.4 "peak of short option cluster above/below spot"]
+        # 4) UP2 = biggest short cluster STRICTLY ABOVE UP1 — in-window first, else
+        #    beyond-window marked ext; DN2 mirrored below DN1. Ladder is ordered by
+        #    construction: DN2 < DN1 < BALANCE < UP1 < UP2. A rung is "none" only
+        #    when zero short mass exists beyond that point on its side.
+        #    [USER 07-28 "always 5 levels in order" + GUIDE §4.4 broken test →
+        #    "stay between that test level and the NEXT test level" +
+        #    TRANSCRIPT Jul-21: Dan calls 7505 a live upside test]
+        # 5) BALANCE = biggest long cluster BETWEEN DN1 and UP1 (corridor).
+        #    [GUIDE §4.4 "peak of long option cluster" + USER 07-27 sandwich]
+        # 6) Extension rule: a short BEYOND the window ≥2× the biggest in-window
+        #    short on its side DISPLACES the outer rung (nearest such), marked ext.
+        #    Inner tests never move. [USER "crazy in size"] (EXT_X=2.0)
+        # 7) 20% of side max = ANNOTATION ONLY (ᵗʰⁱⁿ tag, lower conviction —
+        #    GUIDE §4.6 "scale your bet"). It never deletes a rung.
+        # 8) No other filters, windows, radii, or floors. Ever.
         WIN_R = 2.5      # the window, in opening straddles
         EXT_X = 2.0      # "crazy in size" = ≥ this × the biggest in-window short
         S0=float(open_strad) if open_strad else max(float(strad_now or 0.0), spot*0.004)
@@ -1107,18 +1135,44 @@ def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WAR
         if not longs and not [c for c in shorts if _win(c)]:
             L.append(("  no clusters in range — structureless book",DIM,11,False)); return L
         def _tests(side):                               # side=+1 above the open, -1 below
-            _inall=sorted([c for c in shorts if _win(c) and side*(c["peak"]-ref)>0],
-                          key=lambda c:-c["mass"])
-            _mx=_inall[0]["mass"] if _inall else 0.0
-            # 0.9.33 dust floor [USER 07-28]: a short is a TEST only if ≥20% of the
-            # biggest short on ITS OWN side in the window. Dust is not a rung.
-            _in=[c for c in _inall if c["mass"]>=0.20*_mx][:2]
-            _beyond=[c for c in shorts if side*(c["peak"]-ref)>WIN_R*S0 and c["mass"]>=EXT_X*max(_mx,1e-9)]
-            if _beyond:
-                _e=min(_beyond,key=lambda c:side*(c["peak"]-ref))   # nearest crazy mass
-                _e=dict(_e); _e["ext"]=True
-                _in=(_in[:1] if _in else [])+[_e]                    # OUTER rung only moves
-            return sorted(_in,key=lambda c:side*c["peak"])
+            # 0.9.34 ORDERED LADDER [USER 07-28 "always 5 levels in order" +
+            # GUIDE §4.4 "peak of short option cluster" / broken test → "the next
+            # test level" + TRANSCRIPT Jul-21 (7505 called a live upside test)]:
+            #   T1 = biggest short cluster on the side IN the window.
+            #   T2 = biggest short cluster STRICTLY BEYOND T1 — in-window first,
+            #        else beyond-window (marked ext). A rung prints "none" only
+            #        when zero short mass exists beyond that point on its side.
+            #   ≥2× beyond-window mass still DISPLACES the outer rung (nearest
+            #        such, marked ext). Inner test never moves. [USER]
+            #   20% of side max is ANNOTATION ONLY → ᵗʰⁱⁿ tag; it NEVER deletes a
+            #   rung (0.9.33 dust-deleter REMOVED — no Dan provenance; Dan's answer
+            #   to a weak level is lower conviction, §4.6 "scale your bet").
+            _cand=[c for c in shorts if side*(c["peak"]-ref)>0]
+            _inw=[c for c in _cand if _win(c)]
+            _mx=max((c["mass"] for c in _inw),default=0.0)
+            out=[]
+            if _inw:
+                t1=dict(max(_inw,key=lambda c:c["mass"]))
+            elif _cand:                                  # no in-window short at all → fill from beyond
+                t1=dict(max(_cand,key=lambda c:c["mass"])); t1["ext"]=True
+            else:
+                return out
+            out.append(t1)
+            _abv_in =[c for c in _inw  if side*(c["peak"]-t1["peak"])>0]
+            _abv_out=[c for c in _cand if (not _win(c)) and side*(c["peak"]-t1["peak"])>0]
+            _crazy=[c for c in _abv_out if _mx>0 and c["mass"]>=EXT_X*_mx]
+            if _crazy:                                   # "crazy in size" displaces the outer rung
+                t2=dict(min(_crazy,key=lambda c:side*(c["peak"]-ref))); t2["ext"]=True
+            elif _abv_in:
+                t2=dict(max(_abv_in,key=lambda c:c["mass"]))
+            elif _abv_out:                               # rung-fill: never "none" while mass exists beyond T1
+                t2=dict(max(_abv_out,key=lambda c:c["mass"])); t2["ext"]=True
+            else:
+                t2=None
+            if t2 is not None: out.append(t2)
+            for c in out:                                # thin = under 20% of in-window side max
+                if _mx>0 and c["mass"]<0.20*_mx: c["thin"]=True
+            return out                                   # ordered outward by construction
         ups=_tests(+1); dns=_tests(-1)
         # 0.9.33 balance corridor [USER 07-27 "between the first upside and first
         # downside" — the sandwich is definitional]: BALANCE = biggest long BETWEEN
@@ -1185,7 +1239,7 @@ def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WAR
     def ladder(tests, direction, name, col):
         if not tests:
             L.append((f"{name}: none in range",DIM,11,False)); return
-        hdr=f"{name}: "+" >> ".join(f"{t['peak']:,.0f}"+("ᵉˣᵗ" if t.get("ext") else "")+("⚠" if _in_band(t["peak"],bands) else "")+_status(t["peak"],direction) for t in tests)
+        hdr=f"{name}: "+" >> ".join(f"{t['peak']:,.0f}"+("ᵉˣᵗ" if t.get("ext") else "")+("ᵗʰⁱⁿ" if t.get("thin") else "")+("⚠" if _in_band(t["peak"],bands) else "")+_status(t["peak"],direction) for t in tests)
         L.append((hdr,col,12.5,True))
         for i,t in enumerate(tests):
             b,bl=_bal_beyond(t["peak"],direction)
@@ -2336,7 +2390,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.33 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.34 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
