@@ -1,8 +1,24 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.32
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.33
 
 CHANGELOG POLICY (per Faisal, Jul-24): detailed notes for the LATEST 3 versions
 only; everything older is ONE line. Full history lives in git, not here.
+
+vGBT-0.9.33 [SANDWICH ENFORCED + DP YELLOW + INTRADAY-Δ ORANGE]
+  • Dust floor [USER]: a short is a TEST only if ≥20% of the biggest short on
+    its own side in the window (kills 3AM blip-as-UP-TEST).
+  • Balance corridor [USER, definitional]: BALANCE = biggest long BETWEEN UP1
+    and DN1; corridor empty → honest "none between tests — X is the drift
+    magnet" line. Balance can never print outside the tests again.
+  • Yellow DP lines: today's top-3 dark-pool clusters by notional
+    (dark_pool_levels, SPY scaled by the endpoint's own latestStockPrice —
+    SPX prints no off-exchange flow). Live RTH only, 5-min cache.
+  • Orange Δ levels: THE METHOD run on the INTRADAY CHANGE book (current
+    signed rows minus session-open rows) via dan_levels_from_rows — same
+    window/floor/extension/corridor, BAL Δ / UPΔ / DNΔ dashed orange.
+  • Confirmed semantics: pre-open previews re-anchor (transient); 09:30/09:35
+    frames FROZEN for the session regardless of reloads; outer rungs only may
+    extend to ≥2× beyond-window mass.
 
 vGBT-0.9.32 [SIX LINES — the method as the user finally had to dictate it]
   • ONE window: open ± 2.5× opening straddle. BALANCE = biggest long in it.
@@ -15,15 +31,7 @@ vGBT-0.9.32 [SIX LINES — the method as the user finally had to dictate it]
     0.9.30/0.9.31 window/floor interactions — the machinery that kept eating
     the ladder. Constants: WIN_R=2.5 · EXT_X=2.0. Nothing else.
 
-vGBT-0.9.31 [FLOOR CONFINED TO THE TEST WINDOW — 0.9.30 regression fix]
-  • 0.9.30 measured the 20% per-sign floor over the 3×S0 dominance horizon:
-    the 7,395 monster raised the SHORT floor and deleted every small overhead
-    test ("UPSIDE none"); far long towers likewise erased BALANCE (bal=None,
-    line vanished). Floor is now computed strictly inside the 2×S0 test
-    window; dominance candidates compare RAW masses against the in-window
-    max and need no floor. Same ladder semantics, veto impossible by
-    construction — within sign as well as across signs.
-
+vGBT-0.9.31 — floor confined to test window (superseded by 0.9.32/33).
 vGBT-0.9.30 — dominance-exception experiment (superseded by 0.9.32 six-line method).
 vGBT-0.9.29 — audit: ladder/fly radius-leak fix; stale method text removed.
 vGBT-0.9.28 — fixed radii + opening straddle fetched from GBT bars; range line self-documents.
@@ -1012,6 +1020,34 @@ def _strength(share, conf):
     if conf<0.35: lab+="?"          # thin sign confidence — flag, don't hide
     return lab
 
+def dan_levels_from_rows(rows,ref,S0,WIN_R=2.5,EXT_X=2.0):
+    """vGBT-0.9.33: THE METHOD as a pure selector over any signed-rows frame —
+    used by the ORANGE intraday-Δ layer (rows = current book MINUS open book).
+    Identical rules to the card: 2.5×S0 window, two biggest shorts/side with
+    the 20% dust floor, outer-rung extension (≥2× in-window side max),
+    BALANCE = biggest long between UP1 and DN1."""
+    try:
+        cl=signed_clusters(rows,ref-2*WIN_R*S0,ref+2*WIN_R*S0,min_share=0.01)
+    except Exception:
+        return None
+    W=WIN_R*S0
+    sh=[c for c in cl if c["sign"]<0]; lg=[c for c in cl if c["sign"]>0 and abs(c["peak"]-ref)<=W]
+    def _tests(side):
+        _inall=sorted([c for c in sh if abs(c["peak"]-ref)<=W and side*(c["peak"]-ref)>0],
+                      key=lambda c:-c["mass"])
+        mx=_inall[0]["mass"] if _inall else 0.0
+        _in=[c for c in _inall if c["mass"]>=0.20*mx][:2]
+        bey=[c for c in sh if side*(c["peak"]-ref)>W and c["mass"]>=EXT_X*max(mx,1e-9)]
+        if bey:
+            e=dict(min(bey,key=lambda c:side*(c["peak"]-ref))); e["ext"]=True
+            _in=(_in[:1] if _in else [])+[e]
+        return sorted(_in,key=lambda c:side*c["peak"])
+    ups=_tests(+1); dns=_tests(-1)
+    u1=ups[0]["peak"] if ups else None; d1=dns[0]["peak"] if dns else None
+    corr=[c for c in lg if (u1 is None or c["peak"]<u1) and (d1 is None or c["peak"]>d1)]
+    bal=max(corr,key=lambda c:c["mass"]) if corr else None
+    return dict(bal=bal,ups=ups,dns=dns)
+
 def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WARN, ref_spot=None, open_strad=None,
                      lock=None, status_prices=None, header_note=None, levels_out=None):
     """Dan-format KEY LEVELS + TAKEAWAYS from the flow-signed book (§4.4 test-anchor).
@@ -1066,14 +1102,17 @@ def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WAR
             if _in_band(c["peak"],bands): c["conf"]*=0.5
         _win=lambda c: abs(c["peak"]-ref)<=WIN_R*S0
         longs_ext=sorted([c for c in cl if c["sign"]>0 and _win(c)],key=lambda c:-c["mass"])
-        longs=longs_ext                                  # BALANCE = biggest long in the window
+        longs=longs_ext
         shorts=[c for c in cl if c["sign"]<0]
         if not longs and not [c for c in shorts if _win(c)]:
             L.append(("  no clusters in range — structureless book",DIM,11,False)); return L
         def _tests(side):                               # side=+1 above the open, -1 below
-            _in=sorted([c for c in shorts if _win(c) and side*(c["peak"]-ref)>0],
-                       key=lambda c:-c["mass"])[:2]
-            _mx=max((c["mass"] for c in _in),default=0.0)
+            _inall=sorted([c for c in shorts if _win(c) and side*(c["peak"]-ref)>0],
+                          key=lambda c:-c["mass"])
+            _mx=_inall[0]["mass"] if _inall else 0.0
+            # 0.9.33 dust floor [USER 07-28]: a short is a TEST only if ≥20% of the
+            # biggest short on ITS OWN side in the window. Dust is not a rung.
+            _in=[c for c in _inall if c["mass"]>=0.20*_mx][:2]
             _beyond=[c for c in shorts if side*(c["peak"]-ref)>WIN_R*S0 and c["mass"]>=EXT_X*max(_mx,1e-9)]
             if _beyond:
                 _e=min(_beyond,key=lambda c:side*(c["peak"]-ref))   # nearest crazy mass
@@ -1081,14 +1120,23 @@ def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WAR
                 _in=(_in[:1] if _in else [])+[_e]                    # OUTER rung only moves
             return sorted(_in,key=lambda c:side*c["peak"])
         ups=_tests(+1); dns=_tests(-1)
+        # 0.9.33 balance corridor [USER 07-27 "between the first upside and first
+        # downside" — the sandwich is definitional]: BALANCE = biggest long BETWEEN
+        # UP1 and DN1. Corridor empty → honest line + name the drift magnet.
+        _u1=ups[0]["peak"] if ups else None
+        _d1=dns[0]["peak"] if dns else None
+        _corr=[c for c in longs_ext if (_u1 is None or c["peak"]<_u1) and (_d1 is None or c["peak"]>_d1)]
+        _nobal=None
+        if _corr: bal=max(_corr,key=lambda c:c["mass"])
+        else:
+            bal=None
+            _nobal=longs_ext[0] if longs_ext else None
         _exs=[t["peak"] for t in ups+dns if t.get("ext")]
         L.append((f"  range: open {ref:,.0f} ± {WIN_R*S0:,.0f} (2.5×S0) · S0 ${S0:.2f}"
                   +(" [opening straddle]" if open_strad else " [current straddle stand-in]")
                   +(f" · outer test extended to {', '.join(f'{p:,.0f}' for p in _exs)} (≥2× in-window mass)" if _exs else ""),
                   DIM,10,False))
-        # BALANCE = largest long within 1×S0 (radius already applied above);
-        # position annotation below still names it if it sits beyond a test.
-        bal=longs[0] if longs else None
+        # (bal selected above: corridor rule, 0.9.33)
         s0=spot
         if isinstance(levels_out,dict) and (bal or ups or dns):
             levels_out["ok"]=True
@@ -1104,6 +1152,9 @@ def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WAR
             if _lo< t_peak-2: return " ·CROSSED"
             if _lo<=t_peak+2: return " ·TESTED"
         return ""
+    if bal is None and _nobal is not None:
+        L.append((f"BALANCE: none between tests — {_nobal['peak']:,.0f} is the drift magnet "
+                  f"({'above UP1' if (_u1 and _nobal['peak']>=_u1) else 'below DN1' if (_d1 and _nobal['peak']<=_d1) else 'edge'})",WHT,12,True))
     if bal:
         _pk=" ⚠pkg" if _in_band(bal["peak"],bands) else ""
         # Annotation only (never changes selection): when the guide-selected balance
@@ -1819,6 +1870,28 @@ def gbt_gth_straddle(spot,exp):
     ss[ck]=(_time.time(),out)
     return out
 
+def gbt_darkpool_levels(spx_spot,top_n=3):
+    """vGBT-0.9.33: today's RTH dark-pool clusters. SPX prints no off-exchange
+    equity flow, so we take SPY dark_pool_levels (doc-verified endpoint) and
+    scale by the endpoint's own latestStockPrice → SPX. Top-N by notional.
+    5-min cache; [] pre-open/failure. Display-only (yellow lines)."""
+    ss=st.session_state; ck="gbt_dp_cache"
+    c=ss.get(ck)
+    if c and (_time.time()-c[0])<300: return c[1]
+    out=[]
+    try:
+        mm,d=_gbt_post("dark_pool_levels",{"ticker":"SPY",
+                       "startDate":today_est().strftime("%Y-%m-%d")})
+        spy=float(mm.get("latestStockPrice") or 0) or None
+        if d is not None and len(d) and spy:
+            d=d.copy(); d["notionalValue"]=pd.to_numeric(d["notionalValue"],errors="coerce")
+            top=d.nlargest(int(top_n),"notionalValue")
+            r=float(spx_spot)/spy
+            out=[(round(float(q["priceLevel"])*r,1),float(q["notionalValue"])) for _,q in top.iterrows()]
+    except Exception: out=[]
+    ss[ck]=(_time.time(),out)
+    return out
+
 def gbt_true_open():
     """vGBT-0.9.26: the ACTUAL 09:30 opening print from the API's own bars, so
     load time never moves the anchor — open at noon and the ladder still hangs
@@ -2080,7 +2153,7 @@ def signed_book_rows(ch, sp):
     return g[["strike","signed_pct","conf"]]
 
 def book_figure(book,spot,straddle,lo,hi,side="Total",prev=None,openb=None,signed=None,
-                signed_prev=None,signed_open=None,sticks=True,clean_map=None,preview_levels=None):
+                signed_prev=None,signed_open=None,sticks=True,clean_map=None,preview_levels=None,intraday_levels=None):
     def _tx(v): return v            # vGBT-0.9.20: always linear (√ compress removed)
     """VS3D 'Positions by Strike' analogue. Bars in e-minis per $1 (per-$1 ÷ 50).
     NAIVE calls+/puts− convention — measured signing arrives with the flow ledger."""
@@ -2189,6 +2262,14 @@ def book_figure(book,spot,straddle,lo,hi,side="Total",prev=None,openb=None,signe
         if not _drew:
             _ax24.text(0.005,0.02,"card levels lock at 09:35 ET",transform=_ax24.transAxes,
                     ha="left",va="bottom",fontsize=8,color="#8a93a6",zorder=7)
+        # vGBT-0.9.33: dark-pool clusters (yellow) + intraday-Δ levels (orange)
+        for _p,_nv in (st.session_state.get("gbt_dp_lines") or []):
+            _line24(_p,"DP","#ffd54a",(0,(1,1)),alpha=0.6)
+        if intraday_levels:
+            if intraday_levels.get("bal"):
+                _line24(intraday_levels["bal"]["peak"],"BAL Δ","#ff9f1a",(0,(3,2)),alpha=0.85)
+            for _t in intraday_levels.get("ups",[]): _line24(_t["peak"],"UPΔ","#ff9f1a",(0,(3,2)),alpha=0.6)
+            for _t in intraday_levels.get("dns",[]): _line24(_t["peak"],"DNΔ","#ff9f1a",(0,(3,2)),alpha=0.6)
     except Exception as _le24:
         try:
             fig.axes[0].text(0.005,0.05,f"⚠ levels overlay error: {type(_le24).__name__}: {_le24}",
@@ -2255,7 +2336,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.32 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.33 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -2983,13 +3064,31 @@ with tab_book:
             except Exception as _pe: _plv=None; _plv_err=f"{type(_pe).__name__}: {_pe}"
         if _plv_err:
             st.caption(f"preview levels unavailable — {_plv_err}")
+        # vGBT-0.9.33: yellow dark-pool lines + orange intraday-Δ levels (live only)
+        _ilv=None
+        if (not PLAYBACK) and now_est().time()>=dt.time(9,35):
+            try: st.session_state["gbt_dp_lines"]=gbt_darkpool_levels(latest["spot"])
+            except Exception: pass
+            try:
+                if len(st.session_state.snaps)>=2:
+                    _s0c=st.session_state.snaps[0]
+                    _r0=signed_book_rows(_s0c.get("chain"),float(_s0c.get("spot") or latest["spot"]))
+                    _rC=signed_book_rows(latest["chain"],float(latest["spot"]))
+                    if _r0 is not None and _rC is not None:
+                        _mg=_rC.merge(_r0,on="strike",how="outer",suffixes=("","_o")).fillna(0.0)
+                        _mg["signed_pct"]=_mg["signed_pct"]-_mg["signed_pct_o"]
+                        _refI=(st.session_state.get("open_read") or {}).get("spot") or latest["spot"]
+                        _q0=gbt_open_straddle(exps[0])
+                        _S0I=float(_q0[0]) if _q0 else float(_strv or latest["spot"]*0.009)
+                        _ilv=dan_levels_from_rows(_mg[["strike","signed_pct","conf"]],float(_refI),_S0I)
+            except Exception: _ilv=None
         _clm=None
         if b_clean and _sg is not None and len(_sg):
             _clm=gbt_clean_signs(exps[0],list(_sg["strike"].values))
             _n_on=sum(1 for _v in _clm.values() if _v)
             st.caption(f"🧹 clean signs: {_n_on}/{len(_clm)} strikes confirmed (single-leg quarantine)")
         fig=book_figure(bk,latest["spot"],_strv,_lo2,_hi2,side=b_side,prev=prevb,openb=openb,signed=_sg,
-                        signed_prev=_sgp,signed_open=_sgo,sticks=True,clean_map=_clm,preview_levels=_plv)
+                        signed_prev=_sgp,signed_open=_sgo,sticks=True,clean_map=_clm,preview_levels=_plv,intraday_levels=_ilv)
         if b_spot:
             try:
                 _ch0=latest["chain"]; _ch0=_ch0[_ch0["expiry"]==exps[0]] if "expiry" in _ch0.columns else _ch0
@@ -2998,7 +3097,7 @@ with tab_book:
                 st.caption(f"spot-path overlay unavailable: {type(_ox).__name__}: {_ox}")
         emit("book",fig)
     if book_on:
-        _bsig=repr((sel_ts.isoformat(),b_mode,b_side,bool(b_dots),bool(b_strad),int(isinstance(st.session_state.get("card_lock"),dict)),int(isinstance(st.session_state.get("open_read"),dict)),bool(b_clean),len(st.session_state.get("gbt_clean_"+exps[0],st.session_state.get("gbt_clean_"+exps[0]+"_partial",{}))),bool(b_spot),int(len(bars) if bars is not None else 0),bool(GBT_SIGNED),round(float(st.session_state.get("book_zoom",1.0)),3),round(window_pct,5),len(st.session_state.snaps)))
+        _bsig=repr((sel_ts.isoformat(),b_mode,b_side,bool(b_dots),bool(b_strad),int(isinstance(st.session_state.get("card_lock"),dict)),int(isinstance(st.session_state.get("open_read"),dict)),len(st.session_state.get("gbt_dp_lines") or []),bool(b_clean),len(st.session_state.get("gbt_clean_"+exps[0],st.session_state.get("gbt_clean_"+exps[0]+"_partial",{}))),bool(b_spot),int(len(bars) if bars is not None else 0),bool(GBT_SIGNED),round(float(st.session_state.get("book_zoom",1.0)),3),round(window_pct,5),len(st.session_state.snaps)))
         dispatch("book",_render_book,sig=_bsig)
 
 
