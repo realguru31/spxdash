@@ -1,9 +1,13 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.35
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.36
 
 CHANGELOG POLICY (per Faisal, Jul-24): detailed notes for the LATEST 3 versions
 only; everything older is ONE line. Full history lives in git, not here.
 
+vGBT-0.9.36 [BOOK Y-TICKS EVERY 10 PTS]
+  • Book tab price axis now labels every 10 points (auto-locator chose 50 on
+    a ±2% window). Window range unchanged — still the Price window slider.
+    Display-only. [USER 08-03]
 vGBT-0.9.35 [DAN-MINIMAL CHART — ONE LADDER, FAMILIES OPT-IN]
   • Book axis now carries ONE ladder (locked > open-read > preview) plus bars,
     straddle bounds, dots, spot. With a lock present, the 09:30 open read folds
@@ -2289,6 +2293,11 @@ def book_figure(book,spot,straddle,lo,hi,side="Total",prev=None,openb=None,signe
     for _sp in ax.spines.values(): _sp.set_color("#333")
     if prev is not None or openb is not None or _legend_force: ax.legend(loc="lower right",fontsize=7,facecolor="#0e1117",labelcolor="#ccc")
     ax.set_ylim(lo,hi)
+    # vGBT-0.9.36 [USER 08-03]: price axis labeled every 10 pts (auto-locator was
+    # picking 50 on a ±2% window — unreadable). Display only; lo/hi still come
+    # from the Price window slider.
+    from matplotlib.ticker import MultipleLocator as _ML36
+    ax.yaxis.set_major_locator(_ML36(10))
     # ══ vGBT-0.9.24: CARD LEVELS OVERLAY — lives in book_figure itself, drawn on
     # EVERY Book render, independent of any checkbox. (0.9.18 had buried it inside
     # the Spot-path overlay feature; with that box off — or after 0.9.22's param
@@ -2433,7 +2442,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.35 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.36 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
