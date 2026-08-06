@@ -1,8 +1,31 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.36
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.37
 
 CHANGELOG POLICY (per Faisal, Jul-24): detailed notes for the LATEST 3 versions
 only; everything older is ONE line. Full history lives in git, not here.
+
+vGBT-0.9.37 [THE STRIP — cheat-sheet synthesis on Book+Gradient · EXPERIMENTAL]
+  • BUILD ORDER 08-05. Ported from the validated Colab spx_tri_panel.py
+    (STEP-2 READOUT + THE STRIP blocks) — formulas verbatim, only feed
+    plumbing adapted (app chain columns · _gbt_post VIX 5-min · naive-EST ts).
+  • Line 1, six chips under the spot header: γ dial (2·|Σ dsign·γ·w| minis/$ →
+    HEAVY≥250 / LIGHT≥100 / THIN≥25 / VIRTUALLY-NEG · TRUE-NEG if Σ<0
+    [SHEET · GUIDE §2.5]) · FUEL (−2·Σ dsign·w·(Δterm−Δnow); Δterm call 1 if
+    K<S else 0, put −1 if K>S else 0; baseline = first frame ≥09:30, pct after)
+    · CHARM (−2·Σ dsign·charm5m·w; BS charm r=0.05 T→16:00; gate |expo|≥20;
+    persist = same sign 3 cycles) · STRADDLE gate (ATM both-leg bids, per-frame
+    tape, 09:30 anchor sqrt-time; ±10% trailing hour → NOT-DECAYING; <$8 & <0.9
+    → COLLAPSING; ARMED pre-10:00) · VIX (GBT stock_price_over_time 5-min:
+    level + 30-min Δ ±0.5/±0.3; ≥20 override) · WINDOW (charm clock).
+  • Line 2 ▶ PLAY — gates in strict precedence BEFORE any quadrant call:
+    outside RTH → VIX20+ sit out → straddle NOT-DECAYING + charm lean = "vol
+    bid — charm OFF, stand down" → charm<20 position-layer only → <11:00
+    active-open gated → else 4-quadrant (γ± × charm±).
+  • NO REPAINT: strip computed AT SNAPSHOT TIME from that frame's chain and
+    stored in the snap record — playback replays the day (end-of-day review).
+    Transitions append to strip_log (append-only). Sidebar toggle b_strip
+    default ON, [EXPERIMENTAL]. Thresholds (±10%, $8, 20-gate, 15% fuel) are
+    DRAFTS pending tape grade [08-05] — tuning, not permission.
 
 vGBT-0.9.36 [BOOK Y-TICKS EVERY 10 PTS]
   • Book tab price axis now labels every 10 points (auto-locator chose 50 on
@@ -2225,6 +2248,144 @@ def signed_book_rows(ch, sp):
     g["conf"]=(g["_a"]/g["_w"].replace(0,np.nan)).fillna(0.0)
     return g[["strike","signed_pct","conf"]]
 
+# ═══════════ vGBT-0.9.37 THE STRIP — cheat-sheet synthesis [BUILD ORDER 08-05] ═══════════
+def compute_strip(ch, sp, exp, ts, vix_df=None, ss=None):
+    """Six chips + ▶PLAY from the cheat sheet, computed on the app's own signed
+    chain (dsign/oi — same eff-sign rule as signed_book_rows). Ported from the
+    validated Colab spx_tri_panel.py STEP-2 READOUT + THE STRIP blocks; only
+    feed plumbing adapted. Called ONLY from take_snapshot — the result is stored
+    in the snap record, so a printed strip can never repaint. `ss` injectable
+    (harness runs it without streamlit); `vix_df` injectable (without network)."""
+    import math
+    if ss is None: ss=st.session_state
+    _uw=globals().get("GBT_UNSEEDED_W",0.2)
+    cc=ch[ch["expiry"]==exp].copy() if "expiry" in getattr(ch,"columns",[]) else ch.copy()
+    nv=np.where(cc["type"].values=="call",1.0,-1.0)
+    eff=(cc["dsign"].where(cc["dsign"].notna(),pd.Series(nv*_uw,index=cc.index))
+         if "dsign" in cc.columns else pd.Series(nv*_uw,index=cc.index))
+    w=cc["oi"].fillna(0); tt=ts.time()
+    # ── γ dial [SHEET · GUIDE §2.5: HEAVY 250+ · LIGHT ~100 · <25 "as good as negative"] ──
+    gam_expo=float((eff*cc["gamma"].fillna(0)*w).sum())
+    gam_minis=2.0*abs(gam_expo); gam_pos=gam_expo>0
+    gam_dial=("HEAVY" if gam_minis>=250 else "LIGHT" if gam_minis>=100 else
+              "THIN" if gam_minis>=25 else "VIRTUALLY-NEG") if gam_pos else "TRUE-NEG"
+    # ── CHARM: BS charm r=0.05 T→16:00, per 5 min [tri-panel _charm5m verbatim] ──
+    _t16=dt.datetime.combine(ts.date(),dt.time(16,0))
+    _Ty=max((_t16-ts).total_seconds(),60)/(365*24*3600)
+    def _charm5m(K,iv):
+        if iv<=0 or _Ty<=0 or K<=0: return 0.0
+        sq=math.sqrt(_Ty); d1=(math.log(sp/K)+(0.05+0.5*iv*iv)*_Ty)/(iv*sq); d2=d1-iv*sq
+        ch_yr=-math.exp(-d1*d1/2)/math.sqrt(2*math.pi)*(2*0.05*_Ty-d2*iv*sq)/(2*_Ty*iv*sq)
+        return ch_yr/(365*24*12)
+    _cch=[_charm5m(float(k),float(v) if v==v else 0.0) for k,v in zip(cc["strike"],cc["iv"])]
+    charm_expo=float((eff*pd.Series(_cch,index=cc.index)*w).sum())
+    charm_minis=-2.0*charm_expo                          # hedge trade: + = dealers BUY minis
+    _ck="strip_charm_hist_"+exp; _hist=list(ss.get(_ck,[]))
+    _hist=(_hist+[1 if charm_minis>0 else -1 if charm_minis<0 else 0])[-6:]
+    ss[_ck]=_hist
+    charm_persist=len(_hist)>=3 and len(set(_hist[-3:]))==1 and _hist[-1]!=0
+    charm_gate=abs(charm_expo)>=20                       # Dan's 20-exposure gate
+    # ── FUEL: Σ dsign·w·(Δterm−Δnow), hold-into-close path [GUIDE §2.5 "umph"] ──
+    _dnow=cc["delta"].fillna(0)
+    _term=np.where(cc["type"].values=="call",
+                   np.where(cc["strike"].values< sp,1.0,0.0),
+                   np.where(cc["strike"].values> sp,-1.0,0.0))
+    fuel_book=float((eff*w*(pd.Series(_term,index=cc.index)-_dnow)).sum())
+    fuel_minis=-2.0*fuel_book                            # + = dealers to BUY into close
+    # baseline anchors at the FIRST frame ≥09:30 ET; premarket shows no % —
+    # an arbitrary-restart baseline misleads [USER 08-05]
+    _fk="strip_fuel0_"+exp
+    if tt>=dt.time(9,30) and _fk not in ss: ss[_fk]=abs(fuel_minis) or 1.0
+    fuel_pct=(100.0*abs(fuel_minis)/max(float(ss[_fk]),1e-9)) if _fk in ss else None
+    # ── STRADDLE gate: ATM both-leg bids, per-frame tape, 09:30 anchor sqrt-time ──
+    _pv=cc.pivot_table(index="strike",columns="type",values="bid",aggfunc="max")
+    _pv=_pv.dropna() if len(_pv) else _pv
+    if len(_pv): _pv=_pv[(_pv>0).all(axis=1)]
+    _K=float(_pv.index[np.argmin(np.abs(_pv.index.values-sp))]) if len(_pv) else round(sp/5)*5
+    _sv=float(np.nan_to_num(_pv.loc[_K].sum())) if len(_pv) else 0.0
+    _stk="strip_strad_"+exp; _tape=list(ss.get(_stk,[]))
+    if _sv>0: _tape=(_tape+[(ts.isoformat(),_sv)])[-200:]; ss[_stk]=_tape
+    _open=dt.datetime.combine(ts.date(),dt.time(9,30))
+    _rth=[(dt.datetime.fromisoformat(a),b) for a,b in _tape
+          if dt.datetime.fromisoformat(a)>=_open]        # RTH tape only — overnight theta is lumpy
+    if tt<dt.time(10,0) or len(_rth)<4:
+        strad_cls,strad_col="ARMED (from 10:00)","#8a93a6"
+    else:
+        _t16s=dt.datetime.combine(ts.date(),dt.time(16,0))
+        _a0=_rth[0]; _fr=lambda t: max((_t16s-t).total_seconds(),0)/max((_t16s-_a0[0]).total_seconds(),1)
+        _ratio=float(np.nanmean([b/max(_a0[1]*math.sqrt(_fr(t)),1e-9) for t,b in _rth[-12:]]))
+        if _ratio>1.10: strad_cls,strad_col="NOT DECAYING — vol bid, charm OFF","#f0ad4e"
+        elif _rth[-1][1]<8 and _ratio<0.9: strad_cls,strad_col="COLLAPSING — pin tightens","#c792ea"
+        else: strad_cls,strad_col="DECAYING ✓","#3fb950"
+    # ── VIX chip: GBT 5-min series (the 30-min Δ needs the PATH — TVC single value can't) ──
+    vix_txt,vix_col,vix_hi="VIX n/a","#8a93a6",False
+    try:
+        if vix_df is None:
+            _,vix_df=_gbt_post("stock_price_over_time",{"ticker":"VIX",
+                "sessionDate":ts.strftime("%Y-%m-%d"),"aggregationPeriod":"FIVE_MINUTE"})
+        if vix_df is not None and len(vix_df):
+            _vx=vix_df["closePrice"]; _vl=float(_vx.iloc[-1])
+            _vd=_vl-float(_vx.iloc[-7] if len(_vx)>7 else _vx.iloc[0])
+            vix_hi=_vl>=20
+            _vdir=("spiking — vanna can beat charm" if _vd>0.5 else
+                   "falling — vanna assists" if _vd<-0.3 else "steady")
+            vix_txt=f"VIX {_vl:.1f} {_vdir}"
+            vix_col=("#ef5350" if _vd>0.5 or vix_hi else "#3fb950" if _vd<-0.3 else "#e8ecf2")
+    except Exception: pass
+    # ── window chip [SHEET charm clock] ──
+    window=("PRE-OPEN" if tt<dt.time(9,30) else "ACTIVE OPEN — levels are bid levels" if tt<dt.time(11,0)
+            else "MIDDAY — settling" if tt<dt.time(13,30) else "SWEET SPOT — charm turf" if tt<dt.time(15,0)
+            else "CLOSE — local, pin" if tt<dt.time(16,0) else "AFTER HOURS")
+    win_col={"PRE":"#8a93a6","ACT":"#f0ad4e","MID":"#e8ecf2","SWE":"#3fb950","CLO":"#c792ea","AFT":"#8a93a6"}[window[:3]]
+    # ── ▶ PLAY: gates first (strict precedence), then the 4-quadrant table [SHEET "Pick the day"] ──
+    _cup=charm_minis>0
+    if tt<dt.time(9,30) or tt>=dt.time(16,0):
+        play,play_col="Outside RTH — strip informational only","#8a93a6"
+    elif vix_hi:
+        play,play_col="VIX 20+ — vanna can overpower charm · size down or sit out","#ef5350"
+    elif strad_col=="#f0ad4e":
+        play,play_col=("STRADDLE NOT DECAYING while CHARM "+("UP" if _cup else "DOWN")+
+                       " — vol bid rules the tape · charm plays OFF · stand down"),"#f0ad4e"
+    elif not charm_gate:
+        play,play_col="Charm expo <20 — no directional lean · position-layer (ladder) only","#8a93a6"
+    elif tt<dt.time(11,0):
+        play,play_col="Active open — expect tests engaged, signals gated until ~11:00","#f0ad4e"
+    else:
+        play,play_col=(("Chop leans UP — pin near anchor · sell flies/spreads at target" if _cup
+                        else "Chop leans DOWN — fade extremes · put flies/spreads") if gam_pos else
+                       ("BULL EXPANSION — needs a trigger · long calls single-leg" if _cup
+                        else "BEAR FLUSH — needs a trigger · long puts / put flies")),("#3fb950" if _cup else "#ef5350")
+    chips=[(f"γ{'+' if gam_pos else '−'} {gam_dial} {gam_minis:,.0f}m/$","#3fb950" if gam_pos else "#ef5350"),
+           (f"FUEL {'BUY' if fuel_minis>0 else 'SELL'} {abs(fuel_minis):,.0f}m"
+            +(f" ({fuel_pct:.0f}%)" if fuel_pct is not None else " (baseline @09:30)"),
+            "#2fd0d0" if (fuel_pct is None or fuel_pct>=15) else "#f0ad4e"),
+           (f"CHARM {'↑' if _cup else '↓'}{abs(charm_minis):,.0f}m/5m"
+            +("" if charm_gate else " ✗<20")+(" ✓pers" if charm_persist else ""),
+            ("#3fb950" if _cup else "#ef5350") if charm_gate else "#8a93a6"),
+           ((f"STRADDLE {_sv:.0f}: {strad_cls}" if _sv>0 else f"STRADDLE n/a: {strad_cls}"),strad_col),
+           (vix_txt,vix_col),(window,win_col)]
+    state=" · ".join(t for t,_ in chips)+" ▶ "+play
+    sig=(f"γ{'+' if gam_pos else '−'}{gam_dial}|charm{'↑' if _cup else '↓'}"
+         f"{'G' if charm_gate else 'g'}{'P' if charm_persist else ''}|{strad_cls.split(' ')[0]}"
+         f"|{'VIXHI' if vix_hi else 'vix'}|{window.split(' ')[0]}|{play}")
+    return dict(chips=chips,play=(play,play_col),state=state,sig=sig,
+                gam_minis=gam_minis,gam_pos=gam_pos,gam_dial=gam_dial,
+                charm_expo=charm_expo,charm_minis=charm_minis,charm_gate=charm_gate,
+                charm_persist=charm_persist,fuel_minis=fuel_minis,fuel_pct=fuel_pct,
+                straddle=_sv,strad_cls=strad_cls,vix_hi=vix_hi,window=window)
+
+def render_strip(strip):
+    """0.9.37: two-line strip directly under the spot header (Book + Gradient).
+    Reads the SELECTED snapshot's STORED strip — scrubbing replays the day."""
+    if not strip:
+        st.caption("STRIP: not recorded on this snapshot (pre-0.9.37 frame)"); return
+    if strip.get("err"):
+        st.caption(f"STRIP error this frame: {strip['err']}"); return
+    _l1="&nbsp;·&nbsp;".join(f"<span style='color:{c}'>{t}</span>" for t,c in strip["chips"])
+    _p,_pc=strip["play"]
+    st.markdown("<div style='font-family:monospace;font-weight:bold;font-size:0.86rem;line-height:1.9'>"
+                +_l1+f"<br><span style='color:{_pc}'>▶ {_p}</span></div>",unsafe_allow_html=True)
+
 def book_figure(book,spot,straddle,lo,hi,side="Total",prev=None,openb=None,signed=None,
                 signed_prev=None,signed_open=None,sticks=True,clean_map=None,preview_levels=None,intraday_levels=None,
                 show_delta=False,show_dp=False):
@@ -2397,7 +2558,17 @@ def take_snapshot(num_expiries):
             _s0=terrain_straddle(chain,spot)
             if _s0: st.session_state[_dk]=(float(_s0),ts.strftime("%H:%M"))
         except Exception: pass
-    st.session_state.snaps.append(dict(ts=ts,spot=spot,chain=chain,exps=exps,vix=vix,vix_src=vix_src,book=book))
+    # 0.9.37: strip computed AT SNAPSHOT TIME and stored in the record — the
+    # printed strip can never repaint; end-of-day review = scrub the snaps.
+    strip=None
+    try:
+        strip=compute_strip(chain,spot,exp,ts)
+        _lg=st.session_state.setdefault("strip_log",[])
+        if not _lg or _lg[-1][1]!=strip["sig"]:
+            _lg.append((ts.isoformat(),strip["sig"]))   # append-only transition log
+    except Exception as _sx:
+        strip={"err":f"{type(_sx).__name__}: {_sx}"}
+    st.session_state.snaps.append(dict(ts=ts,spot=spot,chain=chain,exps=exps,vix=vix,vix_src=vix_src,book=book,strip=strip))
     st.session_state.last_ts=ts
     save_day_state()
     return spot,exps
@@ -2413,7 +2584,7 @@ def save_day_state():
         ss=st.session_state
         blob={"snaps":ss.get("snaps",[]),"frames":ss.get("frames",{}),"last_ts":ss.get("last_ts"),
               "keys":{k:ss[k] for k in list(ss.keys())
-                      if str(k).startswith(("strad_open_","terr_cap_","terr_hist_","read_gmag","gbt_seed_","gbt_live_","gbt_clean_","gbt_true_open_","gbt_open_straddle_","card_lock","open_read","peak_track"))}}
+                      if str(k).startswith(("strip_","strad_open_","terr_cap_","terr_hist_","read_gmag","gbt_seed_","gbt_live_","gbt_clean_","gbt_true_open_","gbt_open_straddle_","card_lock","open_read","peak_track"))}}
         with open(_state_path(),"wb") as f: _pickle.dump(blob,f,protocol=4)
         for _old in _glob.glob("/tmp/vs3dgbt_state_*.pkl"):
             if _old!=_state_path() and _os.path.getmtime(_old)<_time.time()-2*86400:
@@ -2442,7 +2613,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.36 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.37 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -2488,6 +2659,11 @@ try:
         if _g.get("errs"): _cov+=f" · ⚠ {len(_g['errs'])}+ failed (last: {_g['errs'][-1]})"
         (st.sidebar.warning if _g.get("ok",0)<0.5*max(1,_g.get("n",1)) else st.sidebar.caption)(_cov)
 except Exception: pass
+b_strip=st.sidebar.checkbox("🎛 THE STRIP [EXPERIMENTAL]",value=True,key="b_strip",
+    help="Cheat-sheet synthesis under the spot header (Book + Gradient tabs): γ dial · FUEL · "
+         "CHARM · straddle gate · VIX · window ▶ PLAY. Computed at snapshot time and stored in "
+         "every record (no repaint — scrubbing replays the day); transitions in an append-only "
+         "session log. Thresholds are drafts pending tape grade [08-05].")
 book_on=st.sidebar.checkbox("Book panel (by strike)",value=True,
     help="GBT dealer book per 5-pt strike — VS3D 'Positions by Strike' analogue. NAIVE calls+/puts− (measured signing arrives with the flow ledger).")
 with st.sidebar.expander("📊 Book controls", expanded=False):
@@ -3112,6 +3288,7 @@ def _book_spot_overlay(fig, bars, lo, hi, chain=None, spot=None, exp=None, nowv=
     return fig
 
 with tab_book:
+    if b_strip: render_strip(latest.get("strip"))
     emit_caption("book","GBT dealer book by 5-pt strike — VS3D 'Positions by Strike' analogue. "
         "MM-inferred mode: $M per 1%, signs from aggressor flow (yesterday's flow on today's expiry seeds "
         "pre-open; live flow updates top strikes), opacity = sign confidence. Naive mode: e-minis per $1, "
@@ -3233,6 +3410,7 @@ with tab_book:
 
 
 with tab_terr:
+    if b_strip: render_strip(latest.get("strip"))
     emit_caption("terrain","VS3D Gradient Chart, guide-spec. Field = chosen greek across price×time for the "
         "WHOLE fetched book (each expiry decays on its own clock; 0DTE dominates via asymptotic gamma). "
         "Manual symmetric range (a loose day looks loose) · near-linear intensity · field behind price. "
