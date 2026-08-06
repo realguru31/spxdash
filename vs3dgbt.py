@@ -1,8 +1,27 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.37
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.38
 
 CHANGELOG POLICY (per Faisal, Jul-24): detailed notes for the LATEST 3 versions
 only; everything older is ONE line. Full history lives in git, not here.
+
+vGBT-0.9.38 [LEVELS = LARGEST BAR · FROZEN PREMARKET ANCHOR — source audit 08-06]
+  • signed_clusters peak = strike of the LARGEST bar in the run. Provenance:
+    GUIDE §4.4 "Peak of short option cluster" ×3 / "a local maximum on the
+    dealer short side"; TRANSCRIPT Jul-21 "clusters of shorts converge and
+    become the largest in the position. So 7485 is an important level."
+    The mass-weighted centroid was my engineering (no Dan provenance) and sat
+    5–15 pts off the biggest bar on lopsided clusters — the likely source of
+    the parked card-7,445-vs-visual-7,450 discrepancy. Applies to tests AND
+    balance (same cluster function).
+  • method_ref(): ONE reference resolver for card + Book preview overlay —
+    open-read → true 09:30 open (live RTH) → FROZEN premarket anchor (first
+    premarket frame of the day, persisted) → spot. Pre-0.9.38 the pre-open
+    preview re-anchored to every frame's spot, sliding the ±2.5·S0 window and
+    shuffling balance each refresh [USER 08-06 "balance all over the place"].
+    GUIDE §4.5: "The opening position matters most… intraday changes are
+    noise." Pre-open header states the frozen anchor.
+  • NOT built (pending probe): switching the premarket ref SOURCE to the TV
+    symbol — GBT-vs-TV premarket spot comparison first (sourced params frozen).
 
 vGBT-0.9.37 [THE STRIP — cheat-sheet synthesis on Book+Gradient · EXPERIMENTAL]
   • BUILD ORDER 08-05. Ported from the validated Colab spx_tri_panel.py
@@ -993,7 +1012,12 @@ def _book_delta_drift(chp0, spot_prev, t_prev, spot_now, t_now, exp):
 
 def signed_clusters(rows, lo, hi, min_share=0.05):
     """Contiguous same-sign runs of the signed book inside [lo,hi] (gap ≤ 10 pts).
-    Returns list of dicts: sign, peak (mass-weighted centroid, rounded to 5),
+    Returns list of dicts: sign, peak (strike of the LARGEST bar in the run —
+    0.9.38: GUIDE §4.4 "Peak of short option cluster" / "a local maximum on the
+    dealer short side" + TRANSCRIPT Jul-21 "clusters of shorts converge and
+    become the largest in the position. So 7485 is an important level"; the
+    mass-weighted centroid was engineering with no Dan provenance and sat 5–15
+    pts off the biggest bar on lopsided clusters [USER 08-06 audit]),
     mass, conf (mass-weighted), share (of total |mass| in range)."""
     if rows is None or getattr(rows,"empty",True): return []
     r=rows[(rows["strike"]>=lo)&(rows["strike"]<=hi)].sort_values("strike").reset_index(drop=True)
@@ -1012,7 +1036,7 @@ def signed_clusters(rows, lo, hi, min_share=0.05):
     res=[]
     for c in out:
         m=sum(c["vs"]); w=np.array(c["vs"]); ks=np.array(c["ks"])
-        peak=round(float((ks*w).sum()/m)/5.0)*5.0
+        peak=float(ks[int(np.argmax(w))])   # 0.9.38: strike of the LARGEST bar [GUIDE §4.4 · Jul-21]
         conf=float((np.array(c["cs"])*w).sum()/m)
         share=m/tot
         if share>=min_share: res.append(dict(sign=c["sign"],peak=peak,mass=m,conf=conf,share=share))
@@ -1141,11 +1165,14 @@ def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WAR
             return L
         ref=float(ref_spot) if ref_spot else spot
         # ═══ THE METHOD — eight lines (user-final 07-27 · 0.9.34 ordered ladder 07-28) ═══
-        # 1) Reference = the open (pre-market: current spot). S0 = opening straddle
+        # 1) Reference = the open (pre-market: FROZEN first-frame anchor, 0.9.38 —
+        #    Dan anchors to a profile, never per-frame). S0 = opening straddle
         #    (pre-market: current straddle stand-in, labeled). [USER]
         # 2) ONE window: ref ± 2.5×S0. [USER "2 or 2.5x straddle"]
         # 3) UP1 = biggest short cluster above the open in the window; DN1 = same
-        #    below. [GUIDE §4.4 "peak of short option cluster above/below spot"]
+        #    below. Cluster level = strike of its LARGEST bar (0.9.38 — GUIDE
+        #    §4.4 "peak"/"local maximum" + Jul-21 "largest in the position";
+        #    centroid retired, no provenance).
         # 4) UP2 = biggest short cluster STRICTLY ABOVE UP1 — in-window first, else
         #    beyond-window marked ext; DN2 mirrored below DN1. Ladder is ordered by
         #    construction: DN2 < DN1 < BALANCE < UP1 < UP2. A rung is "none" only
@@ -2011,6 +2038,35 @@ def gbt_true_open():
     if v: ss[ck]=v          # cache only success; retry next rerun otherwise
     return v
 
+def method_ref(spot_now, live=True, ss=None, now=None):
+    """vGBT-0.9.38: ONE reference resolver for the METHOD (Read card + Book
+    preview overlay — both call sites, so they can never disagree).
+    Order: open-read spot (frozen at 09:30) → true 09:30 open (live RTH) →
+    FROZEN premarket anchor (first premarket frame of the day) → spot fallback.
+    Dan anchors to a profile; he does not re-anchor per frame [GUIDE §4.5
+    "opening position matters most… intraday changes are noise"]. Pre-0.9.38
+    the pre-open preview re-anchored to every frame's spot, sliding the window
+    and shuffling balance each refresh [USER 08-06 "balance all over the
+    place"]. `ss`/`now` injectable for the harness. Returns (ref, source)."""
+    try:
+        if ss is None: ss=st.session_state
+        _now=now or now_est()
+        _orx=ss.get("open_read")
+        if isinstance(_orx,dict) and _orx.get("spot"): return float(_orx["spot"]),"open-read"
+        if _now.time()>=dt.time(9,30):
+            if live:
+                _to=gbt_true_open()
+                if _to: return float(_to[0]),"true-open"
+            return float(spot_now),"spot"
+        _pk="meth_preref_"+_now.strftime("%Y-%m-%d")
+        if _pk not in ss:
+            ss[_pk]=float(spot_now)          # freeze ONCE at the first premarket frame
+            try: save_day_state()
+            except Exception: pass
+        return float(ss[_pk]),"pre-frozen"
+    except Exception:
+        return float(spot_now),"spot"
+
 def gbt_open_straddle(exp):
     """vGBT-0.9.28: the OPENING straddle, fetchable at any hour — ATM strike from
     the true 09:30 open, both legs' first bar at/after 09:30 via
@@ -2584,7 +2640,7 @@ def save_day_state():
         ss=st.session_state
         blob={"snaps":ss.get("snaps",[]),"frames":ss.get("frames",{}),"last_ts":ss.get("last_ts"),
               "keys":{k:ss[k] for k in list(ss.keys())
-                      if str(k).startswith(("strip_","strad_open_","terr_cap_","terr_hist_","read_gmag","gbt_seed_","gbt_live_","gbt_clean_","gbt_true_open_","gbt_open_straddle_","card_lock","open_read","peak_track"))}}
+                      if str(k).startswith(("strip_","meth_preref_","strad_open_","terr_cap_","terr_hist_","read_gmag","gbt_seed_","gbt_live_","gbt_clean_","gbt_true_open_","gbt_open_straddle_","card_lock","open_read","peak_track"))}}
         with open(_state_path(),"wb") as f: _pickle.dump(blob,f,protocol=4)
         for _old in _glob.glob("/tmp/vs3dgbt_state_*.pkl"):
             if _old!=_state_path() and _os.path.getmtime(_old)<_time.time()-2*86400:
@@ -2613,7 +2669,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.37 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.38 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -3344,10 +3400,7 @@ with tab_book:
                                  "w","g","r","c","d","y",
                                  open_strad=((gbt_open_straddle(exps[0]) or (None,))[0]
                                              if ((not PLAYBACK) and now_est().time()>=dt.time(9,30)) else None),
-                                 ref_spot=((st.session_state.get("open_read") or {}).get("spot")
-                                           or ((gbt_true_open() or (None,))[0]
-                                               if ((not PLAYBACK) and now_est().time()>=dt.time(9,30)) else None)
-                                           or latest["spot"]),
+                                 ref_spot=method_ref(latest["spot"],live=(not PLAYBACK))[0],   # 0.9.38: same resolver as the card
                                  levels_out=_po)
                 _plv=_po.get("levels") if _po.get("ok") else None
                 if _plv is None: _plv_err="book has no level clusters yet (or signed mode off)"
@@ -3927,16 +3980,11 @@ with tab_read:
                     _stp=[float(x) for x in _bb["closePrice"].dropna().values] or None
                 except Exception: _stp=None
             elif now_est().time()<dt.time(9,35):
-                _hdr="PREVIEW — pre-open book (yesterday's OI/signs) · locks at first ≥09:35 ET snapshot"
+                _hdr="PREVIEW — pre-open book (yesterday's OI/signs) · anchor FROZEN at first premarket frame · locks at first ≥09:35 ET snapshot"
             _lvo={}
-            _orx0=st.session_state.get("open_read")
-            _to=None
-            if isinstance(_orx0,dict) and _orx0.get("spot"):
-                _ref=float(_orx0["spot"])
-            elif (not PLAYBACK) and now_est().time()>=dt.time(9,30):
-                _to=gbt_true_open(); _ref=float(_to[0]) if _to else spot
-            else:
-                _ref=spot
+            # 0.9.38: ONE resolver — open-read → true open → FROZEN premarket anchor
+            _ref,_refsrc=method_ref(spot,live=(not PLAYBACK))
+            _to=(gbt_true_open() if _refsrc=="true-open" else None)   # day-cached; for the open-read "at" stamp
             _os0=None
             if (not PLAYBACK) and now_est().time()>=dt.time(9,30):
                 _q0=gbt_open_straddle(use_exps[0]); _os0=(_q0[0] if _q0 else None)
