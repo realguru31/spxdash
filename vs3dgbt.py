@@ -1,8 +1,17 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.38
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.39
 
 CHANGELOG POLICY (per Faisal, Jul-24): detailed notes for the LATEST 3 versions
 only; everything older is ONE line. Full history lives in git, not here.
+
+vGBT-0.9.39 [CANDLES: BRIGHT WHITE UP / BRIGHT ORANGE DOWN — app-wide]
+  • USER order 08-05 ("candles dont look right in contrast — up bright white,
+    down bright orange") was applied only to the Colab tri-panel and DROPPED
+    from the vs3dgbt port spec — omission owned, corrected here. One palette
+    constant (UP/DOWN) feeds the single draw_candles used by every tab, so
+    Gradient/Terrain, GEX monitor, and all candle overlays change together.
+    Down body #ff8c00 self-edged; dark halo strokes keep separation on any
+    gradient background.
 
 vGBT-0.9.38 [LEVELS = LARGEST BAR · FROZEN PREMARKET ANCHOR — source audit 08-06]
   • signed_clusters peak = strike of the LARGEST bar in the run. Provenance:
@@ -1516,7 +1525,7 @@ def _decay_shift(Z,taus,mins=30):
     j2=np.minimum(np.arange(n)+step,n-1)
     return Z[:,j2]-Z
 DARK="#0d1117";TXT="#c9d1d9";GRID="#222a35";WHITE="#e6edf3"
-UP="#ffffff";DOWN="#000000";WICKFX=[pe.Stroke(linewidth=1.7,foreground="#6b7280"),pe.Normal()]
+UP="#ffffff";DOWN="#ff8c00";WICKFX=[pe.Stroke(linewidth=1.7,foreground="#6b7280"),pe.Normal()]   # 0.9.39: down = bright orange [USER 08-05, ported from tri-panel]
 def _place_labels(ax, levels, p_min, p_max, x=0.012, min_gap=0.045, fs=9.5):
     levels=[L for L in levels if p_min<L["price"]<p_max]
     if not levels: return
@@ -1552,8 +1561,9 @@ def draw_candles(ax,bars,x0,x1,p_min,p_max):
         up=r["c"]>=r["o"]; body=UP if up else DOWN
         # wick with dark halo
         ln,=ax.plot([x,x],[r["l"],r["h"]],color=body,lw=1.0,zorder=5); ln.set_path_effects(halo)
-        # body: filled, with a contrasting outline (dark for up/white candle, light for down/black)
-        edge="#000000" if up else "#cbd5e1"
+        # body: filled — up: white body/dark edge; down: bright orange, self-edged
+        # (0.9.39, tri-panel palette; the dark halo stroke supplies separation)
+        edge="#000000" if up else "#ff8c00"
         h=max(abs(r["c"]-r["o"]),(p_max-p_min)*0.0012)
         rect=plt.Rectangle((x-cwidth/2,min(r["o"],r["c"])),cwidth,h,
                            facecolor=body,edgecolor=edge,lw=0.6,zorder=6)
@@ -2669,7 +2679,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.38 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.39 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
