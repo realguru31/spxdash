@@ -1,8 +1,26 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.39
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.40
 
 CHANGELOG POLICY (per Faisal, Jul-24): detailed notes for the LATEST 3 versions
 only; everything older is ONE line. Full history lives in git, not here.
+
+vGBT-0.9.40 [LIVE PRICE LAYER — TV poll decoupled from the 5-min GBT cadence]
+  • USER 08-06: "the TV data feed should be independent of the background
+    gradient… candles should continue to print like they do in TradingView."
+    Mechanism proven first in Colab (live_candle_check.py, user-run: median
+    fetch ~0.2s, forming candle grows between polls, new candle prints at the
+    5-min boundary, frozen-background tripwire never fired).
+  • Slim live panel at the top of BOTH tabs via st.fragment(run_every=N):
+    ONLY the panel reruns on its timer — snapshots, dispatch cache, recorder,
+    playback all untouched. Terrain = live CANDLES (0.9.39 white/orange) over
+    a frozen signed-γ positioning gradient (cached per snapshot ts, exactly
+    one in memory). Book = live spot LINE over frozen book bars — no candles
+    across positioning [USER]. Locked ladder (BAL/UP/DN) drawn when present.
+  • Sidebar cadence 15s/30s/60s/off (default 15s per measured latency);
+    polling steps, not a tick stream — stated in the caption. Inert during
+    playback; never recorded into frames (5-min snapshots remain the record).
+    Graceful fallbacks: no st.fragment → per-rerun static; bars offline →
+    caption, panel absent, tabs unharmed.
 
 vGBT-0.9.39 [CANDLES: BRIGHT WHITE UP / BRIGHT ORANGE DOWN — app-wide]
   • USER order 08-05 ("candles dont look right in contrast — up bright white,
@@ -2452,6 +2470,111 @@ def render_strip(strip):
     st.markdown("<div style='font-family:monospace;font-weight:bold;font-size:0.86rem;line-height:1.9'>"
                 +_l1+f"<br><span style='color:{_pc}'>▶ {_p}</span></div>",unsafe_allow_html=True)
 
+# ═══════════ vGBT-0.9.40 LIVE PRICE LAYER — TV poll independent of the 5-min GBT cadence ═══════════
+def _live_bg_density(ch, sp, exp):
+    """Pure helper (harness-testable): signed gamma density by 5-pt strike from a
+    cached snapshot chain — the frozen backdrop the live candles print over.
+    eff-sign rule identical to signed_book_rows/compute_strip. Returns
+    (strikes ndarray, density ndarray in [-1,1]) or (None,None)."""
+    try:
+        cc=ch[ch["expiry"]==exp] if "expiry" in getattr(ch,"columns",[]) else ch
+        if cc is None or not len(cc): return None,None
+        _uw=globals().get("GBT_UNSEEDED_W",0.2)
+        nv=np.where(cc["type"].values=="call",1.0,-1.0)
+        eff=(cc["dsign"].where(cc["dsign"].notna(),pd.Series(nv*_uw,index=cc.index))
+             if "dsign" in cc.columns else pd.Series(nv*_uw,index=cc.index))
+        g=(eff*cc["gamma"].fillna(0)*cc["oi"].fillna(0)).groupby((cc["strike"]/5).round()*5).sum()
+        if not len(g): return None,None
+        ks=np.arange(float(g.index.min()),float(g.index.max())+5,5.0)
+        v=np.array([float(g.get(k,0.0)) for k in ks])
+        v=np.convolve(v,np.ones(3)/3.0,mode="same")            # light smooth
+        mx=np.abs(v).max()
+        return (ks,(v/mx if mx>0 else v))
+    except Exception:
+        return None,None
+
+def live_price_panel(mode):
+    """0.9.40 [USER 08-06 'candles should continue to print like TradingView']:
+    slim price panel polled on its OWN fragment timer. Fresh TV bars every tick;
+    EVERYTHING else frozen from the latest snapshot (backdrop density cached per
+    snapshot ts — the Colab live_candle_check mechanism, verified 08-06: median
+    fetch ~0.2s, forming candle grows, background tripwire never fired).
+    mode='candles' (Terrain) · mode='line' (Book — USER: no candles across the
+    positioning bars). Live-only: inert during playback; never recorded into
+    the frames cache (the 5-min snapshots remain the record of the day)."""
+    if PLAYBACK or not st.session_state.get("snaps"): return
+    snap=st.session_state.snaps[-1]
+    try: bars,_bmsg=prep_bars()                                  # never cached, by design
+    except Exception as _be: bars,_bmsg=None,f"{type(_be).__name__}: {_be}"
+    if bars is None or not len(bars):
+        st.caption(f"📡 live layer: bars unavailable — {_bmsg}"); return
+    exp=(snap.get("exps") or [None])[0]
+    _ck="_livebg_"+str(snap["ts"])
+    if _ck not in st.session_state:
+        st.session_state[_ck]=_live_bg_density(snap.get("chain"),float(snap["spot"]),exp)
+        for _k in [k for k in st.session_state.keys() if str(k).startswith("_livebg_") and k!=_ck]:
+            del st.session_state[_k]                             # keep exactly one cached backdrop
+    _ks,_dv=st.session_state[_ck]
+    p_lo=float(bars["l"].min()); p_hi=float(bars["h"].max())
+    _lk=st.session_state.get("card_lock"); _lvl=[]
+    if isinstance(_lk,dict):
+        _L=_lk.get("levels") or {}
+        if _L.get("bal"): _lvl.append((float(_L["bal"]["peak"]),"BAL","#e8ecf2"))
+        for _t in (_L.get("ups") or [])[:2]: _lvl.append((float(_t["peak"]),"UP","#3fb950"))
+        for _t in (_L.get("dns") or [])[:2]: _lvl.append((float(_t["peak"]),"DN","#ef5350"))
+        for _p,_,_ in _lvl: p_lo=min(p_lo,_p); p_hi=max(p_hi,_p)
+    pad=max((p_hi-p_lo)*0.06,2.0); p_lo-=pad; p_hi+=pad
+    fig,ax=plt.subplots(figsize=(12,2.6),dpi=100)
+    fig.patch.set_facecolor(DARK); ax.set_facecolor("#101826")
+    x0=mdates.date2num(bars["t"].iloc[0]-pd.Timedelta(minutes=3))
+    x1=mdates.date2num(bars["t"].iloc[-1]+pd.Timedelta(minutes=6))
+    if mode=="candles" and _ks is not None:                      # frozen positioning gradient
+        _m=(_ks>=p_lo)&(_ks<=p_hi)
+        if _m.sum()>1:
+            _img=np.clip(_dv[_m],-1,1).reshape(-1,1)
+            ax.imshow(_img,extent=[x0,x1,float(_ks[_m][0]),float(_ks[_m][-1])],origin="lower",
+                      aspect="auto",cmap="RdYlGn",vmin=-1,vmax=1,alpha=0.22,zorder=1)
+    if mode=="line" and _ks is not None:                         # frozen book bars behind the line
+        _m=(_ks>=p_lo)&(_ks<=p_hi)
+        for _k,_v in zip(_ks[_m],_dv[_m]):
+            if _v: ax.barh(_k,_v,height=3.4,left=x0,color=("#3fb950" if _v>0 else "#ef5350"),
+                           alpha=0.30,zorder=1)
+        ax.set_xlim(x0,x1)
+    for _p,_n,_c in _lvl:
+        ax.axhline(_p,color=_c,lw=0.9,ls=(0,(4,2)),alpha=0.8,zorder=3)
+        ax.text(x1,_p,f" {_n} {_p:,.0f}",color=_c,fontsize=7.5,va="center")
+    if mode=="candles":
+        draw_candles(ax,bars,x0,x1,p_lo,p_hi)
+    else:
+        _bn=[mdates.date2num(t) for t in bars["t"]]
+        ln,=ax.plot(_bn,bars["c"],color="#ffffff",lw=1.5,zorder=6)
+        ln.set_path_effects([pe.withStroke(linewidth=3.0,foreground="#000000")])
+    _lc=float(bars["c"].iloc[-1]); _lt=bars["t"].iloc[-1]
+    ax.scatter([mdates.date2num(_lt)],[_lc],s=22,color="#2fd0d0",zorder=7)
+    ax.text(mdates.date2num(_lt),_lc,f"  {_lc:,.2f}",color="#2fd0d0",fontsize=8.5,va="center",zorder=7)
+    ax.set_xlim(x0,x1); ax.set_ylim(p_lo,p_hi)
+    ax.tick_params(colors="#8a93a6",labelsize=7)
+    for _sp in ax.spines.values(): _sp.set_color("#30363d")
+    ax.xaxis_date(); fig.tight_layout(pad=0.4)
+    st.pyplot(fig,use_container_width=True); plt.close(fig)
+    st.caption(f"📡 live {'candles' if mode=='candles' else 'spot line'} — TV poll every "
+               f"{int(st.session_state.get('_live_sec') or 0)}s (steps, not tick-stream) · last bar "
+               f"{_lt:%H:%M} EST · gradient/book below stay on the 5-min snapshot clock")
+
+def _live_fragment(mode):
+    """Fragment wrapper: reruns ONLY the panel on its timer. Falls back to a
+    per-rerun static render when st.fragment is unavailable (old streamlit)."""
+    _sec=st.session_state.get("_live_sec")
+    if not _sec: return
+    try:
+        if hasattr(st,"fragment"):
+            @st.fragment(run_every=_sec)
+            def _f(): live_price_panel(mode)
+            _f(); return
+    except Exception as _fx:
+        st.caption(f"📡 live layer degraded to per-rerun refresh ({type(_fx).__name__})")
+    live_price_panel(mode)
+
 def book_figure(book,spot,straddle,lo,hi,side="Total",prev=None,openb=None,signed=None,
                 signed_prev=None,signed_open=None,sticks=True,clean_map=None,preview_levels=None,intraday_levels=None,
                 show_delta=False,show_dp=False):
@@ -2679,7 +2802,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.39 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.40 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -2730,6 +2853,11 @@ b_strip=st.sidebar.checkbox("🎛 THE STRIP [EXPERIMENTAL]",value=True,key="b_st
          "CHARM · straddle gate · VIX · window ▶ PLAY. Computed at snapshot time and stored in "
          "every record (no repaint — scrubbing replays the day); transitions in an append-only "
          "session log. Thresholds are drafts pending tape grade [08-05].")
+_live_pick=st.sidebar.selectbox("📡 Live price layer (TV poll)",["15s","30s","60s","off"],index=0,
+    help="Candles (Terrain) / spot line (Book) polled from TradingView on their own timer — "
+         "independent of the 5-min GBT snapshot cadence. Verified in Colab 08-06 "
+         "(live_candle_check: median fetch ~0.2s). Off = current behavior.")
+st.session_state["_live_sec"]={"15s":15,"30s":30,"60s":60,"off":None}[_live_pick]
 book_on=st.sidebar.checkbox("Book panel (by strike)",value=True,
     help="GBT dealer book per 5-pt strike — VS3D 'Positions by Strike' analogue. NAIVE calls+/puts− (measured signing arrives with the flow ledger).")
 with st.sidebar.expander("📊 Book controls", expanded=False):
@@ -3355,6 +3483,7 @@ def _book_spot_overlay(fig, bars, lo, hi, chain=None, spot=None, exp=None, nowv=
 
 with tab_book:
     if b_strip: render_strip(latest.get("strip"))
+    _live_fragment("line")     # 0.9.40: live spot LINE — no candles across the positioning bars [USER 08-06]
     emit_caption("book","GBT dealer book by 5-pt strike — VS3D 'Positions by Strike' analogue. "
         "MM-inferred mode: $M per 1%, signs from aggressor flow (yesterday's flow on today's expiry seeds "
         "pre-open; live flow updates top strikes), opacity = sign confidence. Naive mode: e-minis per $1, "
@@ -3474,6 +3603,7 @@ with tab_book:
 
 with tab_terr:
     if b_strip: render_strip(latest.get("strip"))
+    _live_fragment("candles")  # 0.9.40: live candles over the frozen positioning gradient [USER 08-06]
     emit_caption("terrain","VS3D Gradient Chart, guide-spec. Field = chosen greek across price×time for the "
         "WHOLE fetched book (each expiry decays on its own clock; 0DTE dominates via asymptotic gamma). "
         "Manual symmetric range (a loose day looks loose) · near-linear intensity · field behind price. "
