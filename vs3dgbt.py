@@ -1,8 +1,38 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.41
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.43
 
 CHANGELOG POLICY (per Faisal, Jul-24): detailed notes for the LATEST 3 versions
 only; everything older is ONE line. Full history lives in git, not here.
+
+vGBT-0.9.43 [DAN-STYLE SLIDE CARD ON THE BOOK TAB]
+  • USER 08-08: mimic the VSMM daily-slide KEY LEVELS + TAKEAWAYS card above
+    the Book structure for one-glance slide comparison. White slide-style box:
+    centered title, BALANCE (+·standing/·today-only + 2nd long), green UPSIDE
+    / red DOWNSIDE "X >> Y" ladders with "Cross X = balance at Y, or extend
+    and test Z" lines, italic "Reject a test" footer.
+  • ONE METHOD, RE-CALLED: the box is the same key_levels_lines the Read card
+    uses — lock-aware (frozen ladder, ·TESTED/·CROSSED), method_ref anchor,
+    opening straddle — truncated at the footer (fly/gates stay on Read). Zero
+    selection logic in the card; presentation only. Sidebar toggle
+    b_slidecard, default ON, mounted under the strip, above the book chart.
+
+vGBT-0.9.42 [SLIDE-RECONCILED LADDER + STANDING ANNOTATION — 26-day review 08-08]
+  • Rung 1 = NEAREST non-thin short cluster per side (reuses the existing 20%
+    thin line — no new threshold); the biggest structure stays the TERMINAL
+    rung via the unchanged T2 rule. Matches Dan's published "X >> Y" ladders
+    (07-30 7410>>7445 · 07-13 7585>>7600 · 07-27 7485>>7500 · 08-07 7730>>
+    7760; thin-skip per 07-30 naming 7300 past ~19% bars). Balance corridor
+    now spans the FIRST tests, per slides (07-10: bigger longs outside the
+    corridor ignored). Balance selection itself unchanged (argmax-in-corridor,
+    confirmed 20/26).
+  • Standing annotation, DISPLAY-ONLY [USER 08-08]: BALANCE line and a new
+    "2nd long" line tagged ·standing / ·today-only from the yesterday-seed the
+    sign engine already holds (gbt_seed_<exp>, zero new API calls). Computed
+    at construction and frozen into the lock — tags never repaint. Never
+    selects; a selection tiebreak needs a user-sanctioned threshold after
+    tape grading.
+  • NOT built: wall standoff (5-in-front on dominant bars) — 4-slide
+    provenance, dominance ratio would be invented; held for tape grade.
 
 vGBT-0.9.41 [LIVE CANDLES IN THE ORIGINAL CHARTS — supersedes 0.9.40 same-day]
   • 0.9.40 misread the order and bolted a separate slim panel above the tabs.
@@ -1148,10 +1178,11 @@ def _strength(share, conf):
 def dan_levels_from_rows(rows,ref,S0,WIN_R=2.5,EXT_X=2.0):
     """vGBT-0.9.33: THE METHOD as a pure selector over any signed-rows frame —
     used by the ORANGE intraday-Δ layer (rows = current book MINUS open book).
-    Identical rules to the card (0.9.34 ordered ladder): 2.5×S0 window,
-    T1 = biggest short per side, T2 = biggest short strictly beyond T1
-    (in-window first, ext-fill beyond; ≥2× beyond-window mass displaces),
-    thin tag <20% side max, BALANCE = biggest long between UP1 and DN1."""
+    Identical rules to the card (0.9.42 slide-reconciled ladder): 2.5×S0
+    window, T1 = NEAREST non-thin short per side (≥20% side max — the thin
+    line), T2 = biggest short strictly beyond T1 (in-window first, ext-fill
+    beyond; ≥2× beyond-window mass displaces), thin tag <20% side max,
+    BALANCE = biggest long between UP1 and DN1."""
     try:
         cl=signed_clusters(rows,ref-2*WIN_R*S0,ref+2*WIN_R*S0,min_share=0.01)
     except Exception:
@@ -1163,7 +1194,9 @@ def dan_levels_from_rows(rows,ref,S0,WIN_R=2.5,EXT_X=2.0):
         inw=[c for c in cand if abs(c["peak"]-ref)<=W]
         mx=max((c["mass"] for c in inw),default=0.0)
         out=[]
-        if inw: t1=dict(max(inw,key=lambda c:c["mass"]))
+        if inw:                                        # 0.9.42: nearest non-thin (card-identical)
+            big=[c for c in inw if c["mass"]>=0.20*mx]
+            t1=dict(min(big,key=lambda c:abs(c["peak"]-ref)))
         elif cand: t1=dict(max(cand,key=lambda c:c["mass"])); t1["ext"]=True
         else: return out
         out.append(t1)
@@ -1183,6 +1216,30 @@ def dan_levels_from_rows(rows,ref,S0,WIN_R=2.5,EXT_X=2.0):
     corr=[c for c in lg if (u1 is None or c["peak"]<u1) and (d1 is None or c["peak"]>d1)]
     bal=max(corr,key=lambda c:c["mass"]) if corr else None
     return dict(bal=bal,ups=ups,dns=dns)
+
+def seed_standing(exp, strike, ss=None):
+    """vGBT-0.9.42: was this strike's LONG structure already standing YESTERDAY?
+    Reuses the seed the sign engine ALREADY holds (gbt_seed_<exp>: per-leg
+    (net,tot) from the prior session; dsign = clip(−net/tot) — same math as the
+    engine, no new API calls [USER 08-08 "we are already pulling yesterday's
+    signed data"]). Returns 'standing' (a traded leg shows dealer-long
+    yesterday), 'today-only' (seed present, no dealer-long yesterday), or None
+    (no seed — honest unknown). ANNOTATION ONLY: never selects a level, no
+    thresholds. Provenance: GUIDE blue-dot ("a more stable position") +
+    TRANSCRIPT ("stable foundational position… intraday will be noisy") +
+    SLIDES 26-day review 08-08 (6/26 balance tiebreaks follow standing)."""
+    try:
+        if ss is None: ss=st.session_state
+        seed=ss.get(f"gbt_seed_{exp}")
+        if not seed: return None
+        d=seed.get(float(strike))
+        if not d: return None
+        for typ in ("call","put"):
+            n,t=d.get(typ,(0.0,0.0))
+            if t>0 and (-n/t)>0: return "standing"
+        return "today-only"
+    except Exception:
+        return None
 
 def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WARN, ref_spot=None, open_strad=None,
                      lock=None, status_prices=None, header_note=None, levels_out=None):
@@ -1213,10 +1270,11 @@ def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WAR
         #    Dan anchors to a profile, never per-frame). S0 = opening straddle
         #    (pre-market: current straddle stand-in, labeled). [USER]
         # 2) ONE window: ref ± 2.5×S0. [USER "2 or 2.5x straddle"]
-        # 3) UP1 = biggest short cluster above the open in the window; DN1 = same
-        #    below. Cluster level = strike of its LARGEST bar (0.9.38 — GUIDE
-        #    §4.4 "peak"/"local maximum" + Jul-21 "largest in the position";
-        #    centroid retired, no provenance).
+        # 3) UP1 = NEAREST non-thin short cluster above the open in the window;
+        #    DN1 = same below (0.9.42 — SLIDES 26-day review: first test engages
+        #    at the near side; "X >> Y" = near structure >> biggest structure).
+        #    Cluster level = strike of its LARGEST bar (0.9.38 — GUIDE §4.4
+        #    "peak"/"local maximum" + Jul-21; centroid retired, no provenance).
         # 4) UP2 = biggest short cluster STRICTLY ABOVE UP1 — in-window first, else
         #    beyond-window marked ext; DN2 mirrored below DN1. Ladder is ordered by
         #    construction: DN2 < DN1 < BALANCE < UP1 < UP2. A rung is "none" only
@@ -1265,7 +1323,16 @@ def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WAR
             _mx=max((c["mass"] for c in _inw),default=0.0)
             out=[]
             if _inw:
-                t1=dict(max(_inw,key=lambda c:c["mass"]))
+                # 0.9.42 [SLIDES 26-day review 08-08]: rung 1 = the NEAREST short
+                # structure that is not thin (≥20% of in-window side max — the
+                # EXISTING thin line, no new threshold). Dan's first test engages
+                # at the near side (07-30 7410 vs its 7445 peak · 07-13 7585 vs
+                # 7600 · 07-27 7485>>7500 · 08-07 7730>>7760); thin bars are
+                # skipped exactly as 07-30 skips ~19% bars to name 7300. The
+                # biggest structure remains the TERMINAL rung via the unchanged
+                # T2 rule ("or extend & test" = GUIDE §4.4 peak).
+                _big=[c for c in _inw if c["mass"]>=0.20*_mx]
+                t1=dict(min(_big,key=lambda c:abs(c["peak"]-ref)))
             elif _cand:                                  # no in-window short at all → fill from beyond
                 t1=dict(max(_cand,key=lambda c:c["mass"])); t1["ext"]=True
             else:
@@ -1294,7 +1361,15 @@ def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WAR
         _d1=dns[0]["peak"] if dns else None
         _corr=[c for c in longs_ext if (_u1 is None or c["peak"]<_u1) and (_d1 is None or c["peak"]>_d1)]
         _nobal=None
-        if _corr: bal=max(_corr,key=lambda c:c["mass"])
+        if _corr:
+            bal=max(_corr,key=lambda c:c["mass"])
+            # 0.9.42 standing annotation (display-only): tag bal + runner-up from
+            # the yesterday-seed at CONSTRUCTION time so the tag freezes into the
+            # lock with everything else — a printed tag can never repaint.
+            _exp0=(latest.get("exps") or [None])[0]
+            bal=dict(bal); bal["stand"]=seed_standing(_exp0,bal["peak"])
+            _r2=sorted((c for c in _corr if c["peak"]!=bal["peak"]),key=lambda c:-c["mass"])
+            bal["r2"]=(dict(_r2[0],stand=seed_standing(_exp0,_r2[0]["peak"])) if _r2 else None)
         else:
             bal=None
             _nobal=longs_ext[0] if longs_ext else None
@@ -1334,7 +1409,12 @@ def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WAR
             _off=f" — above UP TEST {_u1t:,.0f}: drift target while it holds"
         elif _d1t is not None and bal["peak"]<=_d1t:
             _off=f" — below DN TEST {_d1t:,.0f}: drift target while it holds"
-        L.append((f"BALANCE: {bal['peak']:,.0f} ({_strength(bal['share'],bal['conf'])}){_pk}{_off}",WHT,13,True))
+        _st={"standing":" ·standing","today-only":" ·today-only"}.get(bal.get("stand"),"")
+        L.append((f"BALANCE: {bal['peak']:,.0f} ({_strength(bal['share'],bal['conf'])}){_pk}{_off}{_st}",WHT,13,True))
+        _r2=bal.get("r2")
+        if _r2:   # 0.9.42: the judgment-day view — what Dan sees when two longs compete
+            _s2={"standing":" ·standing","today-only":" ·today-only"}.get(_r2.get("stand"),"")
+            L.append((f"  2nd long: {_r2['peak']:,.0f}{_s2}",DIM,10.5,False))
     for b in bands:
         if s0-half<=b["body"]<=s0+half:
             _alt="long mass (their balance)" if b["sign_body"]<0 else "short mass (their test)"
@@ -2714,7 +2794,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.41 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.43 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -2770,6 +2850,10 @@ _live_pick=st.sidebar.selectbox("📡 Live price layer (TV poll)",["15s","30s","
          "own timer — the underlying positioning stays on the 5-min GBT snapshot clock. Verified in "
          "Colab 08-06 (live_candle_check: median fetch ~0.2s). Off = pre-0.9.41 behavior.")
 st.session_state["_live_sec"]={"15s":15,"30s":30,"60s":60,"off":None}[_live_pick]
+b_slidecard=st.sidebar.checkbox("🗂 Dan-style KEY LEVELS card (Book)",value=True,key="b_slidecard",
+    help="Mimics the VSMM daily-slide card ABOVE the Book structure for one-glance comparison against "
+         "Dan's slides. SAME construction as the Read card — one method, re-called: locked ladder, "
+         "·TESTED/·CROSSED status, frozen anchor. Slide block only (fly/gates stay on the Read tab).")
 book_on=st.sidebar.checkbox("Book panel (by strike)",value=True,
     help="GBT dealer book per 5-pt strike — VS3D 'Positions by Strike' analogue. NAIVE calls+/puts− (measured signing arrives with the flow ledger).")
 with st.sidebar.expander("📊 Book controls", expanded=False):
@@ -3430,6 +3514,55 @@ def _book_spot_overlay(fig, bars, lo, hi, chain=None, spot=None, exp=None, nowv=
 
 with tab_book:
     if b_strip: render_strip(latest.get("strip"))
+    def _book_slide_card():
+        """vGBT-0.9.43 [USER 08-08 "mimic his slide card in the book tab, just
+        above the structure"]: Dan's daily-slide KEY LEVELS card rendered as a
+        white slide-style box for one-glance comparison against the VSMM
+        slides. ONE METHOD, RE-CALLED — this is the same key_levels_lines the
+        Read card uses (lock-aware: frozen ladder + ·TESTED/·CROSSED after
+        09:35; method_ref anchor; opening straddle), truncated at the 'Reject
+        a test' footer so the fly/gate section stays on the Read tab. No
+        selection logic exists here — presentation only."""
+        try:
+            _lk=st.session_state.get("card_lock")
+            _hdr=None; _stp=None
+            if isinstance(_lk,dict):
+                _hdr=f"🔒 locked {_lk.get('locked_at','?')} ET — frozen for the session"
+                try:
+                    _lts=pd.Timestamp(_lk.get("ts"))
+                    _bb=bars[pd.to_datetime(bars["ts"]).dt.tz_localize(None)>=_lts.tz_localize(None) if hasattr(_lts,"tz_localize") else bars["ts"]>=_lts]
+                    _stp=[float(x) for x in _bb["closePrice"].dropna().values] or None
+                except Exception: _stp=None
+            elif now_est().time()<dt.time(9,35):
+                _hdr="PREVIEW — pre-open book (yesterday's OI/signs) · locks at first ≥09:35 ET snapshot"
+            try: _pstr=straddle_for(latest["chain"],latest["spot"],exps[0],live_ok=(not PLAYBACK))
+            except Exception: _pstr=None
+            _os0=((gbt_open_straddle(exps[0]) or (None,))[0]
+                  if ((not PLAYBACK) and now_est().time()>=dt.time(9,30)) else None)
+            _L=key_levels_lines(latest,latest["spot"],_pstr,
+                                {"decay":"","fish":"","pat":"","clock":""},
+                                "k","g","r","c","d","y",
+                                ref_spot=method_ref(latest["spot"],live=(not PLAYBACK))[0],
+                                open_strad=_os0,
+                                lock=(_lk or {}).get("levels") if isinstance(_lk,dict) else None,
+                                status_prices=_stp,header_note=_hdr)
+            _cut=next((i for i,t in enumerate(_L) if str(t[0]).startswith("Reject a test")),len(_L)-1)
+            _L=_L[:_cut+1]
+            import html as _h43
+            _css={"k":"#111111","g":"#1a8f3c","r":"#c62828","d":"#666666","y":"#8a6d00","c":"#0a7c8c"}
+            _rows=[]
+            for _i,(_txt,_col,_sz,_bold) in enumerate(_L):
+                _stl=(f"color:{_css.get(_col,'#111111')};font-weight:{'700' if _bold else '400'};"
+                      f"font-size:{max(10.0,float(_sz))}px;margin:1px 0;line-height:1.45;")
+                if _i==0: _stl+="text-align:center;font-size:15px;letter-spacing:.2px;"
+                if str(_txt).startswith("Reject a test"): _stl+="font-style:italic;"
+                _rows.append(f"<div style='{_stl}'>{_h43.escape(str(_txt))}</div>")
+            st.markdown("<div style='background:#ffffff;border-radius:4px;padding:10px 14px;"
+                        "max-width:600px;box-shadow:0 0 8px #00000088;margin-bottom:6px'>"
+                        +"".join(_rows)+"</div>",unsafe_allow_html=True)
+        except Exception as _ce:
+            st.caption(f"slide card unavailable: {type(_ce).__name__}: {_ce}")
+    if b_slidecard: _book_slide_card()
     emit_caption("book","GBT dealer book by 5-pt strike — VS3D 'Positions by Strike' analogue. "
         "MM-inferred mode: $M per 1%, signs from aggressor flow (yesterday's flow on today's expiry seeds "
         "pre-open; live flow updates top strikes), opacity = sign confidence. Naive mode: e-minis per $1, "
