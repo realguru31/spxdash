@@ -1,8 +1,34 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.48
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.51
 
 CHANGELOG POLICY (per Faisal, Jul-24): detailed notes for the LATEST 3 versions
 only; everything older is ONE line. Full history lives in git, not here.
+
+vGBT-0.9.51 [GEX³ PANEL HEIGHT — USER 08-12 "make the whole pic longer"]
+  • Panel-height slider 3–8 in (default 5.5, was ~3.5): the whole figure grows
+    vertically so curve nuance is readable without zooming.
+
+vGBT-0.9.50 [GEX³ Y-ZOOM — USER 08-12 "1% is still too wide"]
+  • Display-only y-zoom slider 0.2×–1.0× on the GEX³ tab (Book-tab zoom
+    pattern): view tightens to Price-window × zoom; the fetch window and the
+    model's breadth (flip/walls/HHI computed on the full chain) are untouched.
+
+vGBT-0.9.49 [GEX³ DENSITY WIDTH — USER 08-12 "too narrow"]
+  • Density width slider 0.25–0.60 share-of-panel, default 0.45 (was fixed
+    ~0.31); 0.60 cap keeps the left third candle-clean (pixel gate binding).
+  • NOTE: 0.9.46–0.9.48 changelog entries below were written retroactively —
+    their builds bumped versions but the changelog prepend was a silent no-op
+    (unasserted replace on a wrong anchor). Process bug, owned.
+
+vGBT-0.9.48 [GEX³ LABEL DE-COLLISION — USER SCREENSHOT 08-12]
+  • Right-edge level labels stagger to a minimum separation (lines stay at the
+    true level); gap tags shortened to ·T/·N/·W; right margin so nothing clips.
+
+vGBT-0.9.47 — GEX³ skill-grade render: buy/sell/TOTAL curves, peak markers,
+  top-5 HHI ◆+%, pos/neg γ fields, FLOOR/CEIL + UHW/DHW lines, per-panel
+  scorecard; panel 3 dotted base-lens overlay.
+vGBT-0.9.46 — GEX³ density right-anchored (pixel-gated) + empty-bars RTH axis
+  fallback with honest caption.
 
 vGBT-0.9.45 [GEX³ TAB + CROSS-BALANCE 1×S0 RADIUS]
   • NEW TAB 🧮 GEX³ [EXPERIMENTAL, USER 08-12]: the NIFTY GEX model (skill
@@ -2728,7 +2754,7 @@ def gex3_lens_rows(ch, sp, exp, lens, doi=None, sign=None):
     except Exception:
         return None
 
-def gex3_draw_profile(axp, rows, ylo, yhi, mdl=None, ref_rows=None):
+def gex3_draw_profile(axp, rows, ylo, yhi, mdl=None, ref_rows=None, width_frac=0.45):
     """vGBT-0.9.46: density anchored at the RIGHT edge growing LEFT (Colab
     tri-panel orientation; pixel-gated). vGBT-0.9.47 [USER 08-12 "look at the
     shit your code is generating" vs the skill's reference chart]: full
@@ -2745,7 +2771,10 @@ def gex3_draw_profile(axp, rows, ylo, yhi, mdl=None, ref_rows=None):
     T=(rows["total"][m].values if "total" in rows else P+N)
     mx=float(max(P.max(),N.max(),T.max() if len(T) else 0.0,1e-9))
     axp.set_ylim(ylo,yhi)
-    axp.set_xlim(mx*3.2,0.0)                     # 0 at the RIGHT edge → bars grow leftward
+    # 0.9.49 [USER 08-12 "too narrow — need longer render"]: width_frac = share
+    # of the panel the density may occupy (0.45 default; sidebar slider, capped
+    # 0.60 so the left third stays candle-clean per the pixel gate).
+    axp.set_xlim(mx/max(min(width_frac,0.60),0.20),0.0)   # 0 at the RIGHT edge → bars grow leftward
     axp.fill_betweenx(K,0,P,color="#3fb950",alpha=.22,zorder=2)
     axp.fill_betweenx(K,0,N,color="#ef5350",alpha=.22,zorder=2)
     axp.plot(P,K,color="#3fb950",lw=1.5,zorder=3)              # buy γ
@@ -3113,7 +3142,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.48 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.51 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -4646,6 +4675,14 @@ with tab_gex3:
         "never feeds THE METHOD. Panel 1 CONVENTION assumes the US dealer-sign convention (methodology §2 — "
         "assumed, not measured); panel 2 FLOW-SIGNED is our aggressor-inference engine; panel 3 is Δ-OI "
         "overnight (settled, fetched once post-open, frozen — never polled live) or live volume, your pick.")
+    _g3h=st.slider("panel height (inches)",3.0,8.0,5.5,0.5,key="g3h",
+        help='0.9.51 [USER 08-12 "make it longer"]: vertical size per panel; the figure is 3× this.')
+    _g3z=st.slider("y-zoom × (display only)",0.2,1.0,1.0,0.1,key="g3z",
+        help="0.9.50: tightens the visible strike range without shrinking the data window. "
+             "At Price-window 1% and zoom 0.3× you see ±0.3%; the model still computes on the full fetch.")
+    _g3wd=st.slider("density width (share of panel)",0.25,0.60,0.45,0.05,key="g3wd",
+        help="0.9.49: horizontal room for the γ-density curves. Wider = more nuance, less candle room. "
+             "Capped at 0.60 so candles keep the left third.")
     _g3w=st.radio("Panel-3 weight",["Δ-OI overnight","live volume"],horizontal=True,key="g3w")
     _g3s=st.radio("Panel-3 sign",["signed (dsign)","naive"],horizontal=True,key="g3s")
     def _render_gex3():
@@ -4660,8 +4697,11 @@ with tab_gex3:
                 (f"{'Δ-OI OVERNIGHT (settled, frozen)' if _l3=='doi' else 'FRESH PAPER (live volume)'}"
                  f" · {'signed' if _g3s.startswith('signed') else 'naive'} sign",
                  ("signed" if _g3s.startswith("signed") else "naive"),_l3)]
-        ylo,yhi=sp*(1-window_pct),sp*(1+window_pct)
-        fig,axs=plt.subplots(3,1,figsize=(13,12),dpi=90,sharex=True,sharey=True)
+        # 0.9.50 [USER 08-12 "1% is still too wide"]: display-only y-zoom, same
+        # pattern as the Book tab's zoom — the fetch window (and the model's
+        # breadth) stays at the Price-window slider; only the view tightens.
+        ylo,yhi=sp*(1-window_pct*_g3z),sp*(1+window_pct*_g3z)
+        fig,axs=plt.subplots(3,1,figsize=(13,3*_g3h),dpi=90,sharex=True,sharey=True)
         fig.patch.set_facecolor(DARK)
         rd=[]
         if bars is not None and len(bars):
@@ -4688,7 +4728,7 @@ with tab_gex3:
             if bars is not None and len(bars): draw_candles(ax,bars,x0,x1,ylo,yhi)
             if rows is not None:
                 _ref=(gex3_lens_rows(ch,sp,exp,"signed") if wov else None)   # panel 3: dotted base-lens comparison
-                gex3_draw_profile(ax.twiny(),rows,ylo,yhi,mdl=mdl,ref_rows=_ref)   # density RIGHT, candles across
+                gex3_draw_profile(ax.twiny(),rows,ylo,yhi,mdl=mdl,ref_rows=_ref,width_frac=_g3wd)   # density RIGHT, candles across
             if not mdl.get("err"):
                 if mdl["flip"] is not None:
                     ax.axhline(mdl["flip"],color="#c792ea",lw=1.2,ls="--",zorder=4)
