@@ -1,5 +1,5 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.47
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.48
 
 CHANGELOG POLICY (per Faisal, Jul-24): detailed notes for the LATEST 3 versions
 only; everything older is ONE line. Full history lives in git, not here.
@@ -3113,7 +3113,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.47 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.48 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -4693,14 +4693,28 @@ with tab_gex3:
                 if mdl["flip"] is not None:
                     ax.axhline(mdl["flip"],color="#c792ea",lw=1.2,ls="--",zorder=4)
                     ax.text(1.001,mdl["flip"],f" flip {mdl['flip']:,.0f}",transform=ax.get_yaxis_transform(),color="#c792ea",fontsize=8,va="center")
-                _gaps={"uhw":f" [{mdl['uhl']}]" if mdl.get("uhl") else "","dhw":f" [{mdl['dhl']}]" if mdl.get("dhl") else ""}
+                # 0.9.48 [USER SCREENSHOT 08-12]: labels collided into mush at 5-pt
+                # spacing (CEIL/PIN/FLOOR jumble) and [TIGHT] ran off-canvas.
+                # Lines draw at true level; labels stagger to ≥ the min gap the
+                # font needs, and gap tags shrink to ·T/·N/·W.
+                _sh48={"TIGHT":"·T","NORMAL":"·N","WIDE":"·W"}
+                _gaps={"uhw":_sh48.get(mdl.get("uhl") or "",""),"dhw":_sh48.get(mdl.get("dhl") or "","")}
+                _lbls=[]
                 for lv,cl,nm,ls_,ex in ((mdl["cw"],"#3fb950","CW","-",""),(mdl["pw"],"#ef5350","PW","-",""),
                                         (mdl["pin"],"#f0ad4e","PIN","-",""),
                                         (mdl.get("ceiling"),"#ff8844","CEIL","--",""),(mdl.get("floor"),"#33cc99","FLOOR","--",""),
                                         (mdl.get("uhw"),"#8b5cf6","UHW","-.",_gaps["uhw"]),(mdl.get("dhw"),"#1a7f37","DHW","-.",_gaps["dhw"])):
                     if lv is not None:
                         ax.axhline(lv,color=cl,lw=1.0 if ls_!="-" else 1.1,ls=ls_,alpha=.9,zorder=4)
-                        ax.text(1.001,lv,f" {nm} {lv:,.0f}{ex}",transform=ax.get_yaxis_transform(),color=cl,fontsize=7.5,va="center")
+                        _lbls.append([float(lv),cl,f"{nm} {lv:,.0f}{ex}"])
+                _lbls.sort(key=lambda t:t[0])
+                _min=(yhi-ylo)*0.024                             # ≈ one 7.5-pt line height in data units
+                for _i in range(1,len(_lbls)):                   # push up from below
+                    if _lbls[_i][0]-_lbls[_i-1][0]<_min: _lbls[_i][0]=_lbls[_i-1][0]+_min
+                for _i in range(len(_lbls)-2,-1,-1):             # relax back down within bounds
+                    if _lbls[_i+1][0]-_lbls[_i][0]<_min: _lbls[_i][0]=_lbls[_i+1][0]-_min
+                for _y,_c,_t in _lbls:
+                    ax.text(1.001,_y,f" {_t}",transform=ax.get_yaxis_transform(),color=_c,fontsize=7.5,va="center",clip_on=False)
                 # 0.9.47 per-panel scorecard — the skill's info-box, compact
                 _hh=mdl["hhi"]
                 _sc=(f"pin {mdl['pin'] if mdl['pin'] is not None else '—'} raw {mdl['pin_raw']:.0f}→adj {mdl['pin_adj']:.0f} ({mdl['pin_adj_lbl']})\n"
@@ -4719,7 +4733,7 @@ with tab_gex3:
             ax.tick_params(colors="#8a93a6",labelsize=7.5)
             for _sp2 in ax.spines.values(): _sp2.set_color("#30363d")
             ax.xaxis_date()
-        fig.tight_layout(pad=0.6)
+        fig.tight_layout(pad=0.6); fig.subplots_adjust(right=0.905)   # 0.9.48: room for level labels
         emit("gex3",fig)
         _rl=[]
         for ttl,mdl in rd:
