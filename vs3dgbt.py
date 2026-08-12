@@ -1,5 +1,5 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.45
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.47
 
 CHANGELOG POLICY (per Faisal, Jul-24): detailed notes for the LATEST 3 versions
 only; everything older is ONE line. Full history lives in git, not here.
@@ -2728,6 +2728,63 @@ def gex3_lens_rows(ch, sp, exp, lens, doi=None, sign=None):
     except Exception:
         return None
 
+def gex3_draw_profile(axp, rows, ylo, yhi, mdl=None, ref_rows=None):
+    """vGBT-0.9.46: density anchored at the RIGHT edge growing LEFT (Colab
+    tri-panel orientation; pixel-gated). vGBT-0.9.47 [USER 08-12 "look at the
+    shit your code is generating" vs the skill's reference chart]: full
+    skill-grade vocabulary, rotated to strikes-on-Y —
+      • buy/sell/TOTAL curves (green/red/orange lines) over the net fills
+      • buy▲/sell▼ peak markers at each side's biggest strike
+      • top-5 HHI strikes: violet ◆ + share-% labels (skill §8 chart marks)
+      • ref_rows (panel 3): dotted buy/sell comparison curves of the base lens
+        — the skill's Δ-OI-dotted-over-main device, lens-swapped for our stack
+    Fills stay right-anchored → the 0.9.46 pixel gate still binds."""
+    m=(rows["strike"]>=ylo)&(rows["strike"]<=yhi)
+    K=rows["strike"][m].values
+    P=rows["pos"][m].values; N=rows["neg"][m].values
+    T=(rows["total"][m].values if "total" in rows else P+N)
+    mx=float(max(P.max(),N.max(),T.max() if len(T) else 0.0,1e-9))
+    axp.set_ylim(ylo,yhi)
+    axp.set_xlim(mx*3.2,0.0)                     # 0 at the RIGHT edge → bars grow leftward
+    axp.fill_betweenx(K,0,P,color="#3fb950",alpha=.22,zorder=2)
+    axp.fill_betweenx(K,0,N,color="#ef5350",alpha=.22,zorder=2)
+    axp.plot(P,K,color="#3fb950",lw=1.5,zorder=3)              # buy γ
+    axp.plot(N,K,color="#ef5350",lw=1.5,zorder=3)              # sell γ
+    if len(T): axp.plot(T,K,color="#d4a017",lw=1.9,alpha=.95,zorder=3)   # TOTAL γ
+    axp.plot(np.abs(rows["net"][m]),K,color="#e8ecf2",lw=0.9,alpha=.55,zorder=3)
+    if ref_rows is not None:                                    # dotted comparison lens
+        mr=(ref_rows["strike"]>=ylo)&(ref_rows["strike"]<=yhi)
+        sc=mx/max(float(max(ref_rows["pos"][mr].max(),ref_rows["neg"][mr].max())),1e-9)
+        axp.plot(ref_rows["pos"][mr]*sc,ref_rows["strike"][mr],color="#3fb950",lw=1.0,ls=":",alpha=.8,zorder=3)
+        axp.plot(ref_rows["neg"][mr]*sc,ref_rows["strike"][mr],color="#ef5350",lw=1.0,ls=":",alpha=.8,zorder=3)
+    if P.max()>0:
+        iP=int(np.argmax(P)); axp.plot([P[iP]],[K[iP]],marker="^",ms=7,color="#1a7f37",zorder=5)
+    if N.max()>0:
+        iN=int(np.argmax(N)); axp.plot([N[iN]],[K[iN]],marker="v",ms=7,color="#c62828",zorder=5)
+    if mdl and mdl.get("hhi"):
+        for _k,_sh in mdl["hhi"].get("top",[])[:5]:
+            if ylo<=_k<=yhi:
+                axp.plot([mx*0.06],[_k],marker="D",ms=4,color="#8b5cf6",zorder=5)
+                axp.text(mx*0.10,_k,f"{_sh*100:.0f}%",color="#8b5cf6",fontsize=6.5,va="center",ha="left",zorder=5)
+    axp.axis("off")
+    return mx
+
+def gex3_zone_shade(ax, rows, ylo, yhi, x0, x1):
+    """0.9.47: the skill's positive/negative gamma FIELDS as horizontal bands —
+    contiguous net>0 runs tinted green, net<0 pink, full panel width."""
+    m=(rows["strike"]>=ylo)&(rows["strike"]<=yhi)
+    K=rows["strike"][m].values; NV=rows["net"][m].values
+    if not len(K): return
+    i=0
+    while i<len(K):
+        j=i
+        sgn=NV[i]>=0
+        while j+1<len(K) and (NV[j+1]>=0)==sgn: j+=1
+        y0=K[i]-2.5; y1=K[j]+2.5
+        ax.axhspan(max(y0,ylo),min(y1,yhi),xmin=0,xmax=1,
+                   color=("#22aa22" if sgn else "#ff4444"),alpha=0.045,zorder=0)
+        i=j+1
+
 def gex3_model(rows, spot):
     """The NIFTY model, ported [methodology.md §3-§9 · SPX constants ×SC=0.1].
     Pure math over gex3_lens_rows output; harness-gated. K* omitted honestly —
@@ -3056,7 +3113,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.45 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.47 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -4606,10 +4663,18 @@ with tab_gex3:
         ylo,yhi=sp*(1-window_pct),sp*(1+window_pct)
         fig,axs=plt.subplots(3,1,figsize=(13,12),dpi=90,sharex=True,sharey=True)
         fig.patch.set_facecolor(DARK)
-        x0=x1=None; rd=[]
+        rd=[]
         if bars is not None and len(bars):
             x0=mdates.date2num(bars["t"].iloc[0]-pd.Timedelta(minutes=3))
             x1=mdates.date2num(bars["t"].iloc[-1]+pd.Timedelta(minutes=6))
+        else:
+            # 0.9.46: bars can be empty (cold boot / feed gap). 0.9.45 skipped
+            # set_xlim entirely → matplotlib's 0-1 default date axis → the
+            # "01-01" ticks in the user's screenshot. Fall back to today's RTH
+            # window so the axis is sane, and say why the tape is blank.
+            _d0=now_est().replace(hour=9,minute=30,second=0,microsecond=0)
+            x0=mdates.date2num(_d0); x1=mdates.date2num(_d0+dt.timedelta(hours=6,minutes=45))
+            st.caption("no price bars in this frame yet — profiles only (candles return with the next price fetch)")
         _lk=(st.session_state.get("card_lock") or {}).get("levels") if isinstance(st.session_state.get("card_lock"),dict) else None
         for ax,(ttl,sgn,wov) in zip(axs,panels):
             ax.set_facecolor("#101826"); ax.set_ylim(ylo,yhi)
@@ -4618,25 +4683,31 @@ with tab_gex3:
                   else gex3_lens_rows(ch,sp,exp,sgn))            # panel-3 sign radio honored per lens
             mdl=gex3_model(rows,sp) if rows is not None else {"err":"no rows"}
             rd.append((ttl,mdl))
-            if x0 is not None:
-                ax.set_xlim(x0,x1); draw_candles(ax,bars,x0,x1,ylo,yhi)
+            ax.set_xlim(x0,x1)
+            if rows is not None: gex3_zone_shade(ax,rows,ylo,yhi,x0,x1)   # 0.9.47 pos/neg γ fields
+            if bars is not None and len(bars): draw_candles(ax,bars,x0,x1,ylo,yhi)
             if rows is not None:
-                axp=ax.twiny(); axp.set_ylim(ylo,yhi)
-                m=(rows["strike"]>=ylo)&(rows["strike"]<=yhi)
-                mx=float(max(rows["pos"][m].max(),rows["neg"][m].max(),1e-9))
-                axp.set_xlim(0,mx*3.2)                       # profiles occupy the left third
-                axp.fill_betweenx(rows["strike"][m],0,rows["pos"][m],color="#3fb950",alpha=.30,zorder=2)
-                axp.fill_betweenx(rows["strike"][m],0,rows["neg"][m],color="#ef5350",alpha=.30,zorder=2)
-                axp.plot(np.abs(rows["net"][m]),rows["strike"][m],color="#e8ecf2",lw=1.0,alpha=.8,zorder=3)
-                axp.axis("off")
+                _ref=(gex3_lens_rows(ch,sp,exp,"signed") if wov else None)   # panel 3: dotted base-lens comparison
+                gex3_draw_profile(ax.twiny(),rows,ylo,yhi,mdl=mdl,ref_rows=_ref)   # density RIGHT, candles across
             if not mdl.get("err"):
                 if mdl["flip"] is not None:
                     ax.axhline(mdl["flip"],color="#c792ea",lw=1.2,ls="--",zorder=4)
                     ax.text(1.001,mdl["flip"],f" flip {mdl['flip']:,.0f}",transform=ax.get_yaxis_transform(),color="#c792ea",fontsize=8,va="center")
-                for lv,cl,nm in ((mdl["cw"],"#3fb950","CW"),(mdl["pw"],"#ef5350","PW"),(mdl["pin"],"#f0ad4e","PIN")):
+                _gaps={"uhw":f" [{mdl['uhl']}]" if mdl.get("uhl") else "","dhw":f" [{mdl['dhl']}]" if mdl.get("dhl") else ""}
+                for lv,cl,nm,ls_,ex in ((mdl["cw"],"#3fb950","CW","-",""),(mdl["pw"],"#ef5350","PW","-",""),
+                                        (mdl["pin"],"#f0ad4e","PIN","-",""),
+                                        (mdl.get("ceiling"),"#ff8844","CEIL","--",""),(mdl.get("floor"),"#33cc99","FLOOR","--",""),
+                                        (mdl.get("uhw"),"#8b5cf6","UHW","-.",_gaps["uhw"]),(mdl.get("dhw"),"#1a7f37","DHW","-.",_gaps["dhw"])):
                     if lv is not None:
-                        ax.axhline(lv,color=cl,lw=1.1,zorder=4)
-                        ax.text(1.001,lv,f" {nm} {lv:,.0f}",transform=ax.get_yaxis_transform(),color=cl,fontsize=8,va="center")
+                        ax.axhline(lv,color=cl,lw=1.0 if ls_!="-" else 1.1,ls=ls_,alpha=.9,zorder=4)
+                        ax.text(1.001,lv,f" {nm} {lv:,.0f}{ex}",transform=ax.get_yaxis_transform(),color=cl,fontsize=7.5,va="center")
+                # 0.9.47 per-panel scorecard — the skill's info-box, compact
+                _hh=mdl["hhi"]
+                _sc=(f"pin {mdl['pin'] if mdl['pin'] is not None else '—'} raw {mdl['pin_raw']:.0f}→adj {mdl['pin_adj']:.0f} ({mdl['pin_adj_lbl']})\n"
+                     f"floor {mdl['floor'] if mdl['floor'] is not None else '—'} · ceil {mdl['ceiling'] if mdl['ceiling'] is not None else '—'}\n"
+                     f"HHI {_hh['total']:.3f} {_hh['regime']} · local γ {mdl['dial_local'][1]}")
+                ax.text(0.006,0.97,_sc,transform=ax.transAxes,color="#e8ecf2",fontsize=6.8,family="monospace",
+                        va="top",ha="left",zorder=6,bbox=dict(fc="#0d1117",ec="#3a4150",lw=0.6,alpha=.85,pad=2.5))
                 _d=mdl["dial"]
                 ax.text(0.995,0.03,f"γ {_d[1]} {'+' if _d[2] else '−'}{_d[0]:,.0f}",transform=ax.transAxes,
                         color=("#3fb950" if _d[2] else "#ef5350"),fontsize=9,fontweight="bold",ha="right")
