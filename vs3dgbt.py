@@ -1,8 +1,40 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.43
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.45
 
 CHANGELOG POLICY (per Faisal, Jul-24): detailed notes for the LATEST 3 versions
 only; everything older is ONE line. Full history lives in git, not here.
+
+vGBT-0.9.45 [GEX³ TAB + CROSS-BALANCE 1×S0 RADIUS]
+  • NEW TAB 🧮 GEX³ [EXPERIMENTAL, USER 08-12]: the NIFTY GEX model (skill
+    nifty-gex-analysis, methodology.md §3-§9; SPX constants MULT=100, GRID=5,
+    distances ×0.1 per the validated Colab port) on THREE stacked panels,
+    strikes on Y, live candles via dispatch_live, shared Price-window ±% zoom,
+    shared y so levels align across lenses. P1 CONVENTION (naive, oi+vol) ·
+    P2 FLOW-SIGNED (dsign, oi+vol) · P3 Δ-OI overnight (open_interest_change,
+    fetched ONCE post-open, day-cached+persisted, never polled live) or live
+    volume — in-tab radios for weight and sign. Per panel: curves, flip, CW/PW,
+    PIN, γ dial badge, METHOD lock overlay (read-only); everything else in ONE
+    consolidated readout (gravity ×3, floor/ceiling, hedge walls+gap labels,
+    HHI fixed-threshold regime + top-5, dial whole+local). K* omitted with the
+    reason printed. DISPLAY-ONLY — never feeds THE METHOD; dealer-sign caveat
+    travels on the tab. Fully ADDITIVE: no existing tab touched.
+  • Cross-balance search bounded to 1×S0 of the crossed test [USER 08-12: pure
+    argmax could name a "balance" ~2% away at the window edge]; radius empty →
+    nearest beyond, honest. All 26 slides' conditional balances sit inside 1×S0.
+
+vGBT-0.9.44 [WALL STANDOFF + SEGMENT-ARGMAX CROSS-BALANCE — SANCTIONED 08-08]
+  • WALL STANDOFF: a rung whose peak bar is ≥2.5× the LARGER of (rest of its
+    own cluster, biggest OTHER in-window short cluster on the side) prints 5
+    IN FRONT of the wall strike, tagged ᵂ + explainer line. Card + Δ-selector
+    identical. Comparator must be >0 — a lone ordinary bar is NOT a wall (the
+    naive rest-of-cluster rule auto-walled every single-bar cluster; caught in
+    harness before ship, redefined). HONESTY: WALL_X=2.5 is FITTED — 07-17
+    7520*/7525 fires; 07-29's 1.07× and 07-21/07-28 fronts do NOT; the slide
+    sample gives no clean threshold; conservative + tunable from tape grade.
+  • Post-cross balance = BIGGEST long in the SEGMENT between the crossed test
+    and the next rung (07-16 "Strong" 7525 · 07-20 · 07-23 exact argmax);
+    nearest-first retired. Segment empty → biggest beyond; thin fallback kept.
+  • signed_clusters carries pmass (peak-bar mass) for wall detection.
 
 vGBT-0.9.43 [DAN-STYLE SLIDE CARD ON THE BOOK TAB]
   • USER 08-08: mimic the VSMM daily-slide KEY LEVELS + TAKEAWAYS card above
@@ -1111,9 +1143,10 @@ def signed_clusters(rows, lo, hi, min_share=0.05):
     for c in out:
         m=sum(c["vs"]); w=np.array(c["vs"]); ks=np.array(c["ks"])
         peak=float(ks[int(np.argmax(w))])   # 0.9.38: strike of the LARGEST bar [GUIDE §4.4 · Jul-21]
+        pmass=float(w.max())                # 0.9.44: peak-bar mass — wall detection
         conf=float((np.array(c["cs"])*w).sum()/m)
         share=m/tot
-        if share>=min_share: res.append(dict(sign=c["sign"],peak=peak,mass=m,conf=conf,share=share))
+        if share>=min_share: res.append(dict(sign=c["sign"],peak=peak,pmass=pmass,mass=m,conf=conf,share=share))
     return res
 
 def package_suspects(rows, spacings=(5,10,15,20,25)):
@@ -1210,6 +1243,11 @@ def dan_levels_from_rows(rows,ref,S0,WIN_R=2.5,EXT_X=2.0):
         if t2 is not None: out.append(t2)
         for c in out:
             if mx>0 and c["mass"]<0.20*mx: c["thin"]=True
+            _pm=c.get("pmass",0.0)                       # 0.9.44 wall standoff (card-identical)
+            _oth=max([x["mass"] for x in inw if x["peak"]!=c.get("wall_at",c["peak"])]+[0.0])
+            _cmpr=max(c["mass"]-_pm,_oth)
+            if _pm>0 and _cmpr>0 and _pm>=2.5*_cmpr:
+                c["wall_at"]=c["peak"]; c["peak"]=c["peak"]-side*5.0; c["wall"]=True
         return out
     ups=_tests(+1); dns=_tests(-1)
     u1=ups[0]["peak"] if ups else None; d1=dns[0]["peak"] if dns else None
@@ -1292,6 +1330,14 @@ def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WAR
         # 8) No other filters, windows, radii, or floors. Ever.
         WIN_R = 2.5      # the window, in opening straddles
         EXT_X = 2.0      # "crazy in size" = ≥ this × the biggest in-window short
+        WALL_X = 2.5     # 0.9.44 wall standoff [SANCTIONED 08-08]: a rung's peak bar
+                         # ≥ this × the LARGER of (rest of its own cluster, biggest
+                         # OTHER in-window short cluster on the side) → level prints
+                         # 5 IN FRONT of the wall strike, tagged ᵂ. Comparator must
+                         # be >0: a lone ordinary bar is NOT a wall (slides: ordinary
+                         # single-bar tests print ON the bar). SLIDES: 07-17 monster
+                         # fires; 07-29's 1.07× does NOT — sample gives no clean
+                         # threshold, constant conservative + tunable from tape.
         S0=float(open_strad) if open_strad else max(float(strad_now or 0.0), spot*0.004)
         if S0<=0: S0=spot*0.009
         half=WIN_R*S0                                   # stored for lock replay + fly window
@@ -1352,6 +1398,16 @@ def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WAR
             if t2 is not None: out.append(t2)
             for c in out:                                # thin = under 20% of in-window side max
                 if _mx>0 and c["mass"]<0.20*_mx: c["thin"]=True
+                # 0.9.44 WALL STANDOFF [SLIDES 07-17 · GUIDE "it's like an area"]:
+                # hedges of a dominant wall engage before the strike → level 5 in
+                # front. Comparator = max(rest of own cluster, biggest OTHER
+                # in-window short cluster this side); must be >0 so a lone
+                # ordinary bar never auto-walls.
+                _pm=c.get("pmass",0.0)
+                _oth=max([x["mass"] for x in _inw if x["peak"]!=c.get("wall_at",c["peak"])]+[0.0])
+                _cmpr=max(c["mass"]-_pm,_oth)
+                if _pm>0 and _cmpr>0 and _pm>=WALL_X*_cmpr:
+                    c["wall_at"]=c["peak"]; c["peak"]=c["peak"]-side*5.0; c["wall"]=True
             return out                                   # ordered outward by construction
         ups=_tests(+1); dns=_tests(-1)
         # 0.9.33 balance corridor [USER 07-27 "between the first upside and first
@@ -1420,22 +1476,37 @@ def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WAR
             _alt="long mass (their balance)" if b["sign_body"]<0 else "short mass (their test)"
             L.append((f"⚠ {b['lo']:,.0f}–{b['hi']:,.0f} fly-shaped — tape can't side packages; "
                       f"if customer-owned, {b['body']:,.0f} is the {_alt}",WARN,10.5,False))
-    def _bal_beyond(t_peak, direction):
-        # vGBT-0.9.29: search the FULL 1.5×S0 window — the 1×S0 radius is a
-        # BALANCE-selection rule and must not leak into the ladder (a real long
-        # between 1× and 1.5× was silently replaced by the "thin" fallback).
+    def _bal_beyond(t_peak, direction, cap=None):
+        # vGBT-0.9.29: search the FULL window (no 1×S0 leak). 0.9.44 [SLIDES
+        # 26-day review]: post-cross balance = the BIGGEST long in the SEGMENT
+        # between the crossed test and the next rung (07-16 7525 "Strong" =
+        # biggest below · 07-20 7525 · 07-23 7430 exact argmax) — nearest-first
+        # retired. Segment empty → biggest beyond; thin fallback unchanged.
         cands=[c for c in longs_ext if (c["peak"]>t_peak if direction>0 else c["peak"]<t_peak)]
+        if cap is not None:
+            seg=[c for c in cands if (c["peak"]<cap if direction>0 else c["peak"]>cap)]
+            if seg: cands=seg
+        # 0.9.45 [USER 08-12]: bound the argmax search to 1×S0 of the CROSSED
+        # test — Dan's own straddle-range estimator applied locally. Pure argmax
+        # could name a "balance" near the window edge ~2% away; every conditional
+        # balance on the 26 slides sits inside one straddle of its crossed test.
+        _rad=[c for c in cands if abs(c["peak"]-t_peak)<=max(float(s0 or 0.0),10.0)]
+        if _rad: cands=_rad
+        elif cands: cands=[min(cands,key=lambda c:abs(c["peak"]-t_peak))]   # radius empty → nearest, honest
         if cands:
-            c=min(cands,key=lambda c:abs(c["peak"]-t_peak))
+            c=max(cands,key=lambda c:c.get("mass",0.0))   # locked ladders may carry minimal dicts
             return c["peak"],_strength(c["share"],c["conf"])
         return t_peak+direction*5.0,"thin"
     def ladder(tests, direction, name, col):
         if not tests:
             L.append((f"{name}: none in range",DIM,11,False)); return
-        hdr=f"{name}: "+" >> ".join(f"{t['peak']:,.0f}"+("ᵉˣᵗ" if t.get("ext") else "")+("ᵗʰⁱⁿ" if t.get("thin") else "")+("⚠" if _in_band(t["peak"],bands) else "")+_status(t["peak"],direction) for t in tests)
+        hdr=f"{name}: "+" >> ".join(f"{t['peak']:,.0f}"+("ᵂ" if t.get("wall") else "")+("ᵉˣᵗ" if t.get("ext") else "")+("ᵗʰⁱⁿ" if t.get("thin") else "")+("⚠" if _in_band(t["peak"],bands) else "")+_status(t["peak"],direction) for t in tests)
         L.append((hdr,col,12.5,True))
+        for t in tests:
+            if t.get("wall"):
+                L.append((f"  ᵂ {t['peak']:,.0f} set 5 in front of the {t['wall_at']:,.0f} wall — hedges engage early",DIM,10.5,False))
         for i,t in enumerate(tests):
-            b,bl=_bal_beyond(t["peak"],direction)
+            b,bl=_bal_beyond(t["peak"],direction,cap=(tests[i+1]["peak"] if i+1<len(tests) else None))
             nxt=(f", or extend and test {tests[i+1]['peak']:,.0f}" if i+1<len(tests) else "")
             L.append((f"  Cross {t['peak']:,.0f} = balance ({bl}) at {b:,.0f}{nxt}",WHT,11.5,False))
     ladder(ups,+1,"UPSIDE TEST",BULL)
@@ -2567,6 +2638,197 @@ def render_strip(strip):
     st.markdown("<div style='font-family:monospace;font-weight:bold;font-size:0.86rem;line-height:1.9'>"
                 +_l1+f"<br><span style='color:{_pc}'>▶ {_p}</span></div>",unsafe_allow_html=True)
 
+# ═══════════ vGBT-0.9.45 GEX³ — NIFTY GEX model on three lenses [SKILL nifty-gex-analysis · USER 08-12] ═══════════
+# Constants ported per the validated Colab SPX adaptation: contract MULT=100
+# (never NIFTY lot 65 — SKILL "FIXES APPLIED" #4), strike GRID=5, all NIFTY
+# point-distance constants ×SC=0.1 (100→10, 200→20, ±1%→±1%, round-50→round-5).
+# Dealer-sign caveat travels with every output (methodology §2): panel 1 is the
+# ASSUMED convention; panel 2 is our measured flow-sign; neither is clearing
+# truth. DISPLAY-ONLY LENS — never feeds THE METHOD [frozen rule].
+GEX3_MULT=100.0; GEX3_GRID=5.0; GEX3_SC=0.1
+
+def gbt_doi_by_strike(exp):
+    """0.9.45: overnight ΔOI per (strike,type) for one expiry via
+    open_interest_change [API doc 08-12: 18 params, per-contract
+    previous/current/change; delivered post-open, settles ONCE daily — 'this
+    API never fabricates' intraday OI]. Fetched ONCE per day, day-cached +
+    persisted; never polled live (static numbers must not wear a live face).
+    Returns DataFrame(strike,type,doi) or None (honest unavailable)."""
+    ss=st.session_state; ck="gbt_doi_"+today_est().strftime("%Y-%m-%d")+"_"+str(exp)
+    if ck in ss: return ss[ck]
+    rows=[]; cur=None
+    try:
+        for _pg in range(12):                                  # ≤1200 contracts, 0DTE fits easily
+            pay={"tickers":["SPX"],"expirationDates":[exp],"size":100,
+                 "includes":["STRIKE_PRICE","CONTRACT_TYPE","CHANGE_IN_OPEN_INTEREST"]}
+            if cur: pay["searchAfter"]=cur
+            meta,df=_gbt_post("open_interest_change",pay)
+            if df is None or df.empty: break
+            rows.append(df)
+            nxt=(meta or {}).get("nextSearchAfter")
+            if not nxt: break
+            cur=[x.strip() for x in str(nxt).split(",")]
+        if not rows: return None
+        d=pd.concat(rows,ignore_index=True)
+        d.columns=[c.strip() for c in d.columns]
+        _k=[c for c in d.columns if "strike" in c.lower()][0]
+        _t=[c for c in d.columns if "contract" in c.lower()][0]
+        _c=[c for c in d.columns if "change" in c.lower()][0]
+        out=pd.DataFrame({"strike":pd.to_numeric(d[_k],errors="coerce"),
+                          "type":d[_t].astype(str).str.lower(),
+                          "doi":pd.to_numeric(d[_c],errors="coerce").fillna(0.0)}).dropna(subset=["strike"])
+        out=out.groupby(["strike","type"],as_index=False)["doi"].sum()
+        ss[ck]=out
+        try: save_day_state()
+        except Exception: pass
+        return out
+    except Exception:
+        return None
+
+def gex3_lens_rows(ch, sp, exp, lens, doi=None, sign=None):
+    """Per-strike gamma masses for one lens. pos = dealer-LONG-gamma side mass,
+    neg = dealer-SHORT side (both ≥0); net=pos−neg; total=pos+neg. Mapping keeps
+    the NIFTY machinery intact: naive lens ⇒ pos=γ·w(calls), neg=γ·w(puts) —
+    exactly methodology §2. lens ∈ {'naive','signed','doi','vol'}. Weights:
+    naive/signed = OI+volume [USER 08-04 tri-panel]; vol = today's volume only
+    (live fresh-paper upper bound); doi = overnight ΔOI (sign of ΔOI flips the
+    contribution — closing paper subtracts, §2 Change-GEX). Returns
+    DataFrame(strike,pos,neg,net,total) on the 5-pt grid, or None."""
+    try:
+        cc=ch[ch["expiry"]==exp] if "expiry" in getattr(ch,"columns",[]) else ch
+        if cc is None or not len(cc): return None
+        _uw=globals().get("GBT_UNSEEDED_W",0.2)
+        nv=np.where(cc["type"].values=="call",1.0,-1.0)
+        _sgn=sign or ("naive" if lens=="naive" else "signed")
+        if _sgn=="naive": eff=pd.Series(nv,index=cc.index)
+        else:
+            eff=(cc["dsign"].where(cc["dsign"].notna(),pd.Series(nv*_uw,index=cc.index))
+                 if "dsign" in cc.columns else pd.Series(nv*_uw,index=cc.index))
+        g=cc["gamma"].fillna(0)*GEX3_MULT*float(sp)
+        if lens=="doi":
+            if doi is None or not len(doi): return None
+            key=list(zip((cc["strike"]/GEX3_GRID).round()*GEX3_GRID,cc["type"]))
+            dmap={(r.strike,r.type):r.doi for r in doi.itertuples()}
+            w=pd.Series([dmap.get(k,0.0) for k in key],index=cc.index)
+        elif lens=="vol":
+            w=cc["volume"].fillna(0)
+        else:
+            w=cc["oi"].fillna(0)+cc["volume"].fillna(0)
+        contrib=eff*g*w
+        kk=(cc["strike"]/GEX3_GRID).round()*GEX3_GRID
+        pos=contrib.clip(lower=0).groupby(kk).sum()
+        neg=(-contrib.clip(upper=0)).groupby(kk).sum()
+        ks=np.arange(float(min(pos.index.min(),neg.index.min())),
+                     float(max(pos.index.max(),neg.index.max()))+GEX3_GRID,GEX3_GRID)
+        P=np.array([float(pos.get(k,0.0)) for k in ks]); N=np.array([float(neg.get(k,0.0)) for k in ks])
+        # light smooth (σ=1 grid step) matching the script's gaussian_filter1d
+        kern=np.array([0.25,0.5,0.25])
+        Ps=np.convolve(P,kern,mode="same"); Ns=np.convolve(N,kern,mode="same")
+        return pd.DataFrame({"strike":ks,"pos":Ps,"neg":Ns,"net":Ps-Ns,"total":Ps+Ns})
+    except Exception:
+        return None
+
+def gex3_model(rows, spot):
+    """The NIFTY model, ported [methodology.md §3-§9 · SPX constants ×SC=0.1].
+    Pure math over gex3_lens_rows output; harness-gated. K* omitted honestly —
+    §10 needs market premiums and our chain carries model mids (circular)."""
+    try:
+        ks=rows["strike"].values; net=rows["net"].values
+        pos=rows["pos"].values; neg=rows["neg"].values; tot=rows["total"].values
+        # §3 vol trigger: net zero-cross nearest spot, linear interp
+        flip=None; best=1e18
+        for i in range(len(ks)-1):
+            a,b=net[i],net[i+1]
+            if a==0: x=ks[i]
+            elif a*b<0: x=ks[i]+(ks[i+1]-ks[i])*(-a)/(b-a)
+            else: continue
+            if abs(x-spot)<best: best=abs(x-spot); flip=float(x)
+        ref=flip if flip is not None else float(spot)
+        # §4 walls + three gravity methods (ratios 0.30/0.35 are ratios — unscaled)
+        up=ks>ref; dn=ks<ref
+        cw=float(ks[up][np.argmax(pos[up])]) if up.any() and pos[up].max()>0 else None
+        pw=float(ks[dn][np.argmax(neg[dn])]) if dn.any() and neg[dn].max()>0 else None
+        def _grav(side_mask,wall,ratio,side):
+            if wall is None: return dict(fixed=None,cent=None,med=None)
+            fixed=ref+side*ratio*abs(wall-ref)
+            m=side_mask&( (pos if side>0 else neg) >0 )
+            w_=(pos if side>0 else neg)[m]; k_=ks[m]
+            cent=float((k_*w_).sum()/w_.sum()) if w_.sum()>0 else fixed
+            order=np.argsort(np.abs(k_-ref)) if len(k_) else []
+            med=fixed
+            if len(k_):
+                cw_=np.cumsum(w_[order]); half=0.5*w_.sum()
+                med=float(k_[order][int(np.searchsorted(cw_,half))]) if w_.sum()>0 else fixed
+            return dict(fixed=float(fixed),cent=cent,med=med)
+        gv_c=_grav(up,cw,0.30,+1); gv_p=_grav(dn,pw,0.35,-1)
+        # §5 pin: four components; distances ×SC (100→10, 200→20, 1%→1%, round→5)
+        score=0.0; pin=None; notes=[]
+        posreg=spot> (flip if flip is not None else spot)
+        if flip is not None and spot>flip: score+=40; notes.append("pos-γ +40")
+        k_g=float(ks[np.argmax(tot)]) if tot.max()>0 else None
+        # OI-vs-GEX convergence stand-in: total-mass max vs pos+neg weight max = same array
+        k_o=float(ks[np.argmax(pos+neg)]) if (pos+neg).max()>0 else None
+        if k_g is not None and k_o is not None:
+            gap=abs(k_g-k_o)
+            if gap<=10: pin=k_g; score+=25; notes.append("converge +25")
+            else:
+                wsum=tot[np.argmax(tot)]+ (pos+neg)[np.argmax(pos+neg)]
+                pin=(k_g*tot[np.argmax(tot)]+k_o*(pos+neg)[np.argmax(pos+neg)])/max(wsum,1e-9)
+                score+=max(0.0,25-gap/2.0); notes.append(f"gap {gap:.0f}")
+        spread_c=(max(x for x in gv_c.values() if x is not None)-min(x for x in gv_c.values() if x is not None)) if all(v is not None for v in gv_c.values()) else 99
+        spread_p=(max(x for x in gv_p.values() if x is not None)-min(x for x in gv_p.values() if x is not None)) if all(v is not None for v in gv_p.values()) else 99
+        if spread_c<20 and spread_p<20: score+=20; notes.append("consensus +20")
+        else: score+=max(0.0,20-(spread_c+spread_p)/4.0)
+        if pin is not None:
+            dpct=abs(pin-spot)/spot*100
+            score+=15 if dpct<=1.0 else max(0.0,15-dpct*5)
+            pin=round(pin/GEX3_GRID)*GEX3_GRID
+        raw=min(100.0,score)
+        # §8 HHI (scale-free thresholds unchanged) + §5 confidence multiplier
+        def _hhi(v):
+            a=np.abs(v); ssum=a.sum()
+            return float(((a/ssum)**2).sum()) if ssum>0 else 0.0
+        h_t,h_c,h_p=_hhi(tot),_hhi(pos),_hhi(neg)
+        regime=("COMPRESSED" if h_t>=0.15 else "BALANCED" if h_t>=0.06 else "DISPERSED")
+        mult={"COMPRESSED":1.00,"BALANCED":0.85,"DISPERSED":0.65}[regime]
+        adj=raw*mult
+        def _lbl(x): return ("STRONG PIN" if x>=70 else "MODERATE PIN" if x>=45 else "WEAK PIN" if x>=25 else "NO PIN")
+        top=np.argsort(-np.abs(tot))[:5]
+        hhi_top=[(float(ks[i]),float(np.abs(tot[i])/max(np.abs(tot).sum(),1e-9))) for i in top]
+        # §6 floor/ceiling: positive-net strikes each side of SPOT, activity = side-mass²-ish
+        upS=ks>spot; dnS=ks<spot
+        cmask=upS&(net>0); fmask=dnS&(net>0)
+        ceil_=float(ks[cmask][np.argmax((pos*(pos+neg))[cmask])]) if cmask.any() else None
+        floor_=float(ks[fmask][np.argmax((neg*(pos+neg))[fmask])]) if fmask.any() else None
+        # §7 hedge walls: exp(-5·(K-CW)/CW) decay × (1+vanna_norm)
+        def _hedge(wall,side):
+            if wall is None: return None,None
+            m=(ks>wall) if side>0 else (ks<wall)
+            if not m.any(): return None,None
+            base=(pos if side>0 else neg)[m]*(pos+neg)[m]
+            vann=base/max(base.max(),1e-9)
+            hp=base*np.exp(-5.0*np.abs(ks[m]-wall)/max(wall,1e-9))*(1.0+vann)
+            hw=float(ks[m][np.argmax(hp)]); gap=abs(hw-wall)
+            lab=("TIGHT" if gap<=10 else "NORMAL" if gap<=25 else "WIDE")
+            return hw,lab
+        uhw,uhl=_hedge(cw,+1); dhw,dhl=_hedge(pw,-1)
+        # §9 magnitude dial — Dan's REAL SPX thresholds (strip formula, minis per $)
+        def _dial(v):
+            m_=2.0*abs(float(v)); posv=float(v)>0
+            lab=("HEAVY" if m_>=250 else "LIGHT" if m_>=100 else "THIN" if m_>=25 else "VIRTUALLY-NEG") if posv else "TRUE-NEG"
+            return m_,lab,posv
+        net_minis=float(net.sum())/(float(spot)*GEX3_MULT)*GEX3_MULT   # Σnet_gex/(S·100) ≙ contracts/$; strip-consistent ×2 inside _dial
+        loc=np.abs(ks-ref)<=30.0
+        loc_minis=float(net[loc].sum())/(float(spot)*GEX3_MULT)*GEX3_MULT if loc.any() else 0.0
+        d_all=_dial(net_minis); d_loc=_dial(loc_minis)
+        return dict(flip=flip,cw=cw,pw=pw,grav_call=gv_c,grav_put=gv_p,
+                    pin=pin,pin_raw=raw,pin_adj=adj,pin_lbl=_lbl(raw),pin_adj_lbl=_lbl(adj),
+                    hhi=dict(total=h_t,call=h_c,put=h_p,regime=regime,top=hhi_top),
+                    floor=floor_,ceiling=ceil_,uhw=uhw,uhl=uhl,dhw=dhw,dhl=dhl,
+                    dial=d_all,dial_local=d_loc,notes=notes)
+    except Exception as _e:
+        return dict(err=f"{type(_e).__name__}: {_e}")
+
 def book_figure(book,spot,straddle,lo,hi,side="Total",prev=None,openb=None,signed=None,
                 signed_prev=None,signed_open=None,sticks=True,clean_map=None,preview_levels=None,intraday_levels=None,
                 show_delta=False,show_dp=False):
@@ -2765,7 +3027,7 @@ def save_day_state():
         ss=st.session_state
         blob={"snaps":ss.get("snaps",[]),"frames":ss.get("frames",{}),"last_ts":ss.get("last_ts"),
               "keys":{k:ss[k] for k in list(ss.keys())
-                      if str(k).startswith(("strip_","meth_preref_","strad_open_","terr_cap_","terr_hist_","read_gmag","gbt_seed_","gbt_live_","gbt_clean_","gbt_true_open_","gbt_open_straddle_","card_lock","open_read","peak_track"))}}
+                      if str(k).startswith(("strip_","meth_preref_","gbt_doi_","strad_open_","terr_cap_","terr_hist_","read_gmag","gbt_seed_","gbt_live_","gbt_clean_","gbt_true_open_","gbt_open_straddle_","card_lock","open_read","peak_track"))}}
         with open(_state_path(),"wb") as f: _pickle.dump(blob,f,protocol=4)
         for _old in _glob.glob("/tmp/vs3dgbt_state_*.pkl"):
             if _old!=_state_path() and _os.path.getmtime(_old)<_time.time()-2*86400:
@@ -2794,7 +3056,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.43 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.45 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -3172,7 +3434,7 @@ def dispatch_live(tab, render_fn, sig=None):
 
 combo_on=st.sidebar.checkbox("🖥 Combined VS3D layout",value=False,
     help="Book + Gamma + Charm on one page, composed from the current frame's cached panels — zero recompute.")
-tab_combo,tab_book,tab_terr,tab_intv,tab_sig,tab_read=st.tabs(["🖥 VS3D (combined)","📊 Book (by strike)","🗺 Terrain (gradient chart)","⏱ Interval (bubbles)","🧭 Signals (daily workflow)","📖 Read (what happens next)"])
+tab_combo,tab_book,tab_terr,tab_intv,tab_sig,tab_read,tab_gex3=st.tabs(["🖥 VS3D (combined)","📊 Book (by strike)","🗺 Terrain (gradient chart)","⏱ Interval (bubbles)","🧭 Signals (daily workflow)","📖 Read (what happens next)","🧮 GEX³ (3-lens)"])
 
 def _interval_state_rows(snaps, greek="GEX", signed=True, unseeded_w=0.2):
     """Textbook Raw from our cached snapshots (0 API). GEX: long option = +γ, so
@@ -4320,3 +4582,89 @@ with tab_read:
         emit("read",fr)
     _rsig=repr((sel_ts.isoformat(),sel_i,len(snaps)))
     dispatch("read",_render_read,sig=_rsig)
+
+with tab_gex3:
+    emit_caption("gex3","GEX³ [EXPERIMENTAL] — the NIFTY GEX model (skill: nifty-gex-analysis) on three lenses, "
+        "strikes on Y with live candles, all panels sharing the Price-window ±% zoom. DISPLAY-ONLY: this tab "
+        "never feeds THE METHOD. Panel 1 CONVENTION assumes the US dealer-sign convention (methodology §2 — "
+        "assumed, not measured); panel 2 FLOW-SIGNED is our aggressor-inference engine; panel 3 is Δ-OI "
+        "overnight (settled, fetched once post-open, frozen — never polled live) or live volume, your pick.")
+    _g3w=st.radio("Panel-3 weight",["Δ-OI overnight","live volume"],horizontal=True,key="g3w")
+    _g3s=st.radio("Panel-3 sign",["signed (dsign)","naive"],horizontal=True,key="g3s")
+    def _render_gex3():
+        ch=latest.get("chain"); sp=float(latest["spot"]); exp=(latest.get("exps") or [None])[0]
+        if ch is None or not len(ch): st.info("No chain in this snapshot."); return
+        _doi=gbt_doi_by_strike(exp) if (_g3w.startswith("Δ") and not PLAYBACK) else None
+        _l3="doi" if (_g3w.startswith("Δ") and _doi is not None) else "vol"
+        if _g3w.startswith("Δ") and _doi is None:
+            st.caption("Δ-OI unavailable this session — panel 3 fell back to live volume (honest label, not silence).")
+        panels=[("CONVENTION (naive — assumed dealer sign)","naive",None),
+                ("FLOW-SIGNED (our dsign engine)","signed",None),
+                (f"{'Δ-OI OVERNIGHT (settled, frozen)' if _l3=='doi' else 'FRESH PAPER (live volume)'}"
+                 f" · {'signed' if _g3s.startswith('signed') else 'naive'} sign",
+                 ("signed" if _g3s.startswith("signed") else "naive"),_l3)]
+        ylo,yhi=sp*(1-window_pct),sp*(1+window_pct)
+        fig,axs=plt.subplots(3,1,figsize=(13,12),dpi=90,sharex=True,sharey=True)
+        fig.patch.set_facecolor(DARK)
+        x0=x1=None; rd=[]
+        if bars is not None and len(bars):
+            x0=mdates.date2num(bars["t"].iloc[0]-pd.Timedelta(minutes=3))
+            x1=mdates.date2num(bars["t"].iloc[-1]+pd.Timedelta(minutes=6))
+        _lk=(st.session_state.get("card_lock") or {}).get("levels") if isinstance(st.session_state.get("card_lock"),dict) else None
+        for ax,(ttl,sgn,wov) in zip(axs,panels):
+            ax.set_facecolor("#101826"); ax.set_ylim(ylo,yhi)
+            lens=(wov or sgn)
+            rows=(gex3_lens_rows(ch,sp,exp,wov,doi=_doi,sign=sgn) if wov
+                  else gex3_lens_rows(ch,sp,exp,sgn))            # panel-3 sign radio honored per lens
+            mdl=gex3_model(rows,sp) if rows is not None else {"err":"no rows"}
+            rd.append((ttl,mdl))
+            if x0 is not None:
+                ax.set_xlim(x0,x1); draw_candles(ax,bars,x0,x1,ylo,yhi)
+            if rows is not None:
+                axp=ax.twiny(); axp.set_ylim(ylo,yhi)
+                m=(rows["strike"]>=ylo)&(rows["strike"]<=yhi)
+                mx=float(max(rows["pos"][m].max(),rows["neg"][m].max(),1e-9))
+                axp.set_xlim(0,mx*3.2)                       # profiles occupy the left third
+                axp.fill_betweenx(rows["strike"][m],0,rows["pos"][m],color="#3fb950",alpha=.30,zorder=2)
+                axp.fill_betweenx(rows["strike"][m],0,rows["neg"][m],color="#ef5350",alpha=.30,zorder=2)
+                axp.plot(np.abs(rows["net"][m]),rows["strike"][m],color="#e8ecf2",lw=1.0,alpha=.8,zorder=3)
+                axp.axis("off")
+            if not mdl.get("err"):
+                if mdl["flip"] is not None:
+                    ax.axhline(mdl["flip"],color="#c792ea",lw=1.2,ls="--",zorder=4)
+                    ax.text(1.001,mdl["flip"],f" flip {mdl['flip']:,.0f}",transform=ax.get_yaxis_transform(),color="#c792ea",fontsize=8,va="center")
+                for lv,cl,nm in ((mdl["cw"],"#3fb950","CW"),(mdl["pw"],"#ef5350","PW"),(mdl["pin"],"#f0ad4e","PIN")):
+                    if lv is not None:
+                        ax.axhline(lv,color=cl,lw=1.1,zorder=4)
+                        ax.text(1.001,lv,f" {nm} {lv:,.0f}",transform=ax.get_yaxis_transform(),color=cl,fontsize=8,va="center")
+                _d=mdl["dial"]
+                ax.text(0.995,0.03,f"γ {_d[1]} {'+' if _d[2] else '−'}{_d[0]:,.0f}",transform=ax.transAxes,
+                        color=("#3fb950" if _d[2] else "#ef5350"),fontsize=9,fontweight="bold",ha="right")
+            if _lk:
+                if _lk.get("bal"): ax.axhline(_lk["bal"]["peak"],color="#e8ecf2",lw=0.8,ls=(0,(4,2,1,2)),alpha=.5,zorder=3)
+                for _t in (_lk.get("ups") or [])[:1]: ax.axhline(_t["peak"],color="#3fb950",lw=0.8,ls=(0,(4,2,1,2)),alpha=.5,zorder=3)
+                for _t in (_lk.get("dns") or [])[:1]: ax.axhline(_t["peak"],color="#ef5350",lw=0.8,ls=(0,(4,2,1,2)),alpha=.5,zorder=3)
+            ax.set_title(ttl,color="#8b949e",fontsize=9.5,loc="left",pad=2)
+            ax.tick_params(colors="#8a93a6",labelsize=7.5)
+            for _sp2 in ax.spines.values(): _sp2.set_color("#30363d")
+            ax.xaxis_date()
+        fig.tight_layout(pad=0.6)
+        emit("gex3",fig)
+        _rl=[]
+        for ttl,mdl in rd:
+            if mdl.get("err"): _rl.append(f"{ttl}: {mdl['err']}"); continue
+            gc,gp=mdl["grav_call"],mdl["grav_put"]
+            _rl.append(
+                f"{ttl}\n"
+                f"  flip {mdl['flip'] and f'{mdl['flip']:,.1f}'} · CW {mdl['cw']} · PW {mdl['pw']}\n"
+                f"  gravity call FR/CEN/MED {gc['fixed'] and f'{gc['fixed']:,.0f}'}/{gc['cent'] and f'{gc['cent']:,.0f}'}/{gc['med'] and f'{gc['med']:,.0f}'} · "
+                f"put {gp['fixed'] and f'{gp['fixed']:,.0f}'}/{gp['cent'] and f'{gp['cent']:,.0f}'}/{gp['med'] and f'{gp['med']:,.0f}'}\n"
+                f"  pin {mdl['pin']} · raw {mdl['pin_raw']:.0f} ({mdl['pin_lbl']}) → HHI-adj {mdl['pin_adj']:.0f} ({mdl['pin_adj_lbl']})\n"
+                f"  floor {mdl['floor']} · ceiling {mdl['ceiling']} · hedge walls up {mdl['uhw']} ({mdl['uhl']}) / dn {mdl['dhw']} ({mdl['dhl']})\n"
+                f"  HHI tot {mdl['hhi']['total']:.3f} ({mdl['hhi']['regime']}, fixed thresholds — no session history) · "
+                f"top: "+", ".join(f"{k:,.0f} {sh*100:.0f}%" for k,sh in mdl['hhi']['top'])+"\n"
+                f"  dial whole {mdl['dial'][1]} {mdl['dial'][0]:,.0f} · local(±30 of flip) {mdl['dial_local'][1]} {mdl['dial_local'][0]:,.0f}")
+        st.code("\n".join(_rl)+"\nK* omitted: §10 needs market premiums; chain carries model mids (circular). "
+                "Dealer sign: panel 1 assumed, panel 2 inferred — neither is clearing truth.",language=None)
+    _g3sig=repr((sel_ts.isoformat(),sel_i,round(window_pct,4),_g3w,_g3s))
+    dispatch_live("gex3",_render_gex3,sig=_g3sig)
