@@ -1,8 +1,31 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.51
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.54
 
 CHANGELOG POLICY (per Faisal, Jul-24): detailed notes for the LATEST 3 versions
 only; everything older is ONE line. Full history lives in git, not here.
+
+vGBT-0.9.54 [GEX³ RTH WINDOW + Y AUTO-FIT — USER 08-12, basics owned]
+  • x-axis = session_window() (09:30–16:00), the app-wide single source of
+    truth every other tab already used; GEX³ was computing its own from bar
+    edges. Candles stop at 'now', right edge = the close, like terrain.
+  • y auto-fits to where the mass IS: strikes over 2% of frame max (the Colab
+    tri-panel rule) ∪ candle range, padded 15, clamped inside spot±window×zoom
+    — dead space above/below is gone; sliders still cap the range.
+  • Sliders (zoom/width/height) joined the dispatch signature.
+
+vGBT-0.9.53 [GEX³ COLOR-CODED READOUT — USER 08-12 "difficult read"]
+  • Readout: one line per lens, every level rendered in ITS chart color (flip
+    violet · CW green · PW red · PIN orange · FLOOR teal · CEIL orange-red ·
+    HW violet · dial by sign) — text maps to chart at a glance. Gravity trio,
+    pin scoring, HHI top-5 and dials moved into a collapsed "model detail"
+    expander; the always-visible text is a third of what it was.
+  • On-chart scorecard lines now carry their level colors too (pin orange,
+    floor/ceil teal, HHI grey).
+
+vGBT-0.9.52 [GEX³ TIME AXIS ON EVERY PANEL — USER 08-12]
+  • sharex was hiding tick labels on the upper two panels; every panel now
+    prints its own HH:MM axis (30-min ticks, explicit formatter) with panel
+    spacing to fit — no more scrolling to the bottom to know the time.
 
 vGBT-0.9.51 [GEX³ PANEL HEIGHT — USER 08-12 "make the whole pic longer"]
   • Panel-height slider 3–8 in (default 5.5, was ~3.5): the whole figure grows
@@ -3142,7 +3165,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.51 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.54 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -4704,24 +4727,37 @@ with tab_gex3:
         fig,axs=plt.subplots(3,1,figsize=(13,3*_g3h),dpi=90,sharex=True,sharey=True)
         fig.patch.set_facecolor(DARK)
         rd=[]
-        if bars is not None and len(bars):
-            x0=mdates.date2num(bars["t"].iloc[0]-pd.Timedelta(minutes=3))
-            x1=mdates.date2num(bars["t"].iloc[-1]+pd.Timedelta(minutes=6))
-        else:
-            # 0.9.46: bars can be empty (cold boot / feed gap). 0.9.45 skipped
-            # set_xlim entirely → matplotlib's 0-1 default date axis → the
-            # "01-01" ticks in the user's screenshot. Fall back to today's RTH
-            # window so the axis is sane, and say why the tape is blank.
-            _d0=now_est().replace(hour=9,minute=30,second=0,microsecond=0)
-            x0=mdates.date2num(_d0); x1=mdates.date2num(_d0+dt.timedelta(hours=6,minutes=45))
+        # 0.9.54 [USER 08-12 "window should be limited to RTH like terrain"]:
+        # x-axis = session_window(), the app-wide single source of truth every
+        # other tab already uses (GEX³ was computing its own from bar edges —
+        # basics, owned). Empty bars keep the same sane axis + honest caption.
+        x0,x1=session_window()
+        if bars is None or not len(bars):
             st.caption("no price bars in this frame yet — profiles only (candles return with the next price fetch)")
         _lk=(st.session_state.get("card_lock") or {}).get("levels") if isinstance(st.session_state.get("card_lock"),dict) else None
-        for ax,(ttl,sgn,wov) in zip(axs,panels):
-            ax.set_facecolor("#101826"); ax.set_ylim(ylo,yhi)
-            lens=(wov or sgn)
+        _prep=[]
+        for (ttl,sgn,wov) in panels:
             rows=(gex3_lens_rows(ch,sp,exp,wov,doi=_doi,sign=sgn) if wov
                   else gex3_lens_rows(ch,sp,exp,sgn))            # panel-3 sign radio honored per lens
-            mdl=gex3_model(rows,sp) if rows is not None else {"err":"no rows"}
+            _prep.append((ttl,sgn,wov,rows,gex3_model(rows,sp) if rows is not None else {"err":"no rows"}))
+        # 0.9.54 [USER 08-12 "lots of space above and below"]: auto-fit y to
+        # where the MASS actually is — the Colab tri-panel rule (strikes whose
+        # total or |net| exceed 2% of the frame max) ∪ candle range, padded
+        # 3×GRID, CLAMPED inside spot ± window×zoom. Shared across panels.
+        _ylos,_yhis=[],[]
+        for _,_,_,rows,_ in _prep:
+            if rows is None: continue
+            _t54=(rows["total"] if "total" in rows else rows["pos"]+rows["neg"]).values
+            _n54=np.abs(rows["net"].values)
+            _mk=(_t54>0.02*max(float(_t54.max()),1e-9))|(_n54>0.02*max(float(_n54.max()),1e-9))
+            if _mk.any():
+                _ylos.append(float(rows["strike"][_mk].min())); _yhis.append(float(rows["strike"][_mk].max()))
+        if bars is not None and len(bars):
+            _ylos.append(float(bars["l"].min())); _yhis.append(float(bars["h"].max()))
+        if _ylos:
+            ylo=max(min(_ylos)-15.0,ylo); yhi=min(max(_yhis)+15.0,yhi)
+        for ax,(ttl,sgn,wov,rows,mdl) in zip(axs,_prep):
+            ax.set_facecolor("#101826"); ax.set_ylim(ylo,yhi)
             rd.append((ttl,mdl))
             ax.set_xlim(x0,x1)
             if rows is not None: gex3_zone_shade(ax,rows,ylo,yhi,x0,x1)   # 0.9.47 pos/neg γ fields
@@ -4757,11 +4793,15 @@ with tab_gex3:
                     ax.text(1.001,_y,f" {_t}",transform=ax.get_yaxis_transform(),color=_c,fontsize=7.5,va="center",clip_on=False)
                 # 0.9.47 per-panel scorecard — the skill's info-box, compact
                 _hh=mdl["hhi"]
-                _sc=(f"pin {mdl['pin'] if mdl['pin'] is not None else '—'} raw {mdl['pin_raw']:.0f}→adj {mdl['pin_adj']:.0f} ({mdl['pin_adj_lbl']})\n"
-                     f"floor {mdl['floor'] if mdl['floor'] is not None else '—'} · ceil {mdl['ceiling'] if mdl['ceiling'] is not None else '—'}\n"
-                     f"HHI {_hh['total']:.3f} {_hh['regime']} · local γ {mdl['dial_local'][1]}")
-                ax.text(0.006,0.97,_sc,transform=ax.transAxes,color="#e8ecf2",fontsize=6.8,family="monospace",
-                        va="top",ha="left",zorder=6,bbox=dict(fc="#0d1117",ec="#3a4150",lw=0.6,alpha=.85,pad=2.5))
+                # 0.9.53 [USER 08-12 "you don't color code anything"]: scorecard lines
+                # carry the SAME colors as their chart lines — pin orange, floor
+                # teal / ceil orange-red, HHI grey — so text maps to chart at a glance.
+                for _dy,_txt53,_col53 in (
+                    (0.000,f"pin {mdl['pin'] if mdl['pin'] is not None else '—'} raw {mdl['pin_raw']:.0f}→adj {mdl['pin_adj']:.0f} ({mdl['pin_adj_lbl']})","#f0ad4e"),
+                    (0.035,f"floor {mdl['floor'] if mdl['floor'] is not None else '—'} · ceil {mdl['ceiling'] if mdl['ceiling'] is not None else '—'}","#33cc99"),
+                    (0.070,f"HHI {_hh['total']:.3f} {_hh['regime']} · local γ {mdl['dial_local'][1]}","#8b949e")):
+                    ax.text(0.006,0.97-_dy,_txt53,transform=ax.transAxes,color=_col53,fontsize=6.8,family="monospace",
+                            va="top",ha="left",zorder=6,bbox=dict(fc="#0d1117",ec="#3a4150",lw=0.4,alpha=.8,pad=1.8))
                 _d=mdl["dial"]
                 ax.text(0.995,0.03,f"γ {_d[1]} {'+' if _d[2] else '−'}{_d[0]:,.0f}",transform=ax.transAxes,
                         color=("#3fb950" if _d[2] else "#ef5350"),fontsize=9,fontweight="bold",ha="right")
@@ -4770,28 +4810,55 @@ with tab_gex3:
                 for _t in (_lk.get("ups") or [])[:1]: ax.axhline(_t["peak"],color="#3fb950",lw=0.8,ls=(0,(4,2,1,2)),alpha=.5,zorder=3)
                 for _t in (_lk.get("dns") or [])[:1]: ax.axhline(_t["peak"],color="#ef5350",lw=0.8,ls=(0,(4,2,1,2)),alpha=.5,zorder=3)
             ax.set_title(ttl,color="#8b949e",fontsize=9.5,loc="left",pad=2)
-            ax.tick_params(colors="#8a93a6",labelsize=7.5)
+            # 0.9.52 [USER 08-12 "time is not visible on x axis"]: sharex hides
+            # tick labels on the upper panels — force them on EVERY panel and
+            # pin an explicit HH:MM formatter (the auto default was also mush).
+            ax.tick_params(colors="#8a93a6",labelsize=7.5,labelbottom=True)
+            ax.xaxis.set_major_locator(mdates.MinuteLocator(byminute=(0,30)))
+            ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
             for _sp2 in ax.spines.values(): _sp2.set_color("#30363d")
             ax.xaxis_date()
-        fig.tight_layout(pad=0.6); fig.subplots_adjust(right=0.905)   # 0.9.48: room for level labels
+        fig.tight_layout(pad=0.6); fig.subplots_adjust(right=0.905,hspace=0.14)   # 0.9.48 label room · 0.9.52 axis room
         emit("gex3",fig)
-        _rl=[]
+        # 0.9.53 [USER 08-12]: readout was a monochrome wall. Now ONE line per
+        # lens, every level in ITS CHART COLOR (flip violet, CW green, PW red,
+        # PIN orange, FLOOR teal, CEIL orange-red, HW violet/dk-green, dial by
+        # sign); gravity trio + HHI top-5 live in a collapsed expander.
+        _n1=lambda v: f"{v:,.1f}" if v is not None else "—"
+        _n0=lambda v: f"{v:,.0f}" if v is not None else "—"
+        _sp53=lambda t,c: f"<span style='color:{c}'>{t}</span>"
+        _LC={"flip":"#c792ea","cw":"#3fb950","pw":"#ef5350","pin":"#f0ad4e",
+             "floor":"#33cc99","ceil":"#ff8844","hw":"#8b5cf6","dim":"#8b949e"}
+        _html,_det=[],[]
         for ttl,mdl in rd:
-            _n1=lambda v: f"{v:,.1f}" if v is not None else "—"   # py<3.11-safe (no nested-quote f-strings on Streamlit Cloud)
-            _n0=lambda v: f"{v:,.0f}" if v is not None else "—"
-            if mdl.get("err"): _rl.append(f"{ttl}: {mdl['err']}"); continue
+            if mdl.get("err"):
+                _html.append(f"<div style='color:#ef5350'>{ttl}: {mdl['err']}</div>"); continue
+            _d=mdl["dial"]
+            _html.append(
+                "<div style='margin:2px 0'><b style='color:#e8ecf2'>"+ttl+"</b><br>"
+                +" · ".join((
+                    _sp53(f"flip {_n1(mdl['flip'])}",_LC["flip"]),
+                    _sp53(f"CW {_n0(mdl['cw'])}",_LC["cw"]),
+                    _sp53(f"PW {_n0(mdl['pw'])}",_LC["pw"]),
+                    _sp53(f"PIN {_n0(mdl['pin'])} ({mdl['pin_adj_lbl']})",_LC["pin"]),
+                    _sp53(f"FLOOR {_n0(mdl['floor'])}",_LC["floor"]),
+                    _sp53(f"CEIL {_n0(mdl['ceiling'])}",_LC["ceil"]),
+                    _sp53(f"HW ↑{_n0(mdl['uhw'])}·{(mdl['uhl'] or '—')[:1]} ↓{_n0(mdl['dhw'])}·{(mdl['dhl'] or '—')[:1]}",_LC["hw"]),
+                    _sp53(f"γ {_d[1]} {'+' if _d[2] else '−'}{_d[0]:,.0f}","#3fb950" if _d[2] else "#ef5350"),
+                ))+"</div>")
             gc,gp=mdl["grav_call"],mdl["grav_put"]
-            _rl.append(
-                f"{ttl}\n"
-                f"  flip {_n1(mdl['flip'])} · CW {mdl['cw']} · PW {mdl['pw']}\n"
-                f"  gravity call FR/CEN/MED {_n0(gc['fixed'])}/{_n0(gc['cent'])}/{_n0(gc['med'])} · "
-                f"put {_n0(gp['fixed'])}/{_n0(gp['cent'])}/{_n0(gp['med'])}\n"
-                f"  pin {mdl['pin']} · raw {mdl['pin_raw']:.0f} ({mdl['pin_lbl']}) → HHI-adj {mdl['pin_adj']:.0f} ({mdl['pin_adj_lbl']})\n"
-                f"  floor {mdl['floor']} · ceiling {mdl['ceiling']} · hedge walls up {mdl['uhw']} ({mdl['uhl']}) / dn {mdl['dhw']} ({mdl['dhl']})\n"
-                f"  HHI tot {mdl['hhi']['total']:.3f} ({mdl['hhi']['regime']}, fixed thresholds — no session history) · "
-                f"top: "+", ".join(f"{k:,.0f} {sh*100:.0f}%" for k,sh in mdl['hhi']['top'])+"\n"
-                f"  dial whole {mdl['dial'][1]} {mdl['dial'][0]:,.0f} · local(±30 of flip) {mdl['dial_local'][1]} {mdl['dial_local'][0]:,.0f}")
-        st.code("\n".join(_rl)+"\nK* omitted: §10 needs market premiums; chain carries model mids (circular). "
-                "Dealer sign: panel 1 assumed, panel 2 inferred — neither is clearing truth.",language=None)
-    _g3sig=repr((sel_ts.isoformat(),sel_i,round(window_pct,4),_g3w,_g3s))
+            _det.append(f"{ttl}\n  gravity call FR/CEN/MED {_n0(gc['fixed'])}/{_n0(gc['cent'])}/{_n0(gc['med'])} · "
+                        f"put {_n0(gp['fixed'])}/{_n0(gp['cent'])}/{_n0(gp['med'])}\n"
+                        f"  pin raw {mdl['pin_raw']:.0f} ({mdl['pin_lbl']}) → HHI-adj {mdl['pin_adj']:.0f} ({mdl['pin_adj_lbl']})\n"
+                        f"  HHI tot {mdl['hhi']['total']:.3f} ({mdl['hhi']['regime']}, fixed thresholds — no session history) · "
+                        f"top: "+", ".join(f"{k:,.0f} {sh*100:.0f}%" for k,sh in mdl['hhi']['top'])+"\n"
+                        f"  dial whole {mdl['dial'][1]} {mdl['dial'][0]:,.0f} · local(±30) {mdl['dial_local'][1]} {mdl['dial_local'][0]:,.0f}")
+        st.markdown("<div style='font-family:monospace;font-size:12.5px;line-height:1.55'>"
+                    +"".join(_html)
+                    +f"<div style='color:{_LC['dim']};font-size:11px;margin-top:3px'>K* omitted: §10 needs market premiums; "
+                    "chain carries model mids (circular). Dealer sign: panel 1 assumed, panels 2-3 inferred — "
+                    "neither is clearing truth.</div></div>",unsafe_allow_html=True)
+        with st.expander("model detail (gravity trio · pin scoring · HHI top-5 · dials)"):
+            st.code("\n".join(_det),language=None)
+    _g3sig=repr((sel_ts.isoformat(),sel_i,round(window_pct,4),_g3w,_g3s,round(_g3z,2),round(_g3wd,2),round(_g3h,1)))
     dispatch_live("gex3",_render_gex3,sig=_g3sig)
