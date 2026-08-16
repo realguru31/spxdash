@@ -1,8 +1,15 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.57
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.58
 
 CHANGELOG POLICY (per Faisal, Jul-24): detailed notes for the LATEST 3 versions
 only; everything older is ONE line. Full history lives in git, not here.
+
+vGBT-0.9.58 [PARTITION SIGN INVERSION — USER SCREENSHOT 08-16]
+  • Standing mass now carries the DEALER naive direction (calls −, puts + =
+    −nv, the shootout's putOI−callOI winner); 0.9.57 used the legacy calls-
+    positive display convention and rendered the partitioned book as Dan's
+    MIRROR. Unsigned fresh mass follows dealer-naive too. Harness fixture was
+    hand-computed with the same wrong sign and validated the bug — recomputed.
 
 vGBT-0.9.57 [ΔOI-PARTITIONED SIGNING + COMPARISON TOGGLE — SHOOTOUT 08-16, SANCTIONED]
   • signed_book_rows(mode="part"): per leg, fresh = clip(overnight ΔOI,0,OI)
@@ -2625,10 +2632,17 @@ def signed_book_rows(ch, sp, mode="flow", doi=None):
         dv=np.array([float((doi or {}).get((float(k),str(t)),0.0) or 0.0)
                      for k,t in zip(cc["strike"],cc["type"])])
         fresh=np.clip(dv,0.0,oi_); stand=oi_-fresh
-        tsig=np.where(cc["dsign"].notna(),np.sign(cc["dsign"].fillna(0)).replace(0,np.nan) if hasattr(np.sign(cc["dsign"].fillna(0)),"replace") else np.sign(cc["dsign"].fillna(0)),np.nan)
-        tsig=np.where(np.isnan(tsig)|(tsig==0),nv,tsig)        # unsigned/zero fresh → naive dir
+        # 0.9.58 [USER SCREENSHOT 08-16 — book rendered as Dan's MIRROR]: standing
+        # direction is the DEALER naive view — dealers are SHORT what customers
+        # hold: calls → −1, puts → +1 (= −nv; the shootout's putOI−callOI winner).
+        # 0.9.57 wired nv (the legacy calls-positive DISPLAY convention) — inverted
+        # every standing bar; the gate validated it because the fixture was
+        # hand-computed with the same wrong sign. Both corrected.
+        dnv=-nv
+        tsig=np.sign(cc["dsign"].fillna(0).values)
+        tsig=np.where(cc["dsign"].notna().values&(tsig!=0),tsig,dnv)   # unsigned/zero fresh → dealer-naive dir
         SCp=100.0*sp*sp/10000.0
-        cc["_v"]=cc["gamma"].fillna(0)*(tsig*fresh+nv*stand)*SCp
+        cc["_v"]=cc["gamma"].fillna(0)*(tsig*fresh+dnv*stand)*SCp
         cc["_w"]=cc["oi"].fillna(0)
         cc["_a"]=cc["dsign"].abs().fillna(0)*fresh              # conf = tape-signed share
         g=cc.groupby("strike",as_index=False).agg(signed_pct=("_v","sum"),_w=("_w","sum"),_a=("_a","sum"))
@@ -3264,7 +3278,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.57 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.58 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
