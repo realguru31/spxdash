@@ -1,8 +1,20 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.56
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.57
 
 CHANGELOG POLICY (per Faisal, Jul-24): detailed notes for the LATEST 3 versions
 only; everything older is ONE line. Full history lives in git, not here.
+
+vGBT-0.9.57 [ΔOI-PARTITIONED SIGNING + COMPARISON TOGGLE — SHOOTOUT 08-16, SANCTIONED]
+  • signed_book_rows(mode="part"): per leg, fresh = clip(overnight ΔOI,0,OI)
+    takes the TAPE sign; standing = OI − fresh takes NAIVE direction (the lens
+    shootout winner vs the cleared VS3D book). Full mass both (0.9.56); conf =
+    tape-signed share. ΔOI reused from the GEX³ day-cache (one pull/day,
+    never live-polled); unavailable → all-standing with an honest caption.
+    mode="flow" byte-identical to 0.9.56.
+  • Book-tab sidebar radio "Book signing (comparison)": current vs proposed —
+    switches the Book bars, dots overlays, preview ladder and slide card.
+    DISPLAY ONLY: the 09:35 lock, strip, recorded snapshots and Read card stay
+    flow-signed until a switch is sanctioned after slide grading.
 
 vGBT-0.9.56 [BOOK MAGNITUDE + CORRIDOR + ORDERING — METHOD FIXES, USER-SANCTIONED 08-16]
   • FIX 1 (METHOD): bar length = FULL γ·OI mass × sign(dsign). Confidence no
@@ -1365,6 +1377,7 @@ def seed_standing(exp, strike, ss=None):
         return None
 
 def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WARN, ref_spot=None, open_strad=None,
+                     sign_mode="flow", sign_doi=None,
                      lock=None, status_prices=None, header_note=None, levels_out=None):
     """Dan-format KEY LEVELS + TAKEAWAYS from the flow-signed book (§4.4 test-anchor).
     Ordered ladder: T1 = biggest dealer-SHORT cluster per side of the OPEN in the
@@ -1383,7 +1396,7 @@ def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WAR
         longs_ext=lock.get("longs_ext",longs)
         half=lock.get("half",spot*0.009); s0=lock.get("spot0",spot)
     else:
-        rows=signed_book_rows(latest["chain"],spot)
+        rows=signed_book_rows(latest["chain"],spot,mode=sign_mode,doi=sign_doi)   # 0.9.57 preview comparison
         if rows is None:
             L.append(("  needs Signed mode — naive ± cannot define tests/anchors",DIM,11,False))
             return L
@@ -2588,15 +2601,39 @@ def gbt_snapshot_frame(window_pct):
         try: st.sidebar.caption(f"⚠ signed inference degraded → naive this frame: {type(_sx).__name__}")
         except Exception: pass
     return spot,chain,bk,exp
-def signed_book_rows(ch, sp):
+def signed_book_rows(ch, sp, mode="flow", doi=None):
     """0.9.9: per-strike MM-inferred signed GEX rows from a stored chain (its own
     as-of-capture dsign column) — factored out so open/prev snapshots can be
-    dotted on the signed Book in the SAME units as the live bars."""
-    if ch is None or "dsign" not in getattr(ch,"columns",[]) or not ch["dsign"].notna().any():
-        return None
+    dotted on the signed Book in the SAME units as the live bars.
+    vGBT-0.9.57 [SHOOTOUT 08-16, USER-SANCTIONED]: mode="part" = ΔOI-PARTITIONED
+    signing. Per leg: fresh = clip(overnight ΔOI, 0, OI) takes the TAPE sign
+    (yesterday's flow legitimately testifies about paper it created); standing
+    = OI − fresh takes the NAIVE direction (the shootout winner vs the cleared
+    VS3D book — accumulated OI is overwhelmingly customer-long-options). Both
+    at FULL mass (0.9.56); conf = tape-signed share, so mostly-standing strikes
+    print faded-naive and fresh 0DTE strikes print exactly as mode="flow".
+    doi = {(strike,type): ΔOI} or None → all standing (honest premarket/weekend
+    state before ΔOI delivery). mode="flow" is byte-identical to 0.9.56."""
+    if ch is None or "dsign" not in getattr(ch,"columns",[]): return None
+    if mode!="part" and not ch["dsign"].notna().any(): return None
+    # part mode: an all-unsigned chain is still a valid ALL-STANDING naive book
     cc=ch.copy()
     nv=np.where(cc["type"].values=="call",1.0,-1.0)
     eff=cc["dsign"].where(cc["dsign"].notna(),pd.Series(nv*GBT_UNSEEDED_W,index=cc.index))
+    if mode=="part":
+        oi_=cc["oi"].fillna(0).values
+        dv=np.array([float((doi or {}).get((float(k),str(t)),0.0) or 0.0)
+                     for k,t in zip(cc["strike"],cc["type"])])
+        fresh=np.clip(dv,0.0,oi_); stand=oi_-fresh
+        tsig=np.where(cc["dsign"].notna(),np.sign(cc["dsign"].fillna(0)).replace(0,np.nan) if hasattr(np.sign(cc["dsign"].fillna(0)),"replace") else np.sign(cc["dsign"].fillna(0)),np.nan)
+        tsig=np.where(np.isnan(tsig)|(tsig==0),nv,tsig)        # unsigned/zero fresh → naive dir
+        SCp=100.0*sp*sp/10000.0
+        cc["_v"]=cc["gamma"].fillna(0)*(tsig*fresh+nv*stand)*SCp
+        cc["_w"]=cc["oi"].fillna(0)
+        cc["_a"]=cc["dsign"].abs().fillna(0)*fresh              # conf = tape-signed share
+        g=cc.groupby("strike",as_index=False).agg(signed_pct=("_v","sum"),_w=("_w","sum"),_a=("_a","sum"))
+        g["conf"]=(g["_a"]/g["_w"].replace(0,np.nan)).fillna(0.0)
+        return g[["strike","signed_pct","conf"]]
     # vGBT-0.9.56 [METHOD FIX, USER-SANCTIONED 08-16]: bar length = FULL gamma
     # mass × DIRECTION — np.sign(eff), not eff. dsign is direction×flow-polarity;
     # multiplying MAGNITUDE by it shrank a 60/40-flow strike's bar to 20% of its
@@ -3227,7 +3264,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.56 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.57 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -3283,6 +3320,12 @@ _live_pick=st.sidebar.selectbox("📡 Live price layer (TV poll)",["15s","30s","
          "own timer — the underlying positioning stays on the 5-min GBT snapshot clock. Verified in "
          "Colab 08-06 (live_candle_check: median fetch ~0.2s). Off = pre-0.9.41 behavior.")
 st.session_state["_live_sec"]={"15s":15,"30s":30,"60s":60,"off":None}[_live_pick]
+b_signmode=st.sidebar.radio("Book signing (comparison)",["flow-signed (current)","ΔOI-partitioned (proposed)"],
+    key="b_signmode",horizontal=False,
+    help="vGBT-0.9.57 [SHOOTOUT 08-16]: comparison toggle, DISPLAY ONLY. Proposed = standing OI at naive "
+         "direction (the lens that matched the cleared VS3D book) + overnight-ΔOI fresh paper at the tape "
+         "sign, full mass both, confidence = tape-signed share. Affects the Book bars + preview/slide card. "
+         "THE METHOD lock, strip, and recorded snapshots stay on current signing until you sanction a switch.")
 b_slidecard=st.sidebar.checkbox("🗂 Dan-style KEY LEVELS card (Book)",value=True,key="b_slidecard",
     help="Mimics the VSMM daily-slide card ABOVE the Book structure for one-glance comparison against "
          "Dan's slides. SAME construction as the Read card — one method, re-called: locked ladder, "
@@ -3945,6 +3988,23 @@ def _book_spot_overlay(fig, bars, lo, hi, chain=None, spot=None, exp=None, nowv=
     except Exception: pass
     return fig
 
+def book_sign_args():
+    """0.9.57: (mode, doi) for the DISPLAY pipeline per the comparison toggle.
+    ΔOI reused from the GEX³ day-cache (one pull/day, never live-polled);
+    unavailable → doi=None and the partitioned book is all-standing (honest)."""
+    if not str(st.session_state.get("b_signmode","")).startswith("ΔOI"):
+        return "flow",None
+    d=None
+    try:
+        _dd=gbt_doi_by_strike(exps[0]) if not PLAYBACK else None
+        if _dd is not None and len(_dd):
+            d={(float(r.strike),str(r.type)):float(r.doi) for r in _dd.itertuples()}
+    except Exception: d=None
+    if d is None:
+        st.caption("ΔOI not delivered yet — partitioned book = standing-only (all naive) until the "
+                   "overnight change posts after the open")
+    return "part",d
+
 with tab_book:
     if b_strip: render_strip(latest.get("strip"))
     def _book_slide_card():
@@ -3968,13 +4028,17 @@ with tab_book:
                 except Exception: _stp=None
             elif now_est().time()<dt.time(9,35):
                 _hdr="PREVIEW — pre-open book (yesterday's OI/signs) · locks at first ≥09:35 ET snapshot"
+            if str(st.session_state.get("b_signmode","")).startswith("ΔOI"):
+                _hdr=((_hdr+" · ") if _hdr else "")+"ΔOI-PARTITIONED (proposed) — comparison view, lock stays flow-signed"
             try: _pstr=straddle_for(latest["chain"],latest["spot"],exps[0],live_ok=(not PLAYBACK))
             except Exception: _pstr=None
             _os0=((gbt_open_straddle(exps[0]) or (None,))[0]
                   if ((not PLAYBACK) and now_est().time()>=dt.time(9,30)) else None)
+            _bm5,_bd5=book_sign_args()               # slide card follows the comparison toggle
             _L=key_levels_lines(latest,latest["spot"],_pstr,
                                 {"decay":"","fish":"","pat":"","clock":""},
                                 "k","g","r","c","d","y",
+                                sign_mode=_bm5,sign_doi=_bd5,
                                 ref_spot=method_ref(latest["spot"],live=(not PLAYBACK))[0],
                                 open_strad=_os0,
                                 lock=(_lk or {}).get("levels") if isinstance(_lk,dict) else None,
@@ -4012,8 +4076,9 @@ with tab_book:
                 if _i>0: prevb=_sl[_i-1].get("book")
                 if _i>0: openb=_sl[0].get("book")
                 if _i>0:
-                    _sgp=signed_book_rows(_sl[_i-1].get("chain"),float(_sl[_i-1].get("spot") or latest["spot"]))
-                    _sgo=signed_book_rows(_sl[0].get("chain"),float(_sl[0].get("spot") or latest["spot"]))
+                    _bm0,_bd0=book_sign_args()
+                    _sgp=signed_book_rows(_sl[_i-1].get("chain"),float(_sl[_i-1].get("spot") or latest["spot"]),mode=_bm0,doi=_bd0)
+                    _sgo=signed_book_rows(_sl[0].get("chain"),float(_sl[0].get("spot") or latest["spot"]),mode=_bm0,doi=_bd0)
                 else: _sgp=_sgo=None
             except Exception: pass
         _strv=None
@@ -4021,12 +4086,15 @@ with tab_book:
             try: _strv=straddle_for(latest["chain"],latest["spot"],exps[0],live_ok=(not PLAYBACK))
             except Exception: _strv=None
         _sg=None
+        _bm,_bdoi=book_sign_args()                      # 0.9.57 comparison toggle (display only)
         if b_mode.startswith("MM") and not GBT_SIGNED:
             st.caption("Signed dealer inference is OFF (sidebar toggle) — naive bars shown")
         elif b_mode.startswith("MM"):
             try:
-                _sg=signed_book_rows(latest["chain"],float(latest["spot"]))
+                _sg=signed_book_rows(latest["chain"],float(latest["spot"]),mode=_bm,doi=_bdoi)
                 if _sg is None: st.caption("no signed data in this frame — naive bars shown")
+                elif _bm=="part": st.caption("ΔOI-PARTITIONED book (proposed) — standing naive + fresh tape-signed · "
+                                             "METHOD lock/strip remain on flow-signed")
             except Exception as _bx: st.caption(f"signed book unavailable this frame: {type(_bx).__name__}")
         _z=float(st.session_state.get("book_zoom",1.0))
         _sp=float(latest["spot"]); _half=_sp*window_pct*_z
