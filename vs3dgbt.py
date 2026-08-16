@@ -1,8 +1,16 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.54
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.55
 
 CHANGELOG POLICY (per Faisal, Jul-24): detailed notes for the LATEST 3 versions
 only; everything older is ONE line. Full history lives in git, not here.
+
+vGBT-0.9.55 [CHROME HIDDEN — USER 08-16]
+  • CSS block after set_page_config hides header/toolbar (GitHub·Fork·Stop·
+    menu), footer, decoration/status widgets, and best-effort the Cloud viewer
+    badge, for ALL viewers incl. owner. toolbarMode="viewer" proved
+    insufficient on Cloud. DOM-hack caveat: Streamlit upgrades renaming
+    test-ids can un-hide; if chrome reappears after a platform update, that's
+    the cause. block-container top padding reclaimed.
 
 vGBT-0.9.54 [GEX³ RTH WINDOW + Y AUTO-FIT — USER 08-12, basics owned]
   • x-axis = session_window() (09:30–16:00), the app-wide single source of
@@ -365,6 +373,21 @@ def today_est():
     return now_est().date()
 
 st.set_page_config(page_title="vs3dGBT · SPX 0DTE (GBT data)", layout="wide")
+
+# vGBT-0.9.55 [USER 08-16]: hide Streamlit chrome for ALL viewers — header/
+# toolbar (GitHub · Fork · Stop · menu), footer, and a best-effort pass at the
+# Cloud viewer badge. DOM hack by nature: a Streamlit upgrade renaming
+# test-ids can silently un-hide these. Keyboard 'r' still reruns; Manage app
+# stays reachable from share.streamlit.io. config.toml toolbarMode proved
+# insufficient on Cloud (user-verified signed-out).
+st.markdown("""<style>
+#MainMenu, header, footer,
+[data-testid="stHeader"], [data-testid="stToolbar"],
+[data-testid="stDecoration"], [data-testid="stStatusWidget"],
+[class*="viewerBadge"], a[href*="streamlit.io/cloud"]
+{display:none !important; visibility:hidden !important;}
+.block-container{padding-top:0.5rem;}
+</style>""", unsafe_allow_html=True)
 
 # ════════════════════════════ Barchart ══════════════════════════════════════
 _UA=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -3165,7 +3188,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.54 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.55 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
