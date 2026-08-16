@@ -1,8 +1,21 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.55
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.56
 
 CHANGELOG POLICY (per Faisal, Jul-24): detailed notes for the LATEST 3 versions
 only; everything older is ONE line. Full history lives in git, not here.
+
+vGBT-0.9.56 [BOOK MAGNITUDE + CORRIDOR + ORDERING — METHOD FIXES, USER-SANCTIONED 08-16]
+  • FIX 1 (METHOD): bar length = FULL γ·OI mass × sign(dsign). Confidence no
+    longer shrinks bars (it was double-counted — opacity AND magnitude), the
+    distortion that crushed real shorts to slivers off-session, collapsed the
+    corridor onto dust, and produced "no balance"/"balance above UP1" cards.
+    Unsigned legs: naive direction, FULL mass, conf→0 (fade, never vanish).
+  • FIX 2: corridor balance candidates bypass the window-wide dust floor —
+    biggest long BETWEEN the tests, period; small prints as Weak, never omitted.
+    (Locked ladders keep their frozen candidate list.)
+  • FIX 3: DN2<DN1<UP1<UP2 is a construction invariant (violations drop the
+    offending rung + ⚠order flag, never print silently); the no-balance line
+    now reads "NO BALANCE … DRIFT MAGNET ONLY, not a balance".
 
 vGBT-0.9.55 [CHROME HIDDEN — USER 08-16]
   • CSS block after set_page_config hides header/toolbar (GitHub·Fork·Stop·
@@ -1482,12 +1495,29 @@ def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WAR
                     c["wall_at"]=c["peak"]; c["peak"]=c["peak"]-side*5.0; c["wall"]=True
             return out                                   # ordered outward by construction
         ups=_tests(+1); dns=_tests(-1)
+        # 0.9.56 FIX 3 [USER 08-16]: ordering is a construction INVARIANT —
+        # DN2 < DN1 < ref-side < UP1 < UP2. A violation can never print silently;
+        # it drops the offending outer rung and flags the card.
+        _ord_flag=""
+        if len(ups)==2 and not ups[1]["peak"]>ups[0]["peak"]: ups=[ups[0]]; _ord_flag=" ⚠order"
+        if len(dns)==2 and not dns[1]["peak"]<dns[0]["peak"]: dns=[dns[0]]; _ord_flag=" ⚠order"
+        if ups and dns and not dns[0]["peak"]<ups[0]["peak"]:
+            _ord_flag=" ⚠order-collapsed"
         # 0.9.33 balance corridor [USER 07-27 "between the first upside and first
         # downside" — the sandwich is definitional]: BALANCE = biggest long BETWEEN
         # UP1 and DN1. Corridor empty → honest line + name the drift magnet.
         _u1=ups[0]["peak"] if ups else None
         _d1=dns[0]["peak"] if dns else None
-        _corr=[c for c in longs_ext if (_u1 is None or c["peak"]<_u1) and (_d1 is None or c["peak"]>_d1)]
+        # 0.9.56 FIX 2 [USER 08-16]: corridor candidates bypass the dust floor —
+        # min_share is measured against the WHOLE window, so a legitimate small
+        # long between tight tests was dropped and the card printed "no balance"
+        # while a bar sat right there. Dan names weak balances; he doesn't omit
+        # them. Floor-free pass, corridor-bounded; label stays honest via
+        # _strength (small ⇒ Weak).
+        _corr=[c for c in signed_clusters(rows,ref-half,ref+half,min_share=0.0)
+               if c["sign"]>0 and (_u1 is None or c["peak"]<_u1) and (_d1 is None or c["peak"]>_d1)] \
+              if not lock else \
+              [c for c in longs_ext if (_u1 is None or c["peak"]<_u1) and (_d1 is None or c["peak"]>_d1)]
         _nobal=None
         if _corr:
             bal=max(_corr,key=lambda c:c["mass"])
@@ -1523,8 +1553,9 @@ def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WAR
             if _lo<=t_peak+2: return " ·TESTED"
         return ""
     if bal is None and _nobal is not None:
-        L.append((f"BALANCE: none between tests — {_nobal['peak']:,.0f} is the drift magnet "
-                  f"({'above UP1' if (_u1 and _nobal['peak']>=_u1) else 'below DN1' if (_d1 and _nobal['peak']<=_d1) else 'edge'})",WHT,12,True))
+        L.append((f"NO BALANCE between tests — nothing to anchor. Nearest long {_nobal['peak']:,.0f} "
+                  f"sits {'ABOVE UP1' if (_u1 and _nobal['peak']>=_u1) else 'BELOW DN1' if (_d1 and _nobal['peak']<=_d1) else 'at the edge'} "
+                  f"— DRIFT MAGNET ONLY, not a balance",WHT,12,True))
     if bal:
         _pk=" ⚠pkg" if _in_band(bal["peak"],bands) else ""
         # Annotation only (never changes selection): when the guide-selected balance
@@ -2566,7 +2597,15 @@ def signed_book_rows(ch, sp):
     cc=ch.copy()
     nv=np.where(cc["type"].values=="call",1.0,-1.0)
     eff=cc["dsign"].where(cc["dsign"].notna(),pd.Series(nv*GBT_UNSEEDED_W,index=cc.index))
-    cc["_v"]=eff*cc["gamma"].fillna(0)*cc["oi"].fillna(0)*100.0*sp*sp/10000.0
+    # vGBT-0.9.56 [METHOD FIX, USER-SANCTIONED 08-16]: bar length = FULL gamma
+    # mass × DIRECTION — np.sign(eff), not eff. dsign is direction×flow-polarity;
+    # multiplying MAGNITUDE by it shrank a 60/40-flow strike's bar to 20% of its
+    # real position — double-counting confidence (already drawn as opacity) and
+    # collapsing corridors onto dust (user screenshot 08-16: "no balance").
+    # Dan's bars are cleared POSITIONS: size never depends on sign certainty.
+    # Unsigned legs keep naive direction at FULL mass, conf→0: they FADE, they
+    # don't vanish, and they can anchor structure honestly.
+    cc["_v"]=np.sign(eff)*cc["gamma"].fillna(0)*cc["oi"].fillna(0)*100.0*sp*sp/10000.0
     cc["_w"]=cc["oi"].fillna(0); cc["_a"]=cc["dsign"].abs().fillna(0)*cc["_w"]
     g=cc.groupby("strike",as_index=False).agg(signed_pct=("_v","sum"),_w=("_w","sum"),_a=("_a","sum"))
     g["conf"]=(g["_a"]/g["_w"].replace(0,np.nan)).fillna(0.0)
@@ -3188,7 +3227,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.55 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.56 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
