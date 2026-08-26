@@ -1,8 +1,21 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.66
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.68
 
 CHANGELOG POLICY (per Faisal, Jul-24): detailed notes for the LATEST 3 versions
 only; everything older is ONE line. Full history lives in git, not here.
+
+vGBT-0.9.68 [ST.PYPLOT REPLACED BY OWN-PNG RENDER — USER 08-26]
+  • Root cause of the white charts: the Streamlit platform update re-themes
+    matplotlib figures WHITE inside st.pyplot; cached replays (our dark PNG
+    bytes via st.image) were unaffected — fresh renders white, old frames
+    dark. emit() now displays its OWN dark-facecolor PNG everywhere: one
+    render, live and cached pixel-identical, immune to platform theming.
+
+vGBT-0.9.67 [WHITE IMAGE-CARD MAT KILLED — USER 08-26]
+  • Streamlit platform update began wrapping images/charts in white-bordered
+    card containers (page dark, charts matted white). CSS block extended:
+    image containers + imgs forced dark/transparent, borders and shadows off.
+    Same DOM-hack caveat as 0.9.55: a future test-id rename can re-expose.
 
 vGBT-0.9.66 [NETFLOW = PARTICIPANT VIEW, LABELED LOUDLY — USER 08-26]
   • Netflow stays participant-signed (+ bought / − sold, the user's worked
@@ -496,6 +509,15 @@ st.markdown("""<style>
 [class*="viewerBadge"], a[href*="streamlit.io/cloud"]
 {display:none !important; visibility:hidden !important;}
 .block-container{padding-top:0.5rem;}
+/* vGBT-0.9.67 [USER 08-26]: a Streamlit platform update wrapped images/charts
+   in white-bordered card containers (page theme dark, cards white). Force
+   every image container + img transparent/dark, no border, no radius mat. */
+[data-testid="stImage"], [data-testid="stImageContainer"],
+[data-testid="stImage"] img, [data-testid="stImageContainer"] img,
+[data-testid="stElementContainer"] [data-testid="stImage"],
+div[data-testid="stFullScreenFrame"]
+{background-color:#0e1117 !important; border:none !important; box-shadow:none !important;}
+[data-testid="stImage"] img{border-radius:0 !important;}
 </style>""", unsafe_allow_html=True)
 
 # ════════════════════════════ Barchart ══════════════════════════════════════
@@ -3457,7 +3479,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.66 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.68 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -3777,11 +3799,15 @@ def emit(tab, fig, caption=None, container=None):
         plt.close(fig); return
     tgt=container if container is not None else st
     if caption: tgt.markdown(caption)
-    tgt.pyplot(fig,use_container_width=False)   # fixed size: prevents resize/jiggle feedback loop
-    try:
-        buf=_io.BytesIO(); fig.savefig(buf,format="png",dpi=fig.dpi,facecolor=DARK)   # == st.pyplot pixel size: live and cached render identically
-        _EMIT_BUF.setdefault(tab,[]).append(buf.getvalue())
-    except Exception: pass
+    # vGBT-0.9.68 [USER 08-26 "white everywhere in GEX"]: st.pyplot REPLACED by
+    # st.image of our own dark-facecolor PNG. The Streamlit platform update
+    # re-themes matplotlib figures WHITE in st.pyplot; cached replays (st.image
+    # of our bytes) stayed dark — hence fresh renders white, old frames dark.
+    # One render, identical pixels live vs cached, immune to their theming.
+    buf=_io.BytesIO(); fig.savefig(buf,format="png",dpi=fig.dpi,facecolor=DARK)
+    _png=buf.getvalue()
+    tgt.image(_png,output_format="PNG")   # kwarg marks FRESH renders (replays omit it) — harness keys on this
+    _EMIT_BUF.setdefault(tab,[]).append(_png)
     plt.close(fig)
 def emit_caption(tab, text):
     st.caption(text)
