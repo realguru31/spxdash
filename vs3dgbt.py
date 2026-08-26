@@ -1,8 +1,18 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.64
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.65
 
 CHANGELOG POLICY (per Faisal, Jul-24): detailed notes for the LATEST 3 versions
 only; everything older is ONE line. Full history lives in git, not here.
+
+vGBT-0.9.65 [NET FLOW MODE + AXIS FIX — USER 08-26, spec verbatim]
+  • Third Book mode "net flow (directional paper)": yesterday's trading on
+    TODAY'S chain — bullish (calls@ask + puts@bid) minus bearish mirrors, per
+    strike. Dot = yesterday-final (seed only, frozen); bar = seed + live
+    cumulative on the vol-gated hot set, every snapshot; skeleton = paper
+    retraced toward zero. + net bought / − net sold (user's worked example).
+    NO OI, NO γ, NO spot: zero trades ⇒ bar sits on its dot. Zero new calls.
+  • Axis divisor fixed: contracts/netflow plot in natural units (the $M ÷1e6
+    made 800 contracts print as 0.0008 — user screenshot 08-26).
 
 vGBT-0.9.64 [BOOK = PURE CONTRACTS LEDGER · TERRAIN KEEPS PHYSICS — USER 08-26, option C]
   • Book bars/dots/skeletons = inferred sign × OI CONTRACTS (Dan's instrument,
@@ -1444,6 +1454,33 @@ def seed_standing(exp, strike, ss=None):
         return "today-only"
     except Exception:
         return None
+
+def netflow_rows(exp, merged=True, ss=None):
+    """vGBT-0.9.65 [USER 08-26, spec verbatim]: NET FLOW = yesterday's trading
+    on TODAY'S chain, DIRECTIONAL paper per strike:
+      bullish = calls@ask/above + puts@bid/below · bearish = the mirrors
+      value  = n_call − n_put  (customer view: + = net bought · − = net sold;
+               the user's worked example prints −100 for 1000 sold / 900 bought)
+    dot = SEED ONLY (yesterday-final, frozen) · bar = SEED + LIVE cumulative,
+    refreshed each snapshot on the vol-gated hot set. NO OI, NO γ, NO spot —
+    zero trades ⇒ bar sits exactly on its dot. conf = |pooled net|/tot.
+    Reuses gbt_seed_/gbt_live_ stores: zero new API calls."""
+    if ss is None: ss=st.session_state
+    seed=ss.get(f"gbt_seed_{exp}") or {}
+    live=(ss.get(f"gbt_live_{exp}") or {}) if merged else {}
+    rows=[]
+    for k in sorted(set(list(seed.keys())+list(live.keys()))):
+        nc=nt=pc=pt=0.0
+        for src in (seed,live):
+            d=src.get(k) or {}
+            n,t=d.get("call",(0.0,0.0)); nc+=float(n); nt+=float(t)
+            n,t=d.get("put",(0.0,0.0));  pc+=float(n); pt+=float(t)
+        tot=nt+pt
+        if tot<=0: continue
+        val=nc-pc                                   # + net bought · − net sold
+        rows.append((float(k),val,min(1.0,abs(val)/max(tot,1e-9)*2.0)))
+    if not rows: return None
+    return pd.DataFrame(rows,columns=["strike","signed_pct","conf"])
 
 def method_card_jpg(latest, spot, strad_c, vd, ref_spot, open_strad, lock, simple=False, sign_mode="flow", sign_doi=None):
     """vGBT-0.9.61: the METHOD card as a standalone white JPG (Dan-slide format)
@@ -3189,18 +3226,18 @@ def book_figure(book,spot,straddle,lo,hi,side="Total",prev=None,openb=None,signe
     if signed is not None and len(signed):
         sg=signed[(signed["strike"]>=lo)&(signed["strike"]<=hi)].reset_index(drop=True)
         for _,r in sg.iterrows():
-            v=_tx(float(r["signed_pct"])/1e6)
+            v=_tx(float(r["signed_pct"]))          # 0.9.65: contracts/netflow are natural units — $M divisor removed
             ax.barh(float(r["strike"]),v,height=3.6,zorder=3,
                     color=clean_color(v,("#26a69a" if v>=0 else "#ef5350"),
                               (clean_map or {}).get(float(r["strike"]),0)),
                     alpha=0.35+0.6*min(1.0,float(r.get("conf",0.5))))
         ax.set_xlabel("dealer NET CONTRACTS — inferred sign × OI (flow-signed · opacity = confidence · "
                       "moves only on sign flips + overnight OI)",color="#aaa",fontsize=8)
-        _cur={float(r["strike"]):_tx(float(r["signed_pct"])/1e6) for _,r in sg.iterrows()}
+        _cur={float(r["strike"]):_tx(float(r["signed_pct"])) for _,r in sg.iterrows()}
         def _sg_map(df):
             if df is None or getattr(df,"empty",True): return None
             d=df[(df["strike"]>=lo)&(df["strike"]<=hi)]
-            return {float(r["strike"]):_tx(float(r["signed_pct"])/1e6) for _,r in d.iterrows()}
+            return {float(r["strike"]):_tx(float(r["signed_pct"])) for _,r in d.iterrows()}
         _op=_sg_map(signed_open); _pv=_sg_map(signed_prev)
         if sticks and _op:                       # exhausted extent: thin stick + dot at the open level
             for k,ov in _op.items():
@@ -3408,7 +3445,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.64 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.65 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -3464,7 +3501,7 @@ _live_pick=st.sidebar.selectbox("📡 Live price layer (TV poll)",["15s","30s","
          "own timer — the underlying positioning stays on the 5-min GBT snapshot clock. Verified in "
          "Colab 08-06 (live_candle_check: median fetch ~0.2s). Off = pre-0.9.41 behavior.")
 st.session_state["_live_sec"]={"15s":15,"30s":30,"60s":60,"off":None}[_live_pick]
-b_signmode=st.sidebar.radio("Book signing",["flow-signed (current)","clean-signed (single-leg tape)"],
+b_signmode=st.sidebar.radio("Book signing",["flow-signed (current)","clean-signed (single-leg tape)","net flow (directional paper)"],
     key="b_signmode",horizontal=False,
     help="0.9.60: clean-signed renders the book PURELY from the quarantined single-leg tape — verdict × γ·OI, "
          "no verdict = no bar. Shows where deliberate players positioned. First flip runs the ~61-call budgeted "
@@ -4224,10 +4261,14 @@ with tab_book:
                     # the "skeletons" were 100% repricing theater. Same spot ⇒
                     # any gap now means signs/positions actually moved.
                     _spN=float(latest["spot"])
-                    # 0.9.64: contracts everywhere on the Book — spot argument is
-                    # inert in this units mode (kept for signature symmetry).
-                    _sgp=signed_book_rows(_sl[_i-1].get("chain"),_spN,mode=_bm0,doi=_bd0,units="contracts")
-                    _sgo=signed_book_rows(_sl[0].get("chain"),_spN,mode=_bm0,doi=_bd0,units="contracts")
+                    if str(st.session_state.get("b_signmode","")).startswith("net flow"):
+                        _sgp=None                            # 0.9.65: netflow dot = yesterday-final ONLY
+                        _sgo=netflow_rows(exps[0],merged=False)
+                    else:
+                        # 0.9.64: contracts everywhere on the Book — spot argument is
+                        # inert in this units mode (kept for signature symmetry).
+                        _sgp=signed_book_rows(_sl[_i-1].get("chain"),_spN,mode=_bm0,doi=_bd0,units="contracts")
+                        _sgo=signed_book_rows(_sl[0].get("chain"),_spN,mode=_bm0,doi=_bd0,units="contracts")
                 else: _sgp=_sgo=None
             except Exception: pass
         _strv=None
@@ -4240,7 +4281,12 @@ with tab_book:
             st.caption("Signed dealer inference is OFF (sidebar toggle) — naive bars shown")
         elif b_mode.startswith("MM"):
             try:
-                _sg=signed_book_rows(latest["chain"],float(latest["spot"]),mode=_bm,doi=_bdoi,units="contracts")
+                if str(st.session_state.get("b_signmode","")).startswith("net flow"):
+                    _sg=netflow_rows(exps[0],merged=True)   # 0.9.65: bar = seed+live cumulative paper
+                    st.caption("NET FLOW — yesterday's directional paper on today's chain, live-cumulative on the "
+                               "hot set · + net bought / − net sold (customer view) · no OI, no γ")
+                else:
+                    _sg=signed_book_rows(latest["chain"],float(latest["spot"]),mode=_bm,doi=_bdoi,units="contracts")
                 if _sg is None: st.caption("no signed data in this frame — naive bars shown")
                 elif _bm=="clean": st.caption("CLEAN-SIGNED book — single-leg tape verdicts only; blank strikes = no verdict · METHOD stays flow-signed")
             except Exception as _bx: st.caption(f"signed book unavailable this frame: {type(_bx).__name__}")
