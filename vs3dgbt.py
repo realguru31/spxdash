@@ -1,8 +1,14 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.65
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.66
 
 CHANGELOG POLICY (per Faisal, Jul-24): detailed notes for the LATEST 3 versions
 only; everything older is ONE line. Full history lives in git, not here.
+
+vGBT-0.9.66 [NETFLOW = PARTICIPANT VIEW, LABELED LOUDLY — USER 08-26]
+  • Netflow stays participant-signed (+ bought / − sold, the user's worked
+    example) BY ORDER; toggle renamed "net flow (PARTICIPANT VIEW)", in-mode
+    caption carries a ⚠, and the x-axis label is now mode-aware (0.9.65 showed
+    the contracts label under netflow bars — wrong instrument named).
 
 vGBT-0.9.65 [NET FLOW MODE + AXIS FIX — USER 08-26, spec verbatim]
   • Third Book mode "net flow (directional paper)": yesterday's trading on
@@ -3231,8 +3237,14 @@ def book_figure(book,spot,straddle,lo,hi,side="Total",prev=None,openb=None,signe
                     color=clean_color(v,("#26a69a" if v>=0 else "#ef5350"),
                               (clean_map or {}).get(float(r["strike"]),0)),
                     alpha=0.35+0.6*min(1.0,float(r.get("conf",0.5))))
-        ax.set_xlabel("dealer NET CONTRACTS — inferred sign × OI (flow-signed · opacity = confidence · "
-                      "moves only on sign flips + overnight OI)",color="#aaa",fontsize=8)
+        if str(st.session_state.get("b_signmode","")).startswith("net flow"):
+            # 0.9.66 [USER 08-26]: netflow is PARTICIPANT view — sign is the
+            # OPPOSITE actor vs the position lenses. Label + caption both say so.
+            ax.set_xlabel("net PAPER contracts — PARTICIPANT VIEW: + net bought / − net sold "
+                          "(dealer is the mirror) · dot = yesterday-final · no OI, no γ",color="#aaa",fontsize=8)
+        else:
+            ax.set_xlabel("dealer NET CONTRACTS — inferred sign × OI (flow-signed · opacity = confidence · "
+                          "moves only on sign flips + overnight OI)",color="#aaa",fontsize=8)
         _cur={float(r["strike"]):_tx(float(r["signed_pct"])) for _,r in sg.iterrows()}
         def _sg_map(df):
             if df is None or getattr(df,"empty",True): return None
@@ -3445,7 +3457,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.65 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.66 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -3501,7 +3513,7 @@ _live_pick=st.sidebar.selectbox("📡 Live price layer (TV poll)",["15s","30s","
          "own timer — the underlying positioning stays on the 5-min GBT snapshot clock. Verified in "
          "Colab 08-06 (live_candle_check: median fetch ~0.2s). Off = pre-0.9.41 behavior.")
 st.session_state["_live_sec"]={"15s":15,"30s":30,"60s":60,"off":None}[_live_pick]
-b_signmode=st.sidebar.radio("Book signing",["flow-signed (current)","clean-signed (single-leg tape)","net flow (directional paper)"],
+b_signmode=st.sidebar.radio("Book signing",["flow-signed (current)","clean-signed (single-leg tape)","net flow (PARTICIPANT VIEW)"],
     key="b_signmode",horizontal=False,
     help="0.9.60: clean-signed renders the book PURELY from the quarantined single-leg tape — verdict × γ·OI, "
          "no verdict = no bar. Shows where deliberate players positioned. First flip runs the ~61-call budgeted "
@@ -4283,8 +4295,9 @@ with tab_book:
             try:
                 if str(st.session_state.get("b_signmode","")).startswith("net flow"):
                     _sg=netflow_rows(exps[0],merged=True)   # 0.9.65: bar = seed+live cumulative paper
-                    st.caption("NET FLOW — yesterday's directional paper on today's chain, live-cumulative on the "
-                               "hot set · + net bought / − net sold (customer view) · no OI, no γ")
+                    st.caption("NET FLOW — ⚠ PARTICIPANT VIEW (sign = opposite actor vs the position lenses): "
+                               "+ net bought / − net sold · yesterday's paper on today's chain, live-cumulative "
+                               "on the hot set · no OI, no γ")
                 else:
                     _sg=signed_book_rows(latest["chain"],float(latest["spot"]),mode=_bm,doi=_bdoi,units="contracts")
                 if _sg is None: st.caption("no signed data in this frame — naive bars shown")
