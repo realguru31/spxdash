@@ -1,8 +1,24 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.62
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.64
 
 CHANGELOG POLICY (per Faisal, Jul-24): detailed notes for the LATEST 3 versions
 only; everything older is ONE line. Full history lives in git, not here.
+
+vGBT-0.9.64 [BOOK = PURE CONTRACTS LEDGER · TERRAIN KEEPS PHYSICS — USER 08-26, option C]
+  • Book bars/dots/skeletons = inferred sign × OI CONTRACTS (Dan's instrument,
+    shootout panel A). No γ, no spot, no time in the number — bars move ONLY on
+    sign flips intraday and OI settlement overnight. Clean mode = verdict × OI.
+    Axis relabeled. Terrain unchanged: it is the physics view (live-γ pressure
+    field) by design. THE METHOD's ladder stays on γ·OI (26-slide-validated);
+    switching its input requires its own graded comparison first.
+
+vGBT-0.9.63 [DOTS RE-MARKED AT CURRENT SPOT — USER 08-26]
+  • Open/prev dots now price their γ at the CURRENT frame's spot (positions
+    and signs remain the reference frame's). Dot-vs-bar gaps previously mixed
+    real change with γ-repricing as spot walked; premarket — signs and OI both
+    frozen — the grey "skeletons" were pure repricing theater. Same-spot
+    marking ⇒ premarket gaps ≈ 0 and any intraday gap = signs actually flipped
+    (magnitude is OI-frozen; flow moves bars only by flipping their sign).
 
 vGBT-0.9.62 [SIMPLE CARDS + SIMPLE READ + CLEAN LADDER — USER 08-26]
   • BOOK: HTML slide card REMOVED — replaced by the simple Dan-format JPG
@@ -2703,7 +2719,7 @@ def gbt_snapshot_frame(window_pct):
         try: st.sidebar.caption(f"⚠ signed inference degraded → naive this frame: {type(_sx).__name__}")
         except Exception: pass
     return spot,chain,bk,exp
-def signed_book_rows(ch, sp, mode="flow", doi=None):
+def signed_book_rows(ch, sp, mode="flow", doi=None, units="gex"):
     """0.9.9: per-strike MM-inferred signed GEX rows from a stored chain (its own
     as-of-capture dsign column) — factored out so open/prev snapshots can be
     dotted on the signed Book in the SAME units as the live bars.
@@ -2722,6 +2738,29 @@ def signed_book_rows(ch, sp, mode="flow", doi=None):
     cc=ch.copy()
     nv=np.where(cc["type"].values=="call",1.0,-1.0)
     eff=cc["dsign"].where(cc["dsign"].notna(),pd.Series(nv*GBT_UNSEEDED_W,index=cc.index))
+    if units=="contracts":
+        # vGBT-0.9.64 [USER 08-26 "ELIMINATE SPOT IMPACTING THE BARS · A AS DAN"]:
+        # PURE POSITIONING LEDGER — bar = inferred sign × OI CONTRACTS per leg,
+        # summed per strike. No gamma, no spot, no time anywhere in the number:
+        # bars move ONLY on sign flips (intraday) and OI settlement (overnight).
+        # Dan's exact instrument (lens-shootout panel A). Book display + dots
+        # use this; THE METHOD's ladder stays on γ·OI (26-slide-validated) —
+        # switching the selection input needs its own graded comparison.
+        cc2=ch.copy()
+        nv2=np.where(cc2["type"].values=="call",1.0,-1.0)
+        if mode=="clean":
+            cm2=doi or {}
+            vv2=np.array([float(cm2.get(float(k),0.0) or 0.0) for k in cc2["strike"]])
+            cc2["_v"]=vv2*cc2["oi"].fillna(0)
+            g2=cc2.groupby("strike",as_index=False).agg(signed_pct=("_v","sum"))
+            g2=g2[g2["signed_pct"]!=0.0]; g2["conf"]=1.0
+            return g2[["strike","signed_pct","conf"]]
+        eff2=cc2["dsign"].where(cc2["dsign"].notna(),pd.Series(nv2*GBT_UNSEEDED_W,index=cc2.index))
+        cc2["_v"]=np.sign(eff2)*cc2["oi"].fillna(0)
+        cc2["_w"]=cc2["oi"].fillna(0); cc2["_a"]=cc2["dsign"].abs().fillna(0)*cc2["_w"]
+        g2=cc2.groupby("strike",as_index=False).agg(signed_pct=("_v","sum"),_w=("_w","sum"),_a=("_a","sum"))
+        g2["conf"]=(g2["_a"]/g2["_w"].replace(0,np.nan)).fillna(0.0)
+        return g2[["strike","signed_pct","conf"]]
     if mode=="clean":
         # 0.9.60 [USER 08-25]: PURE clean-signed book — quarantined single-leg
         # tape only (AUTO+M2S_AUTO, 10% pooled bench). bar = verdict × γ·OI both
@@ -3155,7 +3194,8 @@ def book_figure(book,spot,straddle,lo,hi,side="Total",prev=None,openb=None,signe
                     color=clean_color(v,("#26a69a" if v>=0 else "#ef5350"),
                               (clean_map or {}).get(float(r["strike"]),0)),
                     alpha=0.35+0.6*min(1.0,float(r.get("conf",0.5))))
-        ax.set_xlabel("dealer GEX $M per 1% — MM-inferred (flow-signed · opacity = confidence)",color="#aaa",fontsize=8)
+        ax.set_xlabel("dealer NET CONTRACTS — inferred sign × OI (flow-signed · opacity = confidence · "
+                      "moves only on sign flips + overnight OI)",color="#aaa",fontsize=8)
         _cur={float(r["strike"]):_tx(float(r["signed_pct"])/1e6) for _,r in sg.iterrows()}
         def _sg_map(df):
             if df is None or getattr(df,"empty",True): return None
@@ -3368,7 +3408,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.62 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.64 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -4176,8 +4216,18 @@ with tab_book:
                 if _i>0: openb=_sl[0].get("book")
                 if _i>0:
                     _bm0,_bd0=book_sign_args()
-                    _sgp=signed_book_rows(_sl[_i-1].get("chain"),float(_sl[_i-1].get("spot") or latest["spot"]),mode=_bm0,doi=_bd0)
-                    _sgo=signed_book_rows(_sl[0].get("chain"),float(_sl[0].get("spot") or latest["spot"]),mode=_bm0,doi=_bd0)
+                    # 0.9.63 [USER 08-26]: dots re-marked at the CURRENT frame's
+                    # spot — positions/signs stay the reference frame's, but the
+                    # γ pricing matches the live bars. Pricing dot and bar at
+                    # different spots made every dot-vs-bar gap a mix of real
+                    # change and pure γ-repricing; premarket (signs+OI frozen)
+                    # the "skeletons" were 100% repricing theater. Same spot ⇒
+                    # any gap now means signs/positions actually moved.
+                    _spN=float(latest["spot"])
+                    # 0.9.64: contracts everywhere on the Book — spot argument is
+                    # inert in this units mode (kept for signature symmetry).
+                    _sgp=signed_book_rows(_sl[_i-1].get("chain"),_spN,mode=_bm0,doi=_bd0,units="contracts")
+                    _sgo=signed_book_rows(_sl[0].get("chain"),_spN,mode=_bm0,doi=_bd0,units="contracts")
                 else: _sgp=_sgo=None
             except Exception: pass
         _strv=None
@@ -4190,7 +4240,7 @@ with tab_book:
             st.caption("Signed dealer inference is OFF (sidebar toggle) — naive bars shown")
         elif b_mode.startswith("MM"):
             try:
-                _sg=signed_book_rows(latest["chain"],float(latest["spot"]),mode=_bm,doi=_bdoi)
+                _sg=signed_book_rows(latest["chain"],float(latest["spot"]),mode=_bm,doi=_bdoi,units="contracts")
                 if _sg is None: st.caption("no signed data in this frame — naive bars shown")
                 elif _bm=="clean": st.caption("CLEAN-SIGNED book — single-leg tape verdicts only; blank strikes = no verdict · METHOD stays flow-signed")
             except Exception as _bx: st.caption(f"signed book unavailable this frame: {type(_bx).__name__}")
