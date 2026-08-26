@@ -1,8 +1,26 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.60
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.62
 
 CHANGELOG POLICY (per Faisal, Jul-24): detailed notes for the LATEST 3 versions
 only; everything older is ONE line. Full history lives in git, not here.
+
+vGBT-0.9.62 [SIMPLE CARDS + SIMPLE READ + CLEAN LADDER — USER 08-26]
+  • BOOK: HTML slide card REMOVED — replaced by the simple Dan-format JPG
+    (title · status · BALANCE · UP/DN X≫Y · Cross lines · footer; fly/package
+    commentary, range meta and standing tags cut) + download button.
+  • MARKET READ: card JPG → strip (γ · FUEL · CHARM ACTIVE/inactive with expo
+    & persistence · STRADDLE · VIX + ▶ PLAY sentence) always visible; the
+    entire cheat-sheet engine + legacy Signals fold into collapsed expanders.
+  • CLEAN LADDER: with the Book toggle on clean-signed, the card AND the
+    book-chart level overlay recompute THE METHOD from the clean bars (flow
+    lock bypassed for display — header says so). Flow mode unchanged.
+
+vGBT-0.9.61 [CARD JPG AT TAB LEVEL — USER 08-26]
+  • The Market Read METHOD-card JPG + download button now mount at TAB level,
+    regenerated each run (text-only fig, ~ms). 0.9.60 had them inside the
+    dispatch-cached read render — widgets in cached renders vanish on every
+    cache-hit rerun, so the JPG was invisible in practice. Lock-aware, same
+    construction as the card; filename method_card_<date>.jpg.
 
 vGBT-0.9.60 [NINE-ITEM BUILD — USER 08-25, all sanctioned]
   • CLEAN-SIGNED BOOK: partition mode REMOVED (user verdict: naive in
@@ -1410,6 +1428,37 @@ def seed_standing(exp, strike, ss=None):
         return "today-only"
     except Exception:
         return None
+
+def method_card_jpg(latest, spot, strad_c, vd, ref_spot, open_strad, lock, simple=False, sign_mode="flow", sign_doi=None):
+    """vGBT-0.9.61: the METHOD card as a standalone white JPG (Dan-slide format)
+    for copy/paste comparison. Generated at TAB level every run — 0.9.60 put it
+    inside the dispatch-cached read render, so the image + download button
+    vanished on every cache-hit rerun (user report 08-26). Text-only fig, ~ms."""
+    import io as _io61
+    _L=key_levels_lines(latest,spot,strad_c,vd,"k","g","r","c","d","y",
+                        ref_spot=ref_spot,open_strad=open_strad,lock=lock,
+                        sign_mode=sign_mode,sign_doi=sign_doi,
+                        status_prices=None,header_note=None)
+    _cut=next((k for k,t in enumerate(_L) if str(t[0]).startswith("Reject a test")),len(_L)-1)
+    _L=_L[:_cut+1]
+    if simple:
+        # 0.9.62 [USER 08-26 "make it like Dan's card"]: keep ONLY title,
+        # status subline, BALANCE, UP/DN ladders, Cross lines, footer — the
+        # fly/package commentary, range meta and standing tags all go.
+        _keep=("KEY LEVELS","PREVIEW","🔒","CLEAN ladder","BALANCE","NO BALANCE",
+               "UPSIDE","DOWNSIDE","Cross ","Reject a test")
+        _L=[t for t in _L if any(str(t[0]).lstrip().startswith(k) for k in _keep)]
+        _L=[(str(t[0]).replace(" ·standing","").replace(" ·today-only",""),t[1],t[2],t[3]) for t in _L]
+    _css={"k":"#111111","g":"#1a8f3c","r":"#c62828","d":"#666666","y":"#8a6d00","c":"#0a7c8c"}
+    _f,_a=plt.subplots(figsize=(6.6,0.32*len(_L)+0.5),dpi=150)
+    _f.patch.set_facecolor("#ffffff"); _a.axis("off")
+    for _i,(_t,_c,_sz,_b) in enumerate(_L):
+        _a.text(0.02,1-(_i+0.8)/(len(_L)+0.6),str(_t),color=_css.get(_c,"#111"),
+                fontsize=max(8.0,float(_sz)-2.5),family="monospace",
+                fontweight="bold" if _b else "normal",va="top",ha="left",transform=_a.transAxes)
+    _b61=_io61.BytesIO(); _f.savefig(_b61,format="jpg",facecolor="#ffffff",bbox_inches="tight")
+    plt.close(_f)
+    return _b61.getvalue()
 
 def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WARN, ref_spot=None, open_strad=None,
                      sign_mode="flow", sign_doi=None,
@@ -3319,7 +3368,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.60 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.62 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -4085,34 +4134,28 @@ with tab_book:
             elif now_est().time()<dt.time(9,35):
                 _hdr="PREVIEW — pre-open book (yesterday's OI/signs) · locks at first ≥09:35 ET snapshot"
             if str(st.session_state.get("b_signmode","")).startswith("clean"):
-                _hdr=((_hdr+" · ") if _hdr else "")+"CLEAN-SIGNED comparison view — lock stays flow-signed"
+                # 0.9.62 [USER 08-26]: clean mode recomputes THE METHOD from the
+                # clean bars (lock bypassed for display — the 09:35 lock is a
+                # flow artifact and must not overprint a clean book).
+                _lk=None
+                _hdr="CLEAN ladder — recomputed from single-leg tape · flow lock not applied"
             try: _pstr=straddle_for(latest["chain"],latest["spot"],exps[0],live_ok=(not PLAYBACK))
             except Exception: _pstr=None
             _os0=((gbt_open_straddle(exps[0]) or (None,))[0]
                   if ((not PLAYBACK) and now_est().time()>=dt.time(9,30)) else None)
             _bm5,_bd5=book_sign_args()               # slide card follows the comparison toggle
-            _L=key_levels_lines(latest,latest["spot"],_pstr,
-                                {"decay":"","fish":"","pat":"","clock":""},
-                                "k","g","r","c","d","y",
-                                sign_mode=_bm5,sign_doi=_bd5,
-                                ref_spot=method_ref(latest["spot"],live=(not PLAYBACK))[0],
-                                open_strad=_os0,
-                                lock=(_lk or {}).get("levels") if isinstance(_lk,dict) else None,
-                                status_prices=_stp,header_note=_hdr)
-            _cut=next((i for i,t in enumerate(_L) if str(t[0]).startswith("Reject a test")),len(_L)-1)
-            _L=_L[:_cut+1]
-            import html as _h43
-            _css={"k":"#111111","g":"#1a8f3c","r":"#c62828","d":"#666666","y":"#8a6d00","c":"#0a7c8c"}
-            _rows=[]
-            for _i,(_txt,_col,_sz,_bold) in enumerate(_L):
-                _stl=(f"color:{_css.get(_col,'#111111')};font-weight:{'700' if _bold else '400'};"
-                      f"font-size:{max(10.0,float(_sz))}px;margin:1px 0;line-height:1.45;")
-                if _i==0: _stl+="text-align:center;font-size:15px;letter-spacing:.2px;"
-                if str(_txt).startswith("Reject a test"): _stl+="font-style:italic;"
-                _rows.append(f"<div style='{_stl}'>{_h43.escape(str(_txt))}</div>")
-            st.markdown("<div style='background:#ffffff;border-radius:4px;padding:10px 14px;"
-                        "max-width:600px;box-shadow:0 0 8px #00000088;margin-bottom:6px'>"
-                        +"".join(_rows)+"</div>",unsafe_allow_html=True)
+            # 0.9.62 [USER 08-26]: HTML card OUT — the Book card is now the SAME
+            # simple Dan-format JPG as Market Read (copy/paste-able, download
+            # button), recomputed from clean bars when the toggle says clean.
+            _jpg=method_card_jpg(latest,latest["spot"],_pstr,
+                                 {"decay":"","fish":"","pat":"","clock":""},
+                                 method_ref(latest["spot"],live=(not PLAYBACK))[0],_os0,
+                                 (None if _bm5=="clean" else ((_lk or {}).get("levels") if isinstance(_lk,dict) else None)),
+                                 simple=True,sign_mode=_bm5,sign_doi=_bd5)
+            if _hdr: st.caption(_hdr)
+            st.image(_jpg)
+            st.download_button("⬇ card JPG",_jpg,file_name=f"book_card_{today_est():%Y-%m-%d}.jpg",
+                               mime="image/jpeg",key="dl_bookcard")
         except Exception as _ce:
             st.caption(f"slide card unavailable: {type(_ce).__name__}: {_ce}")
     if b_slidecard: _book_slide_card()
@@ -4169,9 +4212,12 @@ with tab_book:
                 try: _pstr=straddle_for(latest["chain"],latest["spot"],exps[0],live_ok=(not PLAYBACK))
                 except Exception: _pstr=None
                 _po={}
+                _bmO,_bdO=book_sign_args()               # 0.9.62: overlay ladder follows the toggle
                 key_levels_lines(latest,latest["spot"],_pstr,
                                  {"decay":"","fish":"","pat":"","clock":""},
                                  "w","g","r","c","d","y",
+                                 sign_mode=_bmO,sign_doi=_bdO,
+                                 lock=None if _bmO=="clean" else None,   # overlay is preview-only either way
                                  open_strad=((gbt_open_straddle(exps[0]) or (None,))[0]
                                              if ((not PLAYBACK) and now_est().time()>=dt.time(9,30)) else None),
                                  ref_spot=method_ref(latest["spot"],live=(not PLAYBACK))[0],   # 0.9.38: same resolver as the card
@@ -4720,7 +4766,32 @@ with tab_read:
       dispatch("signals",_render_signals,sig=_ssig)
 
 with tab_read:
-    emit_caption("read","Cheat-sheet decision engine: γ environment × charm lean → one of four day patterns, "
+    # 0.9.61 [USER 08-26]: METHOD card as a standalone JPG at TAB level — always
+    # mounted (never vanishes on cache-hit reruns), copy/paste-ready vs Dan's slide.
+    try:
+        _lk61=st.session_state.get("card_lock")
+        _pstr61=None
+        try: _pstr61=straddle_for(latest["chain"],latest["spot"],exps[0],live_ok=(not PLAYBACK))
+        except Exception: pass
+        _os61=((gbt_open_straddle(exps[0]) or (None,))[0]
+               if ((not PLAYBACK) and now_est().time()>=dt.time(9,30)) else None)
+        _jpg61=method_card_jpg(latest,latest["spot"],_pstr61,
+                               {"decay":"","fish":"","pat":"","clock":""},
+                               method_ref(latest["spot"],live=(not PLAYBACK))[0],_os61,
+                               (_lk61 or {}).get("levels") if isinstance(_lk61,dict) else None)
+        _c61a,_c61b=st.columns([3,1])
+        _c61a.image(_jpg61,caption="METHOD card — right-click copy, or download")
+        _c61b.download_button("⬇ card JPG",_jpg61,
+                              file_name=f"method_card_{today_est():%Y-%m-%d}.jpg",mime="image/jpeg")
+    except Exception as _je61:
+        st.caption(f"card JPG unavailable: {type(_je61).__name__}: {_je61}")
+    # 0.9.62 [USER 08-26 "SHOULD BE BLOODY SIMPLE"]: the simple current read =
+    # the strip — γ dial · FUEL · CHARM ACTIVE/inactive (expo + persistence) ·
+    # STRADDLE · VIX chips + the ▶ PLAY sentence. Always visible, never folded.
+    render_strip(latest.get("strip"))
+    _rx=st.expander("📊 full read & diagnostics (cheat-sheet engine)",expanded=False)
+    with _rx:
+        emit_caption("read","Cheat-sheet decision engine: γ environment × charm lean → one of four day patterns, "
                  "gated by the charm clock, straddle check (snake-oil), VIX/vanna regime, fishbone and γ-absorption. "
                  "Buy what price goes through, sell what price goes to. Proxy-honest: dealer long/short not measured; "
                  "with real positioning Dan claims ~65% — treat this as a weighted coin, not an oracle.")
@@ -4886,34 +4957,9 @@ with tab_read:
                          va="center",ha="left")
         axm.set_title("the day on one map — tests bound it, anchor holds it",color="#8b949e",fontsize=9,loc="left",pad=3)
         emit("read",fr)
-        # 0.9.60 [USER 08-25]: METHOD card as its OWN JPG for copy/compare vs
-        # Dan's slides — re-render just the card lines to a white slide image.
-        try:
-            import io as _io60
-            _Lc=key_levels_lines(latest,latest["spot"],_stn,v,"k","g","r","c","d","y",
-                                 ref_spot=_ref,open_strad=_os0,
-                                 lock=(st.session_state.get("card_lock") or {}).get("levels")
-                                      if isinstance(st.session_state.get("card_lock"),dict) else None,
-                                 status_prices=None,header_note=None)
-            _cut=next((k60 for k60,t in enumerate(_Lc) if str(t[0]).startswith("Reject a test")),len(_Lc)-1)
-            _Lc=_Lc[:_cut+1]
-            _cssj={"k":"#111111","g":"#1a8f3c","r":"#c62828","d":"#666666","y":"#8a6d00","c":"#0a7c8c"}
-            _fj,_aj=plt.subplots(figsize=(6.4,0.34*len(_Lc)+0.5),dpi=150)
-            _fj.patch.set_facecolor("#ffffff"); _aj.axis("off")
-            for _i60,(_t60,_c60,_s60,_b60) in enumerate(_Lc):
-                _aj.text(0.02,1-(_i60+0.8)/ (len(_Lc)+0.6),str(_t60),color=_cssj.get(_c60,"#111"),
-                         fontsize=max(8.5,float(_s60)-2.0),family="monospace",
-                         fontweight="bold" if _b60 else "normal",va="top",ha="left",
-                         transform=_aj.transAxes)
-            _bj=_io60.BytesIO(); _fj.savefig(_bj,format="jpg",facecolor="#ffffff",bbox_inches="tight")
-            plt.close(_fj)
-            st.image(_bj.getvalue(),caption="METHOD card — copy/save to compare vs Dan's slide")
-            st.download_button("⬇ method card JPG",_bj.getvalue(),
-                               file_name=f"method_card_{today_est():%Y-%m-%d}.jpg",mime="image/jpeg")
-        except Exception as _je:
-            st.caption(f"card JPG unavailable: {type(_je).__name__}")
     _rsig=repr((sel_ts.isoformat(),sel_i,len(snaps)))
-    dispatch("read",_render_read,sig=_rsig)
+    with _rx:                                   # 0.9.62: the big read figure lives in the fold
+        dispatch("read",_render_read,sig=_rsig)
 
 with tab_gex3:
     emit_caption("gex3","GEX³ [EXPERIMENTAL] — the NIFTY GEX model (skill: nifty-gex-analysis) on three lenses, "
