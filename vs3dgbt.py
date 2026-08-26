@@ -1,8 +1,14 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.69
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.70
 
 CHANGELOG POLICY (per Faisal, Jul-24): detailed notes for the LATEST 3 versions
 only; everything older is ONE line. Full history lives in git, not here.
+
+vGBT-0.9.70 [PER-LENS PALETTE + MODE-NAMED FOOTERS — USER 08-26 ORDER, late]
+  • Bars: flow = green/red · clean = dodger blue/magenta · netflow = dodger
+    blue/yellow — the ordered scheme, so any screenshot names its lens.
+  • Axis footer now leads with the MODE NAME on all three (clean was showing
+    the flow text — screenshots were indistinguishable).
 
 vGBT-0.9.69 [CLEAN LADDER OVERLAY ON THE LOCKED CHART — USER 08-26]
   • Clean mode: the clean-recomputed ladder (which the card already shows) now
@@ -3260,19 +3266,31 @@ def book_figure(book,spot,straddle,lo,hi,side="Total",prev=None,openb=None,signe
     fig,ax=plt.subplots(figsize=(6.5,9)); fig.patch.set_facecolor("#0e1117"); ax.set_facecolor("#0e1117")
     if signed is not None and len(signed):
         sg=signed[(signed["strike"]>=lo)&(signed["strike"]<=hi)].reset_index(drop=True)
+        # vGBT-0.9.70 [USER 08-26 ORDER, shipped late — owned]: one palette per
+        # lens so a screenshot identifies its mode at a glance:
+        #   flow-signed  = green/red (unchanged)
+        #   clean-signed = DODGER BLUE long / MAGENTA short
+        #   net flow     = DODGER BLUE bought / YELLOW sold
+        _bm70=str(st.session_state.get("b_signmode",""))
+        if _bm70.startswith("clean"):   _pal=("#1e90ff","#ff00ff")
+        elif _bm70.startswith("net"):   _pal=("#1e90ff","#ffd600")
+        else:                           _pal=("#26a69a","#ef5350")
         for _,r in sg.iterrows():
             v=_tx(float(r["signed_pct"]))          # 0.9.65: contracts/netflow are natural units — $M divisor removed
             ax.barh(float(r["strike"]),v,height=3.6,zorder=3,
-                    color=clean_color(v,("#26a69a" if v>=0 else "#ef5350"),
+                    color=clean_color(v,(_pal[0] if v>=0 else _pal[1]),
                               (clean_map or {}).get(float(r["strike"]),0)),
                     alpha=0.35+0.6*min(1.0,float(r.get("conf",0.5))))
-        if str(st.session_state.get("b_signmode","")).startswith("net flow"):
-            # 0.9.66 [USER 08-26]: netflow is PARTICIPANT view — sign is the
-            # OPPOSITE actor vs the position lenses. Label + caption both say so.
-            ax.set_xlabel("net PAPER contracts — PARTICIPANT VIEW: + net bought / − net sold "
-                          "(dealer is the mirror) · dot = yesterday-final · no OI, no γ",color="#aaa",fontsize=8)
+        if _bm70.startswith("net"):
+            ax.set_xlabel("NET FLOW · net PAPER contracts — PARTICIPANT VIEW: + net bought (blue) / − net sold "
+                          "(yellow) · dot = yesterday-final · no OI, no γ",color="#aaa",fontsize=8)
+        elif _bm70.startswith("clean"):
+            # 0.9.70 [USER 08-26]: footer was the flow text in clean mode — modes
+            # were indistinguishable in screenshots.
+            ax.set_xlabel("CLEAN-SIGNED · dealer NET CONTRACTS — single-leg-tape verdict × OI · blue = dealer "
+                          "LONG / magenta = SHORT · blank strikes = no verdict",color="#aaa",fontsize=8)
         else:
-            ax.set_xlabel("dealer NET CONTRACTS — inferred sign × OI (flow-signed · opacity = confidence · "
+            ax.set_xlabel("FLOW-SIGNED · dealer NET CONTRACTS — inferred sign × OI (opacity = confidence · "
                           "moves only on sign flips + overnight OI)",color="#aaa",fontsize=8)
         _cur={float(r["strike"]):_tx(float(r["signed_pct"])) for _,r in sg.iterrows()}
         def _sg_map(df):
@@ -3496,7 +3514,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.69 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.70 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
