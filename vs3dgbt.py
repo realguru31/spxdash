@@ -1,8 +1,14 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.68
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.69
 
 CHANGELOG POLICY (per Faisal, Jul-24): detailed notes for the LATEST 3 versions
 only; everything older is ONE line. Full history lives in git, not here.
+
+vGBT-0.9.69 [CLEAN LADDER OVERLAY ON THE LOCKED CHART — USER 08-26]
+  • Clean mode: the clean-recomputed ladder (which the card already shows) now
+    also draws on the Book chart as thin cyan dotted lines ALONGSIDE the flow-
+    locked ladder — chart and card can no longer disagree. The lock remains
+    THE ladder; clean lines are labeled "(clean)" comparison.
 
 vGBT-0.9.68 [ST.PYPLOT REPLACED BY OWN-PNG RENDER — USER 08-26]
   • Root cause of the white charts: the Streamlit platform update re-themes
@@ -3246,6 +3252,7 @@ def gex3_model(rows, spot):
 
 def book_figure(book,spot,straddle,lo,hi,side="Total",prev=None,openb=None,signed=None,
                 signed_prev=None,signed_open=None,sticks=True,clean_map=None,preview_levels=None,intraday_levels=None,
+                clean_preview=None,
                 show_delta=False,show_dp=False):
     def _tx(v): return v            # vGBT-0.9.20: always linear (√ compress removed)
     """VS3D 'Positions by Strike' analogue. Bars in e-minis per $1 (per-$1 ÷ 50).
@@ -3379,6 +3386,16 @@ def book_figure(book,spot,straddle,lo,hi,side="Total",prev=None,openb=None,signe
         elif isinstance(_orb,dict) and _drew:
             _ax24.text(0.005,0.045,f"open read {_orb.get('spot',0):,.2f} @ {_orb.get('at','09:30')} — folded into locked ladder",
                     transform=_ax24.transAxes,ha="left",va="bottom",fontsize=7.5,color="#8a93a6",zorder=7)
+        # vGBT-0.9.69 [USER 08-26 "fix it"]: in clean mode the card recomputes a
+        # CLEAN ladder while the chart showed only the flow-locked lines — card
+        # and chart could disagree. The clean ladder now overlays as thin cyan
+        # dotted lines ALONGSIDE the lock (lock stays THE ladder; clean is the
+        # labeled comparison), so chart always matches the card.
+        if _drew and clean_preview:
+            if clean_preview.get("bal"):
+                _line24(clean_preview["bal"]["peak"],"BAL (clean)","#22d3ee",(0,(1,2)),alpha=0.7)
+            for _t in clean_preview.get("ups",[]): _line24(_t["peak"],"UP (clean)","#22d3ee",(0,(1,2)),alpha=0.55)
+            for _t in clean_preview.get("dns",[]): _line24(_t["peak"],"DN (clean)","#22d3ee",(0,(1,2)),alpha=0.55)
         if (not _drew) and preview_levels:
             if preview_levels.get("bal"):
                 _line24(preview_levels["bal"]["peak"],"BALANCE (preview)","#e8ecf2",(0,(2,3)),alpha=0.55)
@@ -3479,7 +3496,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.68 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.69 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -4404,6 +4421,7 @@ with tab_book:
             st.caption(f"🧹 clean signs: {_n_on}/{len(_clm)} strikes confirmed (single-leg quarantine)")
         fig=book_figure(bk,latest["spot"],_strv,_lo2,_hi2,side=b_side,prev=prevb,openb=openb,signed=_sg,
                         signed_prev=_sgp,signed_open=_sgo,sticks=True,clean_map=_clm,preview_levels=_plv,intraday_levels=_ilv,
+                        clean_preview=(_plv if str(st.session_state.get("b_signmode","")).startswith("clean") else None),
                         show_delta=b_delta,show_dp=b_dp)
         if b_spot:
             try:
