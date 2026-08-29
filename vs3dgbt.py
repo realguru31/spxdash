@@ -1,8 +1,22 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.72
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.74
 
 CHANGELOG POLICY (per Faisal, Jul-24): detailed notes for the LATEST 3 versions
 only; everything older is ONE line. Full history lives in git, not here.
+
+vGBT-0.9.74 [WEEKEND GUARD ON ALL LIVE POLLING — USER 08-29]
+  • _market_day() gates BOTH live paths: the 5-min sweep (net_drift has no
+    session parameter — it served Friday's drift into Saturday's live store:
+    7,860 at 2× its dot, phantom retracement 7,785–7,800) and the DT pacer.
+    Closed day = live store untouched = every bar sits on its dot. Saturday's
+    polluted store self-heals Monday (fresh day-state).
+
+vGBT-0.9.73 [DT CLOSED-MARKET DOUBLE-COUNT — USER 08-29]
+  • DT's live poll pinned to sessionDate=TODAY. The no-date default serves the
+    most recent session, which on a closed day IS the seed session — double-
+    counted strikes, ~100% phantom moves, 19 bogus squares. Closed day now
+    returns empty prints → no movement → no events. Phantom events clear on
+    reboot (session-scoped).
 
 vGBT-0.9.72 [FIVE-ITEM BUILD — USER 08-27, all sanctioned]
   • METHOD ladder ranks in CONTRACTS (sign×OI); γ·OI ranking retired clean
@@ -2706,6 +2720,15 @@ def _nd_net(df):
         if cn in df.columns:
             out[typ]=float(pd.to_numeric(df[cn],errors="coerce").fillna(0).sum())
     return out
+def _market_day():
+    """vGBT-0.9.74 [USER 08-29, Saturday bar≠dot artifacts]: no live polling on
+    non-trading days. 0.9.73 pinned DT's side-stats to today, but the 5-min
+    sweep's net_drift has NO session parameter — on a closed day it serves the
+    LAST session's drift into the live store (7,860 printed at exactly 2× its
+    dot; 7,785–7,800 showed phantom retracement). Weekends: no session exists →
+    no live writes, bars sit on dots, as a closed market should look."""
+    return now_est().weekday()<5
+
 def _nd_live(exp,strike,vol_call=None,vol_put=None):
     """vGBT-0.6 live sign source: ONE net_drift call, both legs. Returns
     {type:(net,total)} in the seed's shape; totals from the free NET_VOLUME
@@ -2801,7 +2824,7 @@ def gbt_dsign_map(exp,strikes,spot,nvol=None):
                 _vc[float(_r.strikePrice)]=abs(float(getattr(_r,"callValue",0) or 0))
                 _vp[float(_r.strikePrice)]=abs(float(getattr(_r,"putValue",0) or 0))
     except Exception: _vc,_vp={},{}
-    _budget=12
+    _budget=12 if _market_day() else 0     # 0.9.74: closed day → live store untouched
     for k in dict.fromkeys([*hot,*atm]):
         kf=float(k)
         vnow=(_vc.get(kf,0.0)+_vp.get(kf,0.0)) if (kf in _vc or kf in _vp) else None
@@ -3586,7 +3609,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.72 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.74 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -5235,6 +5258,8 @@ with tab_dt:
     def _dt_tick():
         if PLAYBACK or not GBT_SIGNED:
             st.caption("DT paused (playback or signing off)"); return
+        if not _market_day():
+            st.caption("DT idle — no session today (weekend)"); return
         ss=st.session_state; exp=exps[0]
         seed=ss.get(f"gbt_seed_{exp}") or {}
         if not seed: st.caption("DT waiting for the seed sweep…"); return
@@ -5246,8 +5271,14 @@ with tab_dt:
         pick=ks[:half]+([rest[(rot+i)%len(rest)] for i in range(min(len(rest),int(dt_watch)-half))] if rest else [])
         ss["dt_rot"]=rot+max(1,int(dt_watch)-half)
         live=ss.setdefault(f"gbt_live_{exp}",{})
+        # vGBT-0.9.73 [USER 08-29, closed-market phantom squares]: the default
+        # (no sessionDate) serves the MOST RECENT session — on a closed day
+        # that's the SAME session as the seed → every strike double-counted →
+        # ~100% "moves" → phantom band crossings. Pin to TODAY explicitly:
+        # closed day returns empty prints → zero movement → zero squares.
+        _sd73=today_est().strftime("%Y-%m-%d")
         for k in pick:
-            try: live[k]=_side_net_total(_gbt_side_stats(exp,k))
+            try: live[k]=_side_net_total(_gbt_side_stats(exp,k,session_date=_sd73))
             except Exception: continue
         for k in ks:
             sd=seed.get(k) or {}; lv=live.get(k) or {}
