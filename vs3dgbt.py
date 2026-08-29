@@ -1,8 +1,15 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.74
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.75
 
 CHANGELOG POLICY (per Faisal, Jul-24): detailed notes for the LATEST 3 versions
 only; everything older is ONE line. Full history lives in git, not here.
+
+vGBT-0.9.75 [DOT = FIRST FULLY-SEEDED FRAME — USER 08-29]
+  • The reference dot froze on frame 0, frequently captured mid-seed-sweep
+    (unseeded legs at the naive placeholder) — dots off bar edges on a closed
+    Saturday with zero trading. Reference = first snapshot whose dsign
+    coverage ≥90% of the session's best; fallback frame 0. With 0.9.74's
+    weekend guard, a closed-day book is provably flush: dot on every edge.
 
 vGBT-0.9.74 [WEEKEND GUARD ON ALL LIVE POLLING — USER 08-29]
   • _market_day() gates BOTH live paths: the 5-min sweep (net_drift has no
@@ -3609,7 +3616,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.74 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.75 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -4415,8 +4422,20 @@ with tab_book:
             try:
                 _sl=st.session_state.snaps
                 _i=[i for i,s in enumerate(_sl) if s["ts"]==latest["ts"]][0]
+                # vGBT-0.9.75 [USER 08-29 "dots not at the bar edge on a closed
+                # Saturday"]: the dot froze on frame 0, often captured MID-SEED-
+                # SWEEP — unseeded legs at the naive placeholder, so the dot's
+                # net contracts differ from the finished book with zero trading.
+                # Reference = FIRST FULLY-SEEDED frame (dsign coverage ≥90% of
+                # the session's best); fallback frame 0.
+                def _cov75(sn):
+                    ch=sn.get("chain")
+                    try: return float(ch["dsign"].notna().mean()) if ch is not None else 0.0
+                    except Exception: return 0.0
+                _cmax=max((_cov75(x) for x in _sl),default=0.0)
+                _j0=next((i for i,x in enumerate(_sl) if _cov75(x)>=0.9*_cmax),0) if _cmax>0 else 0
                 if _i>0: prevb=_sl[_i-1].get("book")
-                if _i>0: openb=_sl[0].get("book")
+                if _i>0: openb=_sl[_j0].get("book")
                 if _i>0:
                     _bm0,_bd0=book_sign_args()
                     # 0.9.63 [USER 08-26]: dots re-marked at the CURRENT frame's
@@ -4436,7 +4455,7 @@ with tab_book:
                         # 0.9.64: contracts everywhere on the Book — spot argument is
                         # inert in this units mode (kept for signature symmetry).
                         _sgp=signed_book_rows(_sl[_i-1].get("chain"),_spN,mode=_bm0,doi=_bd0,units="contracts")
-                        _sgo=signed_book_rows(_sl[0].get("chain"),_spN,mode=_bm0,doi=_bd0,units="contracts")
+                        _sgo=signed_book_rows(_sl[_j0].get("chain"),_spN,mode=_bm0,doi=_bd0,units="contracts")   # 0.9.75: first SEEDED frame
                 else: _sgp=_sgo=None
             except Exception: pass
         _strv=None
