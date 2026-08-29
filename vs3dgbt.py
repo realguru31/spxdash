@@ -1,8 +1,31 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.70
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.72
 
 CHANGELOG POLICY (per Faisal, Jul-24): detailed notes for the LATEST 3 versions
 only; everything older is ONE line. Full history lives in git, not here.
+
+vGBT-0.9.72 [FIVE-ITEM BUILD — USER 08-27, all sanctioned]
+  • METHOD ladder ranks in CONTRACTS (sign×OI); γ·OI ranking retired clean
+    (08-27 empty-downside: γ dusted 5,000-lot walls the contracts chart showed).
+  • Straddle: stand-in use now announced loudly at the card; open-straddle
+    already retries (caches success only).
+  • CLEAN-B: clean = net SINGLE-LEG paper, DEALER view (participants sell 100
+    → +100 dealer bought). Per-leg sweep store (gbt_cleanB_*), no OI, no 10%
+    bench — repaint question dissolved. Clean ladder/card-recompute retired
+    (paper ≠ positioning). Live clean layer rides the DT pacer (later).
+  • ·flow-lock suffix on solid ladder labels in non-flow modes.
+  • DT tab: repositioning EVENT LOG on TV candles — netflow lens; band-crossing
+    squares (dodger blue bullish / magenta bearish · FILLED extend / HOLLOW
+    recede), permanent, detection-timestamped; in-tab sliders (band %, floor,
+    proximity, watch size); 60s pacer polls a rotating ≤10-strike watch set
+    merged into the shared live stores.
+
+vGBT-0.9.71 [CLEAN OVERLAY NOW WORKS POST-LOCK — USER 08-27, caught by user]
+  • Preview-ladder computation was gated on "no lock" → after 09:35 the cyan
+    clean lines (0.9.69) could never draw; card recomputed clean, chart showed
+    lock only. Clean mode now computes its preview all day; flow intraday
+    behavior unchanged (lock only). Premarket clean-preview no longer double-
+    draws as both main family and cyan overlay.
 
 vGBT-0.9.70 [PER-LENS PALETTE + MODE-NAMED FOOTERS — USER 08-26 ORDER, late]
   • Bars: flow = green/red · clean = dodger blue/magenta · netflow = dodger
@@ -1495,6 +1518,44 @@ def seed_standing(exp, strike, ss=None):
     except Exception:
         return None
 
+def dt_detect(dot, cur, band_pct, floor_c, seen_bands):
+    """vGBT-0.9.72 DT [USER 08-27 spec]: band-crossing repositioning events.
+    band size = max(band_pct×|dot|, floor_c). Each NEW band |cur−dot| crosses
+    prints exactly one event (no repaint, no respam). Glyph grammar [USER]:
+    dodger blue = bullish (short receding=HOLLOW · long extending=FILLED),
+    magenta = bearish (long receding=HOLLOW · short extending=FILLED).
+    Near-zero dot (<floor): direction of fresh paper, FILLED.
+    Returns (n_new_bands, glyph|None, bands_now)."""
+    mv=cur-dot
+    band=max(abs(dot)*band_pct/100.0,float(floor_c))
+    if band<=0: return 0,None,seen_bands
+    n=int(abs(mv)//band)
+    if n<=seen_bands or n==0: return 0,None,max(seen_bands,n)
+    if abs(dot)<floor_c: g=("blue","filled") if mv>0 else ("magenta","filled")
+    elif dot<0: g=("blue","hollow") if mv>0 else ("magenta","filled")
+    else:       g=("blue","filled") if mv>0 else ("magenta","hollow")
+    return n-seen_bands,g,n
+
+def cleanB_rows(exp, ss=None):
+    """vGBT-0.9.72 [USER 08-27]: CLEAN-B — net single-leg paper per strike,
+    DEALER view: participants net sell 100 → +100 (dealer bought). Quarantined
+    tape only (AUTO+M2S_AUTO). No OI, no bench: near-zero conviction = small
+    bar, never a censored strike. Dot = yesterday-final (this store); live
+    clean layer arrives with the DT pacer — until then bar == dot, said so
+    on the tab. value = −(n_call − n_put) of the clean tape."""
+    if ss is None: ss=st.session_state
+    m=None
+    for k2 in (k3 for k3 in ss.keys() if str(k3).startswith("gbt_cleanB_") and not str(k3).endswith("_partial")):
+        m=ss.get(k2); break
+    if m is None: return None
+    rows=[]
+    for k,v in m.items():
+        nc,_tc=(v or {}).get("call",(0.0,0.0)); pc,_tp=(v or {}).get("put",(0.0,0.0))
+        if (_tc+_tp)<=0: continue
+        rows.append((float(k),-(float(nc)-float(pc)),1.0))
+    if not rows: return None
+    return pd.DataFrame(rows,columns=["strike","signed_pct","conf"])
+
 def netflow_rows(exp, merged=True, ss=None):
     """vGBT-0.9.65 [USER 08-26, spec verbatim]: NET FLOW = yesterday's trading
     on TODAY'S chain, DIRECTIONAL paper per strike:
@@ -1573,7 +1634,14 @@ def key_levels_lines(latest, spot, strad_now, v, WHT, BULL, BEAR, CYAN, DIM, WAR
         longs_ext=lock.get("longs_ext",longs)
         half=lock.get("half",spot*0.009); s0=lock.get("spot0",spot)
     else:
-        rows=signed_book_rows(latest["chain"],spot,mode=sign_mode,doi=sign_doi)   # 0.9.57 preview comparison
+        # vGBT-0.9.72 [USER 08-27, METHOD CHANGE SANCTIONED — no legacy overlay]:
+        # THE METHOD ranks clusters in CONTRACTS (sign × OI), Dan's instrument.
+        # γ·OI ranking RETIRED: it dusted real walls with distance/hour (08-27
+        # empty-downside card while the contracts chart showed 5,000-lot walls)
+        # and contradicted the Book, which has been contracts since 0.9.64.
+        # Cluster rules (nearest/thin/wall/corridor/cross) unchanged — only the
+        # weighing scale. Window stays 2.5×S0 in PRICE points (straddle-based).
+        rows=signed_book_rows(latest["chain"],spot,mode=sign_mode,doi=sign_doi,units="contracts")
         if rows is None:
             L.append(("  needs Signed mode — naive ± cannot define tests/anchors",DIM,11,False))
             return L
@@ -2439,7 +2507,7 @@ def gbt_clean_signs(exp,strikes):
     tradeTypes=CLEAN_TT so packages+floor are quarantined at the SERVER.
     0.9.14 machinery: resumable partial, 240s budget, sidebar progress,
     complete map persisted in day-state. Returns {strike: −1|0|+1}."""
-    ss=st.session_state; ck=f"gbt_clean_{exp}"
+    ss=st.session_state; ck=f"gbt_cleanB_{exp}"
     if ck in ss: return ss[ck]
     pk=ck+"_partial"; m=dict(ss.get(pk,{}))
     strikes=sorted(set(float(k) for k in strikes))
@@ -2449,8 +2517,11 @@ def gbt_clean_signs(exp,strikes):
     except Exception: pass
     t0=_time.time()
     for k in todo:
-        try: m[k]=_clean_sign(_side_net_total(_gbt_side_stats(exp,k,_gbt_prev_session(),trade_types=CLEAN_TT)))
-        except Exception: m[k]=0
+        # vGBT-0.9.72 [USER 08-27 CLEAN-B]: store the PER-LEG (net,tot) dict —
+        # clean is now a dealer-signed net-PAPER ledger (no OI, no 10% bench);
+        # verdicts are derivable but no longer the stored object.
+        try: m[k]=_side_net_total(_gbt_side_stats(exp,k,_gbt_prev_session(),trade_types=CLEAN_TT))
+        except Exception: m[k]={}
         ss[pk]=m
         if prog is not None:
             try: prog.progress(min(1.0,len(m)/max(1,len(strikes))),
@@ -3387,9 +3458,10 @@ def book_figure(book,spot,straddle,lo,hi,side="Total",prev=None,openb=None,signe
         _drew=False
         if isinstance(_lkb,dict):
             _lv2=_lkb.get("levels",{})
-            if _lv2.get("bal"): _line24(_lv2["bal"]["peak"],"BALANCE","#e8ecf2",(0,(6,3)))
-            for _t in _lv2.get("ups",[]): _line24(_t["peak"],"UP TEST","#3fb950",(0,(5,3)))
-            for _t in _lv2.get("dns",[]): _line24(_t["peak"],"DN TEST","#ef5350",(0,(5,3)))
+            _sfx72=" ·flow-lock" if not str(st.session_state.get("b_signmode","flow")).startswith("flow") else ""
+            if _lv2.get("bal"): _line24(_lv2["bal"]["peak"],"BALANCE"+_sfx72,"#e8ecf2",(0,(6,3)))
+            for _t in _lv2.get("ups",[]): _line24(_t["peak"],"UP TEST"+_sfx72,"#3fb950",(0,(5,3)))
+            for _t in _lv2.get("dns",[]): _line24(_t["peak"],"DN TEST"+_sfx72,"#ef5350",(0,(5,3)))
             _drew=True
         # vGBT-0.9.35 [Dan-minimal: ONE ladder on the axis — GUIDE §5.2 "I just look
         # at the position and the straddle price"; the 09:30 read and the 09:35 lock
@@ -3414,7 +3486,7 @@ def book_figure(book,spot,straddle,lo,hi,side="Total",prev=None,openb=None,signe
                 _line24(clean_preview["bal"]["peak"],"BAL (clean)","#22d3ee",(0,(1,2)),alpha=0.7)
             for _t in clean_preview.get("ups",[]): _line24(_t["peak"],"UP (clean)","#22d3ee",(0,(1,2)),alpha=0.55)
             for _t in clean_preview.get("dns",[]): _line24(_t["peak"],"DN (clean)","#22d3ee",(0,(1,2)),alpha=0.55)
-        if (not _drew) and preview_levels:
+        if (not _drew) and preview_levels and not clean_preview:
             if preview_levels.get("bal"):
                 _line24(preview_levels["bal"]["peak"],"BALANCE (preview)","#e8ecf2",(0,(2,3)),alpha=0.55)
             for _t in preview_levels.get("ups",[]): _line24(_t["peak"],"UP TEST (preview)","#3fb950",(0,(2,3)),alpha=0.55)
@@ -3514,7 +3586,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.70 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.72 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -3907,7 +3979,7 @@ combo_on=True   # 0.9.60 [USER 08-25]: combined always on — gate obsolete sinc
 # 0.9.60 [USER 08-25]: Read + Signals merged into one simple "Market Read" —
 # card (as its own downloadable JPG) + dials + PLAY; everything diagnostic
 # lives in a collapsed expander (charm-gate settings preserved inside it).
-tab_combo,tab_book,tab_terr,tab_intv,tab_read,tab_gex3=st.tabs(["🖥 VS3D (combined)","📊 Book (by strike)","🗺 Terrain (gradient chart)","⏱ Interval (bubbles)","📖 Market Read","🧮 GEX³ (3-lens)"])
+tab_combo,tab_book,tab_terr,tab_intv,tab_read,tab_gex3,tab_dt=st.tabs(["🖥 VS3D (combined)","📊 Book (by strike)","🗺 Terrain (gradient chart)","⏱ Interval (bubbles)","📖 Market Read","🧮 GEX³ (3-lens)","🎯 DT"])
 
 def _interval_state_rows(snaps, greek="GEX", signed=True, unseeded_w=0.2):
     """Textbook Raw from our cached snapshots (0 API). GEX: long option = +γ, so
@@ -4283,12 +4355,7 @@ with tab_book:
                 except Exception: _stp=None
             elif now_est().time()<dt.time(9,35):
                 _hdr="PREVIEW — pre-open book (yesterday's OI/signs) · locks at first ≥09:35 ET snapshot"
-            if str(st.session_state.get("b_signmode","")).startswith("clean"):
-                # 0.9.62 [USER 08-26]: clean mode recomputes THE METHOD from the
-                # clean bars (lock bypassed for display — the 09:35 lock is a
-                # flow artifact and must not overprint a clean book).
-                _lk=None
-                _hdr="CLEAN ladder — recomputed from single-leg tape · flow lock not applied"
+            # 0.9.72: clean-B is paper — the card shows the flow lock in every mode
             try: _pstr=straddle_for(latest["chain"],latest["spot"],exps[0],live_ok=(not PLAYBACK))
             except Exception: _pstr=None
             _os0=((gbt_open_straddle(exps[0]) or (None,))[0]
@@ -4303,6 +4370,9 @@ with tab_book:
                                  (None if _bm5=="clean" else ((_lk or {}).get("levels") if isinstance(_lk,dict) else None)),
                                  simple=True,sign_mode=_bm5,sign_doi=_bd5)
             if _hdr: st.caption(_hdr)
+            if _os0 is None and now_est().time()>=dt.time(9,30) and not PLAYBACK:
+                st.caption("⚠ true 09:30 straddle UNAVAILABLE — ladder window uses the CURRENT straddle "
+                           "stand-in and may be too narrow · it retries every refresh (0.9.72)")
             st.image(_jpg)
             st.download_button("⬇ card JPG",_jpg,file_name=f"book_card_{today_est():%Y-%m-%d}.jpg",
                                mime="image/jpeg",key="dl_bookcard")
@@ -4334,7 +4404,9 @@ with tab_book:
                     # the "skeletons" were 100% repricing theater. Same spot ⇒
                     # any gap now means signs/positions actually moved.
                     _spN=float(latest["spot"])
-                    if str(st.session_state.get("b_signmode","")).startswith("net flow"):
+                    if str(st.session_state.get("b_signmode","")).startswith("clean"):
+                        _sgp=None; _sgo=cleanB_rows(exps[0])   # 0.9.72: dot = yesterday-final clean paper
+                    elif str(st.session_state.get("b_signmode","")).startswith("net flow"):
                         _sgp=None                            # 0.9.65: netflow dot = yesterday-final ONLY
                         _sgo=netflow_rows(exps[0],merged=False)
                     else:
@@ -4354,7 +4426,12 @@ with tab_book:
             st.caption("Signed dealer inference is OFF (sidebar toggle) — naive bars shown")
         elif b_mode.startswith("MM"):
             try:
-                if str(st.session_state.get("b_signmode","")).startswith("net flow"):
+                if str(st.session_state.get("b_signmode","")).startswith("clean"):
+                    _sg=cleanB_rows(exps[0])
+                    st.caption("CLEAN-B — net SINGLE-LEG paper, DEALER view: blue = dealer bought (participants "
+                               "sold) / magenta = dealer sold · no OI, no bench · yesterday-final; live clean "
+                               "layer rides the DT pacer (until then bar = dot)")
+                elif str(st.session_state.get("b_signmode","")).startswith("net flow"):
                     _sg=netflow_rows(exps[0],merged=True)   # 0.9.65: bar = seed+live cumulative paper
                     st.caption("NET FLOW — ⚠ PARTICIPANT VIEW (sign = opposite actor vs the position lenses): "
                                "+ net bought / − net sold · yesterday's paper on today's chain, live-cumulative "
@@ -4373,6 +4450,13 @@ with tab_book:
         except Exception: _cv=""
         st.caption(f"showing {int(_lo2)}–{int(_hi2)} · fetched {int(lo)}–{int(hi)} (spot {_sp:.2f} ±{window_pct*100:.1f}%) · zoom ×{_z:.2f}{_cv}")
         _plv=None; _plv_err=None
+        # vGBT-0.9.71 [USER 08-27 "i don't think they do" — verified right]: the
+        # preview computation was gated on NO LOCK, so after 09:35 the clean
+        # overlay (0.9.69) could never draw — card recomputed clean, chart
+        # showed lock only. Clean mode now computes the preview ALL DAY (it
+        # bypasses the lock by definition); flow mode keeps lock-only intraday.
+        # 0.9.72: clean is a PAPER ledger now — METHOD grammar no longer applies
+        # (same reason as netflow); the cyan clean ladder is retired with it.
         if not isinstance(st.session_state.get("card_lock"),dict):
             try:    # vGBT-0.9.23: identical computation to the Read card's preview —
                     # same function, same snapshot, and its OWN straddle (0.9.22 bug:
@@ -4439,7 +4523,7 @@ with tab_book:
             st.caption(f"🧹 clean signs: {_n_on}/{len(_clm)} strikes confirmed (single-leg quarantine)")
         fig=book_figure(bk,latest["spot"],_strv,_lo2,_hi2,side=b_side,prev=prevb,openb=openb,signed=_sg,
                         signed_prev=_sgp,signed_open=_sgo,sticks=True,clean_map=_clm,preview_levels=_plv,intraday_levels=_ilv,
-                        clean_preview=(_plv if str(st.session_state.get("b_signmode","")).startswith("clean") else None),
+                        clean_preview=None,   # 0.9.72: clean ladder retired (paper ledger)
                         show_delta=b_delta,show_dp=b_dp)
         if b_spot:
             try:
@@ -5131,6 +5215,77 @@ with tab_read:
     _rsig=repr((sel_ts.isoformat(),sel_i,len(snaps)))
     with _rx:                                   # 0.9.62: the big read figure lives in the fold
         dispatch("read",_render_read,sig=_rsig)
+
+with tab_dt:
+    # ── vGBT-0.9.72 DT [USER 08-27, spec verbatim]: repositioning EVENT LOG on
+    # price. Netflow lens (full tape, participant view). Squares at (detection
+    # time, strike) — permanent for the session, band-crossing gated, never
+    # repainted. In-tab sliders (NOT sidebar) for live tuning. 1-min pacer
+    # polls a ROTATING watch set (≤10 strikes/min inside the 30/min wall),
+    # merging into the same live stores the netflow Book reads.
+    st.caption("DT — repositioning tape · netflow lens (participant) · squares timestamp = DETECTION "
+               "(≤ ~1 min after the flow on watched strikes) · event log never repaints")
+    _dc1,_dc2,_dc3,_dc4=st.columns(4)
+    dt_band=_dc1.slider("band % of dot",1.0,25.0,5.0,0.5,key="dt_band")
+    dt_floor=_dc2.slider("abs floor (contracts)",50,1000,200,25,key="dt_floor")
+    dt_prox=_dc3.slider("± % of spot",0.2,2.0,0.75,0.05,key="dt_prox")
+    dt_watch=_dc4.slider("watch strikes",4,14,10,1,key="dt_watch")
+    st.session_state.setdefault("dt_events",[])
+    st.session_state.setdefault("dt_seen",{})
+    def _dt_tick():
+        if PLAYBACK or not GBT_SIGNED:
+            st.caption("DT paused (playback or signing off)"); return
+        ss=st.session_state; exp=exps[0]
+        seed=ss.get(f"gbt_seed_{exp}") or {}
+        if not seed: st.caption("DT waiting for the seed sweep…"); return
+        sp=float(latest["spot"]); w=sp*dt_prox/100.0
+        ks=sorted((k for k in seed if abs(k-sp)<=w),key=lambda k:(abs(k-sp)))
+        # rotate: nearest half always polled, remainder round-robins
+        rot=ss.get("dt_rot",0); half=max(2,int(dt_watch)//2)
+        rest=[k for k in ks[half:]]
+        pick=ks[:half]+([rest[(rot+i)%len(rest)] for i in range(min(len(rest),int(dt_watch)-half))] if rest else [])
+        ss["dt_rot"]=rot+max(1,int(dt_watch)-half)
+        live=ss.setdefault(f"gbt_live_{exp}",{})
+        for k in pick:
+            try: live[k]=_side_net_total(_gbt_side_stats(exp,k))
+            except Exception: continue
+        for k in ks:
+            sd=seed.get(k) or {}; lv=live.get(k) or {}
+            def _nf(d): 
+                nc,_=d.get("call",(0.0,0.0)); pc,_=d.get("put",(0.0,0.0)); return float(nc)-float(pc)
+            dot=_nf(sd); cur=dot+_nf(lv)
+            nnew,g,bands=dt_detect(dot,cur,dt_band,dt_floor,ss["dt_seen"].get(k,0))
+            ss["dt_seen"][k]=bands
+            if nnew and g:
+                ss["dt_events"].append({"t":now_est().replace(tzinfo=None),"k":k,"c":g[0],"f":g[1]})
+        # render: TV candles + event squares
+        bars_=prep_bars()
+        fg,axd=plt.subplots(figsize=(11,5.4),dpi=100)
+        fg.patch.set_facecolor(DARK); axd.set_facecolor(DARK)
+        try:
+            if bars_ is not None and len(bars_):
+                bb=bars_.tail(240)
+                for _,r in bb.iterrows():
+                    c_="#3fb950" if r["close"]>=r["open"] else "#ef5350"
+                    axd.plot([r["t"],r["t"]],[r["low"],r["high"]],color=c_,lw=0.6,alpha=0.8)
+                    axd.plot([r["t"],r["t"]],[min(r["open"],r["close"]),max(r["open"],r["close"])],color=c_,lw=2.2)
+        except Exception: pass
+        for e in ss["dt_events"]:
+            fc=("#1e90ff" if e["c"]=="blue" else "#ff00ff")
+            axd.scatter([e["t"]],[e["k"]],s=64,marker="s",zorder=6,
+                        facecolors=(fc if e["f"]=="filled" else "none"),edgecolors=fc,linewidths=1.6)
+        axd.tick_params(colors="#8b949e",labelsize=8)
+        for spn in axd.spines.values(): spn.set_color("#30363d")
+        axd.set_title(f"DT repositioning tape · {len(ss['dt_events'])} events · watch ±{dt_prox:.2f}% · "
+                      f"band {dt_band:.1f}% · floor {int(dt_floor)}",color="#8b949e",fontsize=9,loc="left")
+        buf=_io.BytesIO(); fg.savefig(buf,format="png",dpi=fg.dpi,facecolor=DARK); plt.close(fg)
+        st.image(buf.getvalue())
+    try:
+        @st.fragment(run_every=60)
+        def _dt_frag(): _dt_tick()
+        _dt_frag()
+    except Exception:
+        _dt_tick()
 
 with tab_gex3:
     emit_caption("gex3","GEX³ [EXPERIMENTAL] — the NIFTY GEX model (skill: nifty-gex-analysis) on three lenses, "
