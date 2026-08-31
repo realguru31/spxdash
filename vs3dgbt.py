@@ -1,8 +1,20 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.77
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.79
 
 CHANGELOG POLICY (per Faisal, Jul-24): detailed notes for the LATEST 3 versions
 only; everything older is ONE line. Full history lives in git, not here.
+
+vGBT-0.9.79 [DOTS = STORE-BASED, ALWAYS — USER 08-31 "not rocket science"]
+  • Every mode's dot now comes straight from stores: flow = SEED signs ×
+    today's OI (new seed_dot_rows), clean = cleanB store, netflow = seed-only
+    paper. The snapshot-frame machinery (frame-0, seeded-frame _j0, and the
+    ≥2-frame gate that killed ALL dots on any fresh boot) is DELETED. Dots
+    load identically on every boot; failures caption loudly, never vanish.
+
+vGBT-0.9.78 [DT SELF-IDENTIFYING TITLE + HH:MM AXIS — USER 08-31]
+  • DT title now carries build tag + bar-feed count (+ failure reason when 0)
+    — every screenshot names its version and feed state. HH:MM date formatter
+    pinned so a line-less plot can never autoscale to microseconds.
 
 vGBT-0.9.77 [DT PRICE = THE PROVEN WHITE LINE — USER 08-31]
   • DT's candle loop replaced by the project's standard price line (one
@@ -1570,6 +1582,24 @@ def dt_detect(dot, cur, band_pct, floor_c, seen_bands):
     elif dot<0: g=("blue","hollow") if mv>0 else ("magenta","filled")
     else:       g=("blue","filled") if mv>0 else ("magenta","hollow")
     return n-seen_bands,g,n
+
+def seed_dot_rows(ch, exp, sp, ss=None):
+    """vGBT-0.9.79 [USER 08-31 "IT'S NOT ROCKET SCIENCE"]: the flow dot =
+    YESTERDAY'S INFERENCE × today's OI, straight from the seed store — no
+    snapshot frames, no reference-frame selection, no boot dependence. Loads
+    identically on every boot/reboot; today's tape then moves the BAR, and
+    bar-vs-dot = today's sign flips, nothing else."""
+    if ch is None or ss is None and not hasattr(st,"session_state"): return None
+    ss=ss or st.session_state
+    seed=ss.get(f"gbt_seed_{exp}") or {}
+    if not seed: return None
+    cc=ch.copy()
+    def _ds(k,t):
+        d=seed.get(float(k)) or {}
+        n,tt=d.get(str(t),(0.0,0.0))
+        return float(np.clip(-n/tt,-1,1)) if tt>0 else np.nan
+    cc["dsign"]=[_ds(k,t) for k,t in zip(cc["strike"],cc["type"])]
+    return signed_book_rows(cc,sp,units="contracts")
 
 def cleanB_rows(exp, ss=None):
     """vGBT-0.9.72 [USER 08-27]: CLEAN-B — net single-leg paper per strike,
@@ -3630,7 +3660,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.77 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.79 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -4433,45 +4463,22 @@ with tab_book:
             st.info("No book frame in this snapshot (pre-GBT or synthetic)."); return
         prevb=openb=None; _sgp=_sgo=None
         if b_dots:
+            # vGBT-0.9.79 [USER 08-31]: dots are STORE-BASED in every mode — no
+            # snapshot frames, no ≥2-frame gate (that gate killed ALL dots on
+            # any fresh boot), no reference-frame selection (0.9.75 machinery
+            # deleted). Failures print, never vanish silently.
             try:
-                _sl=st.session_state.snaps
-                _i=[i for i,s in enumerate(_sl) if s["ts"]==latest["ts"]][0]
-                # vGBT-0.9.75 [USER 08-29 "dots not at the bar edge on a closed
-                # Saturday"]: the dot froze on frame 0, often captured MID-SEED-
-                # SWEEP — unseeded legs at the naive placeholder, so the dot's
-                # net contracts differ from the finished book with zero trading.
-                # Reference = FIRST FULLY-SEEDED frame (dsign coverage ≥90% of
-                # the session's best); fallback frame 0.
-                def _cov75(sn):
-                    ch=sn.get("chain")
-                    try: return float(ch["dsign"].notna().mean()) if ch is not None else 0.0
-                    except Exception: return 0.0
-                _cmax=max((_cov75(x) for x in _sl),default=0.0)
-                _j0=next((i for i,x in enumerate(_sl) if _cov75(x)>=0.9*_cmax),0) if _cmax>0 else 0
-                if _i>0: prevb=_sl[_i-1].get("book")
-                if _i>0: openb=_sl[_j0].get("book")
-                if _i>0:
-                    _bm0,_bd0=book_sign_args()
-                    # 0.9.63 [USER 08-26]: dots re-marked at the CURRENT frame's
-                    # spot — positions/signs stay the reference frame's, but the
-                    # γ pricing matches the live bars. Pricing dot and bar at
-                    # different spots made every dot-vs-bar gap a mix of real
-                    # change and pure γ-repricing; premarket (signs+OI frozen)
-                    # the "skeletons" were 100% repricing theater. Same spot ⇒
-                    # any gap now means signs/positions actually moved.
-                    _spN=float(latest["spot"])
-                    if str(st.session_state.get("b_signmode","")).startswith("clean"):
-                        _sgp=None; _sgo=cleanB_rows(exps[0])   # 0.9.72: dot = yesterday-final clean paper
-                    elif str(st.session_state.get("b_signmode","")).startswith("net flow"):
-                        _sgp=None                            # 0.9.65: netflow dot = yesterday-final ONLY
-                        _sgo=netflow_rows(exps[0],merged=False)
-                    else:
-                        # 0.9.64: contracts everywhere on the Book — spot argument is
-                        # inert in this units mode (kept for signature symmetry).
-                        _sgp=signed_book_rows(_sl[_i-1].get("chain"),_spN,mode=_bm0,doi=_bd0,units="contracts")
-                        _sgo=signed_book_rows(_sl[_j0].get("chain"),_spN,mode=_bm0,doi=_bd0,units="contracts")   # 0.9.75: first SEEDED frame
-                else: _sgp=_sgo=None
-            except Exception: pass
+                _md79=str(st.session_state.get("b_signmode",""))
+                if _md79.startswith("clean"):
+                    _sgo=cleanB_rows(exps[0])
+                elif _md79.startswith("net flow"):
+                    _sgo=netflow_rows(exps[0],merged=False)
+                else:
+                    _sgo=seed_dot_rows(latest["chain"],exps[0],float(latest["spot"]))
+                if _sgo is None:
+                    st.caption("dots pending — seed store not ready yet (sweep in progress)")
+            except Exception as _de79:
+                st.caption(f"⚠ dots failed: {type(_de79).__name__}: {_de79}")
         _strv=None
         if b_strad:
             try: _strv=straddle_for(latest["chain"],latest["spot"],exps[0],live_ok=(not PLAYBACK))
@@ -5365,8 +5372,17 @@ with tab_dt:
                         facecolors=(fc if e["f"]=="filled" else "none"),edgecolors=fc,linewidths=1.6)
         axd.tick_params(colors="#8b949e",labelsize=8)
         for spn in axd.spines.values(): spn.set_color("#30363d")
-        axd.set_title(f"DT repositioning tape · {len(ss['dt_events'])} events · watch ±{dt_prox:.2f}% · "
-                      f"band {dt_band:.1f}% · floor {int(dt_floor)}",color="#8b949e",fontsize=9,loc="left")
+        # 0.9.78: title self-identifies version + feed status — no more guessing
+        # which build a screenshot came from; HH:MM axis so a line-less plot can
+        # never autoscale to microseconds again.
+        _nb78=(len(bars_) if bars_ is not None else 0)
+        axd.set_title(f"DT repositioning tape [0.9.78] · {len(ss['dt_events'])} events · watch ±{dt_prox:.2f}% · "
+                      f"band {dt_band:.1f}% · floor {int(dt_floor)} · feed: {_nb78} bars"
+                      +("" if _nb78 else f" ({_bst77})"),color="#8b949e",fontsize=9,loc="left")
+        try:
+            import matplotlib.dates as _md78
+            axd.xaxis.set_major_formatter(_md78.DateFormatter("%H:%M"))
+        except Exception: pass
         buf=_io.BytesIO(); fg.savefig(buf,format="png",dpi=fg.dpi,facecolor=DARK); plt.close(fg)
         st.image(buf.getvalue())
     try:
