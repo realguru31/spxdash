@@ -1,8 +1,22 @@
 """
-vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.75
+vs3dgbt.py — SPX 0DTE Dealer Terrain on GBT market data · current: vGBT-0.9.77
 
 CHANGELOG POLICY (per Faisal, Jul-24): detailed notes for the LATEST 3 versions
 only; everything older is ONE line. Full history lives in git, not here.
+
+vGBT-0.9.77 [DT PRICE = THE PROVEN WHITE LINE — USER 08-31]
+  • DT's candle loop replaced by the project's standard price line (one
+    plt.plot of closes — the Book overlay's exact pattern). Any feed problem
+    now prints IN RED INSIDE the axes, top-left, uncroppable.
+
+vGBT-0.9.76 [DT YIELDS TO THE SEED SWEEP + CANDLES FIXED — USER 08-31]
+  • DT idles until the seed sweep is substantially complete (≥55 strikes and
+    meta ok≥n) and paces its polls at 2.3s — 0.9.72 burst-polled from boot,
+    429-starving the sweep: empty seed → zero netflow dots → band=floor →
+    164-event square spam. Netflow view captions loudly when seed is sparse.
+  • DT candles: prep_bars returns (df,status) with o/h/l/c — 0.9.72 tailed
+    the tuple and plotted wrong names; the swallowed exception hid the price
+    panel. Fixed; feed status now prints instead of failing silently.
 
 vGBT-0.9.75 [DOT = FIRST FULLY-SEEDED FRAME — USER 08-29]
   • The reference dot froze on frame 0, frequently captured mid-seed-sweep
@@ -3616,7 +3630,7 @@ if not st.session_state.snaps:
 if "last_ts" not in st.session_state: st.session_state.last_ts=None
 
 st.sidebar.title("vs3dGBT · SPX 0DTE")
-st.sidebar.caption("vGBT-0.9.75 · GBT data · flow-signed·net_drift · engine = v2.2.2")
+st.sidebar.caption("vGBT-0.9.77 · GBT data · flow-signed·net_drift · engine = v2.2.2")
 try:
     if not _gbt_token():
         st.sidebar.text_input("GBT token (or set app Secrets: GBT_TOKEN)",type="password",key="gbt_tok_input")
@@ -4475,6 +4489,10 @@ with tab_book:
                                "layer rides the DT pacer (until then bar = dot)")
                 elif str(st.session_state.get("b_signmode","")).startswith("net flow"):
                     _sg=netflow_rows(exps[0],merged=True)   # 0.9.65: bar = seed+live cumulative paper
+                    _sd76=st.session_state.get(f"gbt_seed_{exps[0]}") or {}
+                    if len(_sd76)<50:
+                        st.caption(f"⚠ seed sparse ({len(_sd76)} strikes) — yesterday-final dots unreliable "
+                                   "until the sweep completes (it resumes automatically)")
                     st.caption("NET FLOW — ⚠ PARTICIPANT VIEW (sign = opposite actor vs the position lenses): "
                                "+ net bought / − net sold · yesterday's paper on today's chain, live-cumulative "
                                "on the hot set · no OI, no γ")
@@ -5281,7 +5299,16 @@ with tab_dt:
             st.caption("DT idle — no session today (weekend)"); return
         ss=st.session_state; exp=exps[0]
         seed=ss.get(f"gbt_seed_{exp}") or {}
-        if not seed: st.caption("DT waiting for the seed sweep…"); return
+        # vGBT-0.9.76 [USER 08-31, zero dots + 164-event spam]: DT must YIELD to
+        # the morning seed sweep — 0.9.72 only checked "any seed exists", so DT
+        # burst-polled (no pacing!) from boot, 429-starving the sweep → seed
+        # stored empties → netflow dots 0 → band=floor → square spam. DT now
+        # idles until the sweep is substantially complete, and paces its own
+        # calls at the standard 2.3s.
+        _sm76=ss.get("gbt_seed_meta_"+exp,{})
+        if len(seed)<55 or (_sm76.get("n") and _sm76.get("ok",0)<_sm76.get("n",0)):
+            st.caption(f"DT idle — seed sweep incomplete ({len(seed)} strikes seeded); "
+                       "polling would starve it"); return
         sp=float(latest["spot"]); w=sp*dt_prox/100.0
         ks=sorted((k for k in seed if abs(k-sp)<=w),key=lambda k:(abs(k-sp)))
         # rotate: nearest half always polled, remainder round-robins
@@ -5299,6 +5326,7 @@ with tab_dt:
         for k in pick:
             try: live[k]=_side_net_total(_gbt_side_stats(exp,k,session_date=_sd73))
             except Exception: continue
+            _time.sleep(2.3)                       # 0.9.76: pace inside the 30/min wall
         for k in ks:
             sd=seed.get(k) or {}; lv=live.get(k) or {}
             def _nf(d): 
@@ -5309,17 +5337,28 @@ with tab_dt:
             if nnew and g:
                 ss["dt_events"].append({"t":now_est().replace(tzinfo=None),"k":k,"c":g[0],"f":g[1]})
         # render: TV candles + event squares
-        bars_=prep_bars()
+        # vGBT-0.9.77 [USER 08-31 "we print the price line everywhere so easily"]:
+        # candle loop REPLACED by the project's proven pattern — one plt.plot of
+        # the close series, the same white line the Book overlay has drawn for
+        # weeks. Diagnostics moved INSIDE the axes (top-left) so they can never
+        # be cropped or hidden by layout again.
+        _bst77="?"
+        try:
+            bars_,_bst77=prep_bars()
+        except Exception as _pe77:
+            bars_,_bst77=None,f"prep_bars {type(_pe77).__name__}: {_pe77}"
         fg,axd=plt.subplots(figsize=(11,5.4),dpi=100)
         fg.patch.set_facecolor(DARK); axd.set_facecolor(DARK)
         try:
             if bars_ is not None and len(bars_):
-                bb=bars_.tail(240)
-                for _,r in bb.iterrows():
-                    c_="#3fb950" if r["close"]>=r["open"] else "#ef5350"
-                    axd.plot([r["t"],r["t"]],[r["low"],r["high"]],color=c_,lw=0.6,alpha=0.8)
-                    axd.plot([r["t"],r["t"]],[min(r["open"],r["close"]),max(r["open"],r["close"])],color=c_,lw=2.2)
-        except Exception: pass
+                bb=bars_.tail(300)
+                axd.plot(bb["t"].values,bb["c"].astype(float).values,color="#e8ecf2",lw=1.1,zorder=4)
+            else:
+                axd.text(0.01,0.98,f"price line unavailable: {_bst77}",transform=axd.transAxes,
+                         color="#ef5350",fontsize=8,va="top")
+        except Exception as _pe77b:
+            axd.text(0.01,0.98,f"price line error: {type(_pe77b).__name__}: {_pe77b}",
+                     transform=axd.transAxes,color="#ef5350",fontsize=8,va="top")
         for e in ss["dt_events"]:
             fc=("#1e90ff" if e["c"]=="blue" else "#ff00ff")
             axd.scatter([e["t"]],[e["k"]],s=64,marker="s",zorder=6,
