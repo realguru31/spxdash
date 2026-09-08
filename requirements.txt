@@ -8,4 +8,5 @@ matplotlib==3.9.2
 plotly>=5.18.0
 pytz>=2024.1
 tzdata
+curl_cffi>=0.7.0
 git+https://github.com/rongardF/tvdatafeed.git
