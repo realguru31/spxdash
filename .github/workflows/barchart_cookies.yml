@@ -1,0 +1,49 @@
+name: Barchart Cookie Mint
+on:
+  schedule:
+    # Every 30 min, 13:00-21:30 UTC weekdays (covers pre-market + RTH)
+    - cron: '0,30 13,14,15,16,17,18,19,20,21 * * 1-5'
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+# Prevent overlapping runs racing on the same file
+concurrency:
+  group: barchart-cookies
+  cancel-in-progress: false
+
+jobs:
+  mint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -q playwright
+          playwright install-deps chromium
+          playwright install chromium
+
+      - name: Mint cookies
+        run: python data_fetcher.py --mint
+
+      - name: Commit and push cookies
+        run: |
+          git config user.name "SPX Cookie Bot"
+          git config user.email "spx-bot@users.noreply.github.com"
+          git add data/session/
+          if git diff --cached --quiet; then
+            echo "No change"
+          else
+            git commit -m "🔑 Cookies: $(date -u +'%Y-%m-%d %H:%M UTC')"
+            git fetch origin main
+            git rebase origin/main
+            git push origin main
+          fi
