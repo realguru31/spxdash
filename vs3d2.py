@@ -1,5 +1,5 @@
 """
-vs3d2.py — SPX 0DTE Dealer Terrain + Book on BARCHART data · current: vBC-0.2
+vs3d2.py — SPX 0DTE Dealer Terrain + Book on BARCHART data · current: vBC-0.2a
 =================================================
 Point your streamlit.io app at this file. Barchart edition of the GBT app:
 same engine chassis (v2.2.2b, Barchart-native, harness-era), plus the Book tab
@@ -7,6 +7,7 @@ the Barchart line never had, plus a WAF-hardened fetch layer.
 
 CHANGELOG (newest first) — what changed and why, per version
 ─────────────────────────────────────────────────────────────────────────────
+vBC-0.2a [COSMETIC] cookie search paths deduped (app-dir == cwd on Cloud printed twice).
 vBC-0.2 [FETCH = the WORKING data_fetcher.py recipe, verbatim semantics]
   • Tier 1 barchart-minted: cookies.json (requires aws-waf-token + laravel_session,
     ALL blob cookies sent as-is) → curl_cffi impersonate=chrome120 → options API
@@ -566,8 +567,8 @@ def _page(sym): return f"{BASE}/stocks/quotes/{sym.replace('$','%24')}/options" 
 # SAY SO in the UI — visible degradation, never a dead app, never silent.
 import os as _o, re as _re
 _APP_DIR=_o.path.dirname(_o.path.abspath(__file__)) if "__file__" in globals() else _o.getcwd()
-_MINT_PATHS=[_o.path.join(_APP_DIR,"data","session","cookies.json"),
-             _o.path.join(_o.getcwd(),"data","session","cookies.json")]
+_MINT_PATHS=list(dict.fromkeys([_o.path.join(_APP_DIR,"data","session","cookies.json"),
+                                _o.path.join(_o.getcwd(),"data","session","cookies.json")]))  # deduped
 _MINT_PATH=_MINT_PATHS[0]
 _REQUIRED_COOKIES=("aws-waf-token","laravel_session")
 _KEEP_COOKIES=("aws-waf-token","laravel_session","bc_anon","bcFreeUserPageView")
@@ -2200,7 +2201,7 @@ if c2.button("🗑 Clear",use_container_width=True):
     try: _os.remove(_state_path())
     except Exception: pass
     st.rerun()
-st.sidebar.caption(f"**vBC-0.2** · {st.session_state.get('bc_source','no data yet')} · transport {st.session_state.get('bc_transport','—')} · "
+st.sidebar.caption(f"**vBC-0.2a** · {st.session_state.get('bc_source','no data yet')} · transport {st.session_state.get('bc_transport','—')} · "
                    "snapshots in-memory + /tmp day-state · sign = dealer calls+/puts− · "
                    "volume unsigned · quotes as-of snapshot (Barchart may lag ~15m)")
 
