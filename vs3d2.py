@@ -1,5 +1,5 @@
 """
-vs3d2.py — SPX 0DTE Dealer Terrain + Book on BARCHART data · current: vBC-0.4
+vs3d2.py — SPX 0DTE Dealer Terrain + Book on BARCHART data · current: vBC-0.5a
 =================================================
 Point your streamlit.io app at this file. Barchart edition of the GBT app:
 same engine chassis (v2.2.2b, Barchart-native, harness-era), plus the Book tab
@@ -7,6 +7,19 @@ the Barchart line never had, plus a WAF-hardened fetch layer.
 
 CHANGELOG (newest first) — what changed and why, per version
 ─────────────────────────────────────────────────────────────────────────────
+vBC-0.5a [PINS] --install-ci requirements template = the proven Cloud pins
+  (streamlit 1.58.0 · pandas 2.2.3 · numpy 1.26.4 · scipy 1.13.1 · mpl 3.9.2 ·
+  curl_cffi ≥0.7 · rongardF tvdatafeed · tzdata). Existing files are never overwritten.
+vBC-0.5 [FASTEST LIVE TEST + spot fallback]
+  • BC_COOKIES_JSON secret: paste the minted blob verbatim (Colab `--mint`, 3 min,
+    no GitHub Actions) → Barchart live until the cookies expire. Priority 0,
+    before BC_COOKIE_URL and disk. In-app guide shows the Colab cell + TOML.
+  • Cookie diagnosis is now ALWAYS set (every failing source explains itself in
+    one line: not valid JSON / 404 run the workflow / 401 needs token / lacks keys).
+  • Live spot + candles: CAPITALCOM:SPX500 first, then SPX on CBOE/SP/TVC/
+    FOREXCOM/OANDA (the exchanges the working fetcher uses), real-index scale
+    band 1000-20000 — fixes "spot is CBOE delayed close" when CAPITALCOM is
+    unavailable on the deployment's tvdatafeed build.
 vBC-0.4 [INDEPENDENT BARCHART-LIVE] Brand-new-repo ready; CBOE is the backup.
   • stdlib-only BOOTSTRAP at the top of the file: shared constants + `--mint`
     (Playwright, verifies the options API in-page, writes cookies.json) +
@@ -560,16 +573,17 @@ _REQUIRED_COOKIES=("aws-waf-token","laravel_session")
 _KEEP_COOKIES=("aws-waf-token","laravel_session","bc_anon","bcFreeUserPageView")
 _COOKIE_BRANCH="cookies"      # orphan branch the CI job force-pushes; main never moves → no redeploys
 
-_REQUIREMENTS="""streamlit
-streamlit-autorefresh
-scipy
-matplotlib
-requests
-pandas
-numpy
-curl_cffi
-git+https://github.com/rongardF/tvdatafeed
-"""
+_REQUIREMENTS="""streamlit==1.58.0
+streamlit-autorefresh==1.0.1
+requests==2.32.3
+numpy==1.26.4
+pandas==2.2.3
+scipy==1.13.1
+matplotlib==3.9.2
+tzdata
+curl_cffi>=0.7.0
+git+https://github.com/rongardF/tvdatafeed.git
+"""   # Faisal's proven Streamlit Cloud pins (Sep 2026)
 _CI_YAML=f"""name: Mint Barchart cookies
 # Solves the AWS WAF challenge in a real browser every 30 min during US hours and
 # publishes cookies.json on the orphan branch `{_COOKIE_BRANCH}` (single file, force-pushed).
@@ -740,48 +754,59 @@ def _ss_set(k,v):
     try: st.session_state[k]=v
     except Exception: _BARE_STATE[k]=v
 _MINT_PATHS=list(dict.fromkeys([_MINT_PATH,_o.path.join(_o.getcwd(),_MINT_REL)]))   # disk fallbacks
-def _cookie_cfg():
-    """BC_COOKIE_URL / BC_COOKIE_TOKEN from Streamlit secrets, else environment."""
-    url=tok=None
-    try:
-        url=st.secrets.get("BC_COOKIE_URL"); tok=st.secrets.get("BC_COOKIE_TOKEN")
+def _secret(name):
+    """Streamlit secret, else environment variable (CLI / CI / Colab)."""
+    v=None
+    try: v=st.secrets.get(name)
     except Exception: pass
-    return (url or _o.environ.get("BC_COOKIE_URL") or "").strip(), (tok or _o.environ.get("BC_COOKIE_TOKEN") or "").strip()
-def _valid_blob(blob,where):
+    return str(v or _o.environ.get(name) or "").strip()
+def _valid_blob(blob,where,why):
     ck=(blob or {}).get("cookies") or {}
     if any(k not in ck for k in _REQUIRED_COOKIES):
-        _ss_set("bc_cookie_note",f"cookie blob at {where} lacks {_REQUIRED_COOKIES} — re-mint"); return None
+        why.append(f"{where}: blob lacks {list(_REQUIRED_COOKIES)} — re-mint"); return None
     blob["_path"]=where
     try: blob["_age_min"]=(_time.time()-float(blob.get("minted_at",0)))/60.0
     except Exception: blob["_age_min"]=float("nan")
     _ss_set("bc_cookie_src",where); _ss_set("bc_cookie_note",None)
     return blob
 def _load_minted():
-    """Minted cookie blob, in priority: (1) BC_COOKIE_URL — raw GitHub URL of the
-    orphan `cookies` branch published by the CI mint (the deployed branch never
-    moves, so the app never reboots); (2) data/session/cookies.json on disk.
-    Requires aws-waf-token AND laravel_session; ALL blob cookies are sent as-is."""
-    url,tok=_cookie_cfg()
+    """Minted cookie blob, in priority:
+      (0) BC_COOKIES_JSON secret — the blob pasted verbatim (fastest test; expires)
+      (1) BC_COOKIE_URL secret   — raw GitHub URL of the orphan `cookies` branch the CI
+          mint publishes (deployed branch never moves → app never reboots)
+      (2) data/session/cookies.json on disk
+    Requires aws-waf-token AND laravel_session; ALL blob cookies are sent as-is.
+    Whatever fails, bc_cookie_note says exactly why (banner · sidebar · --diag)."""
+    why=[]
+    raw=_secret("BC_COOKIES_JSON")
+    if raw:
+        try:
+            b=_valid_blob(json.loads(raw),"secret:BC_COOKIES_JSON",why)
+            if b: return b
+        except Exception as e: why.append(f"BC_COOKIES_JSON is not valid JSON ({type(e).__name__})")
+    url=_secret("BC_COOKIE_URL"); tok=_secret("BC_COOKIE_TOKEN")
     if url:
         try:
             hdr={"accept":"application/json","user-agent":_UA}
             if tok: hdr["authorization"]="token "+tok
-            r=requests.get(url,params={"v":int(_time.time()//60)},headers=hdr,timeout=10)   # ?v busts the 5-min raw cache
-            if r.status_code==200: return _valid_blob(r.json(),"url:"+url)
-            _ss_set("bc_cookie_note",f"BC_COOKIE_URL → HTTP {r.status_code} ("
+            r=requests.get(url,params={"v":int(_time.time()//60)},headers=hdr,timeout=10)   # ?v busts raw's 5-min cache
+            if r.status_code==200:
+                b=_valid_blob(r.json(),"url:"+url,why)
+                if b: return b
+            else:
+                why.append(f"BC_COOKIE_URL → HTTP {r.status_code} ("
                     +("branch/file not published yet — run the mint workflow once" if r.status_code==404
                       else "private repo needs BC_COOKIE_TOKEN" if r.status_code in (401,403) else "check the URL")+")")
-        except Exception as e:
-            _ss_set("bc_cookie_note",f"BC_COOKIE_URL fetch failed: {type(e).__name__}: {e}")
+        except Exception as e: why.append(f"BC_COOKIE_URL fetch failed: {type(e).__name__}: {e}")
     for p in _MINT_PATHS:
         try:
             if not _o.path.exists(p): continue
             with open(p) as f: blob=json.load(f)
-            return _valid_blob(blob,p)
-        except Exception as e:
-            _ss_set("bc_cookie_note",f"{p}: {type(e).__name__}: {e}")
-    if not url and _ss_get("bc_cookie_note") is None:
-        _ss_set("bc_cookie_note","no BC_COOKIE_URL secret and no data/session/cookies.json")
+            b=_valid_blob(blob,p,why)
+            if b: return b
+        except Exception as e: why.append(f"{p}: {type(e).__name__}: {e}")
+    if not why: why.append("no BC_COOKIES_JSON / BC_COOKIE_URL secret and no data/session/cookies.json")
+    _ss_set("bc_cookie_note","; ".join(why)); _ss_set("bc_cookie_src",None)
     return None
 def _bc_headers(ua=None):
     """EXACT header set of the working fetcher. Origin + Sec-Fetch-Site: same-origin
@@ -1051,11 +1076,26 @@ def fetch_book(n):
     except Exception as e: notes.append(f"cboe: {type(e).__name__}: {e}")
     raise RuntimeError("ALL data tiers failed → "+"  ‖  ".join(notes))
 def _spot_from_bars():
+    """LIVE spot for backup mode → (value,label) or (None,None): the candle feed's last
+    close, else SPX 1-min on the exchanges the working fetcher uses. 1000-20000 band."""
     try:
         b=fetch_bars_raw()
-        if b is not None and len(b): return float(b["c"].iloc[-1])
+        if b is not None and len(b):
+            v=float(b["c"].iloc[-1])
+            if 1000<v<20000: return v,"TradingView candles"
     except Exception: pass
-    return None
+    try:
+        from tvDatafeed import TvDatafeed, Interval
+        tv=TvDatafeed()
+        for ex in ("CBOE","SP","TVC","FOREXCOM","OANDA"):
+            try:
+                d=tv.get_hist(symbol="SPX",exchange=ex,interval=Interval.in_1_minute,n_bars=2)
+                if d is not None and len(d):
+                    v=float(d["close"].iloc[-1])
+                    if 1000<v<20000: return v,f"TradingView {ex}:SPX"
+            except Exception: continue
+    except Exception: pass
+    return None,None
 
 # ── CLI: `python vs3d2.py --diag` · `--mint` (mirrors data_fetcher.py --mint) ──
 def _cli_diag():
@@ -2052,10 +2092,11 @@ def fetch_bars_raw():
         return None                      # optional dep OR ctor failure — degrade to banner
     # CAPITALCOM:SPX500 is the real S&P 500 index (~7400), correct scale, real volume.
     # (CAPITALCOM:SPX is a different ~68-handle instrument — do NOT use it.)
-    for itv,n in ((Interval.in_1_minute,500),(Interval.in_5_minute,300),(Interval.in_15_minute,200)):
+    for (sym,ex),(itv,n) in [((s,e),(i,k)) for (s,e) in (("SPX500","CAPITALCOM"),("SPX","SP"),("SPX","CBOE"),("SPX","TVC"),("SPX","FOREXCOM"),("SPX","OANDA"))
+                             for (i,k) in ((Interval.in_1_minute,500),(Interval.in_5_minute,300))]:
         try:
-            df=tv.get_hist(symbol="SPX500",exchange="CAPITALCOM",interval=itv,n_bars=n)
-            if df is not None and len(df)>3:
+            df=tv.get_hist(symbol=sym,exchange=ex,interval=itv,n_bars=n)
+            if df is not None and len(df)>3 and 1000<float(df["close"].iloc[-1])<20000:   # real index scale only
                 df=df.reset_index().rename(columns={"datetime":"t","open":"o","high":"h","low":"l","close":"c"})
                 # tvdatafeed returns NAIVE UTC timestamps (verified: last bar == UTC now).
                 # Localize as UTC and convert to EST, DST-aware, then drop tz to stay naive-EST.
@@ -2243,13 +2284,13 @@ def fetch_vix_live():
 def take_snapshot(num_expiries):
     src,exps,chain,spot,notes=fetch_book(num_expiries)          # tiered, LOUD
     if src=="cboe-delayed":
-        sp=_spot_from_bars()
+        sp,lbl=_spot_from_bars()
         if sp and sp>0:
-            notes.append(f"spot LIVE from CAPITALCOM:SPX500 1-min ({sp:,.2f}); CBOE delayed close was {spot}")
+            notes.append(f"spot LIVE from {lbl} ({sp:,.2f}); CBOE delayed close was {spot}")
             spot=sp
     if spot is None or not (spot>0):
-        sp=_spot_from_bars()
-        if sp: spot=sp; notes.append("spot from CAPITALCOM:SPX500 last close (chain carried no baseLastPrice)")
+        sp,lbl=_spot_from_bars()
+        if sp: spot=sp; notes.append(f"spot from {lbl} (chain carried no baseLastPrice)")
     if spot is None or not (spot>0):
         raise RuntimeError("chain fetched but NO spot from any source → "+"  ‖  ".join(notes))
     # VIX: TradingView TVC:VIX ONLY (user rule — never Barchart $VIX; its free
@@ -2375,7 +2416,7 @@ if c2.button("🗑 Clear",use_container_width=True):
     st.rerun()
 _SRC_LABEL={"barchart-minted":"Barchart LIVE (minted cookies)","barchart-legacy":"Barchart LIVE (legacy page/XSRF)",
             "cboe-delayed":"CBOE delayed ~15m (standalone)"}
-st.sidebar.caption(f"**vBC-0.4** · {_SRC_LABEL.get(st.session_state.get('bc_source'),'no data yet')} · "
+st.sidebar.caption(f"**vBC-0.5a** · {_SRC_LABEL.get(st.session_state.get('bc_source'),'no data yet')} · "
                    f"cookies {('url' if str(st.session_state.get('bc_cookie_src','')).startswith('url:') else 'disk') if st.session_state.get('bc_cookie_src') else 'none'} · "
                    "snapshots in-memory + /tmp day-state · sign = dealer calls+/puts− · "
                    "volume unsigned · quotes as-of snapshot (Barchart may lag ~15m)")
@@ -2547,8 +2588,18 @@ if _src=="cboe-delayed":
     else:
         st.info("Data source: CBOE delayed (~15 min) — backup mode. Chain / IV / OI / volume are as-of ~15 min ago"
                 +("; spot line is LIVE (TradingView)." if _live else "; spot is CBOE delayed close.")
-                +"  Barchart live: "+str(st.session_state.get("bc_cookie_note") or "not configured")+".",icon="ℹ️")
-        with st.expander("🔑 Turn on LIVE Barchart (one-time, ~10 min) — this file brings its own mint job",expanded=False):
+                +"  Barchart live: "+str(st.session_state.get("bc_cookie_note") or "not configured — see below")+".",icon="ℹ️")
+        with st.expander("🔑 Turn on LIVE Barchart — fastest test (3 min, Colab) · permanent (10 min, GitHub Actions)",expanded=False):
+            st.markdown(
+                "**Fastest test — no GitHub Actions.** Upload `vs3d2.py` to a Colab session (left sidebar → Files), "
+                "run this cell, then paste the printed JSON into Streamlit Cloud → app → **Settings → Secrets**:")
+            st.code("!pip -q install playwright\n"
+                    "!python -m playwright install --with-deps chromium > /dev/null 2>&1\n"
+                    "!python vs3d2.py --mint\n"
+                    "print(open('data/session/cookies.json').read())",language="python")
+            st.code("BC_COOKIES_JSON = \'\'\'\n<paste the printed JSON here>\n\'\'\'",language="toml")
+            st.markdown("Next snapshot → *Barchart LIVE (minted cookies)*. Minted cookies expire (typically well "
+                        "under a day), so this proves the pipeline; for all-day live data use the job below.\n\n---")
             st.markdown(
                 "Barchart sits behind AWS WAF; the only thing that works from a cloud IP is a session minted by a "
                 "real browser. A GitHub Actions job in **this repo** does that every 30 min and publishes one file on an "
