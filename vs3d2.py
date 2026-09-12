@@ -1,5 +1,5 @@
 """
-vs3d2.py — SPX 0DTE Dealer Terrain + Book on BARCHART data · current: vBC-0.1b
+vs3d2.py — SPX 0DTE Dealer Terrain + Book on BARCHART data · current: vBC-0.2
 =================================================
 Point your streamlit.io app at this file. Barchart edition of the GBT app:
 same engine chassis (v2.2.2b, Barchart-native, harness-era), plus the Book tab
@@ -7,6 +7,30 @@ the Barchart line never had, plus a WAF-hardened fetch layer.
 
 CHANGELOG (newest first) — what changed and why, per version
 ─────────────────────────────────────────────────────────────────────────────
+vBC-0.2 [FETCH = the WORKING data_fetcher.py recipe, verbatim semantics]
+  • Tier 1 barchart-minted: cookies.json (requires aws-waf-token + laravel_session,
+    ALL blob cookies sent as-is) → curl_cffi impersonate=chrome120 → options API
+    DIRECTLY with the exact XHR header set (Referer = volatility-greeks page,
+    Origin, Sec-Fetch-Site same-origin, X-Requested-With). NO page visit, NO
+    xsrf token — that is what 0.1b/0.1c got wrong (0.1c still demanded an
+    XSRF-TOKEN cookie the blob never contains, so it fell to the page → 202).
+    UA / sec-ch-ua / TLS all Chrome 120 to match the minted session (a 124/120
+    mismatch is itself a detection signal). orderDir=desc keeps ATM inside the
+    1000-row cap. Spot = baseLastPrice from the same verified response. Real
+    expiries via one meta=expirations call (no chain-walking).
+  • Tier 2 barchart-legacy (page → XSRF → API) only when NO cookie file exists
+    (residential IPs). Tier 3 CBOE delayed (~15 min, no auth) as the safety net.
+  • Source is SURFACED: sidebar caption + a yellow banner when serving CBOE, with
+    the exact reason the higher tier failed. Every snapshot records its `src`.
+  • `--diag` now tests the real recipe (minted API + CBOE); `--mint` mirrors
+    data_fetcher.py --mint (same page, same KEEP set, same in-page verify).
+vBC-0.1c [FIX — fetch] Minted cookies (data/session/cookies.json) now go
+  STRAIGHT to the JSON API per the skill's serve pattern: no HTML-page gate
+  (the page can be WAF-challenged independently of the API — that is exactly
+  where 0.1b died: "page: HTTP 202"). XSRF-TOKEN is taken from the blob and
+  the cookies ride EVERY request as cookies= (not jar injection). Cookie path
+  is anchored to the app file, not the process cwd. Block errors now state
+  whether minted cookies were sent and how old they were.
 vBC-0.1b [FIX] Book-control widgets given explicit keys (book_mode/units/
   strad/overlay) — the Book "Straddle bounds" checkbox collided with the
   Terrain one (Streamlit derives element IDs from the label). Keys are kept
@@ -520,50 +544,93 @@ st.set_page_config(page_title="vs3d2 · SPX 0DTE (Barchart)", layout="wide")
 
 # ════════════════════════════ Barchart ══════════════════════════════════════
 _UA=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
-_SECCHUA='"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"'
-_IMPERSONATE="chrome124"          # skill rule: UA / sec-ch-ua / impersonate must agree
+     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")      # == the mint UA (data_fetcher.py)
+_SECCHUA='"Chromium";v="120", "Google Chrome";v="120", "Not-A.Brand";v="99"'
+_IMPERSONATE="chrome120"      # UA / sec-ch-ua / TLS must agree WITH THE MINTED SESSION
 BASE="https://www.barchart.com"
-OPTIONS_URL=f"{BASE}/proxies/core-api/v1/options/get"; QUOTE_URL=f"{BASE}/proxies/core-api/v1/quotes/get"
-def _page(sym): return f"{BASE}/stocks/quotes/{sym.replace('$','%24')}/options"
+OPTIONS_URL=f"{BASE}/proxies/core-api/v1/options/get"
+QUOTE_URL=f"{BASE}/proxies/core-api/v1/quotes/get"            # legacy (no-cookie) path only
+BC_PAGE=f"{BASE}/stocks/quotes/$SPX/volatility-greeks"        # the page the cookies are minted on
+BC_FIELDS=("strikePrice,bidPrice,askPrice,optionType,volatility,delta,gamma,"
+           "openInterest,volume,baseLastPrice")
+CBOE_URL="https://cdn.cboe.com/api/global/delayed_quotes/options/_SPX.json"
+def _page(sym): return f"{BASE}/stocks/quotes/{sym.replace('$','%24')}/options"   # legacy
 
-# ── WAF-hardened transport (scraping-waf-protected-apis skill, rungs 1→3) ─────
-# Rung 1: full browser + API header sets (Origin / Sec-Fetch-Site / X-Requested-
-#         With are the load-bearing trio — cookies alone still 403).
-# Rung 2: curl_cffi TLS impersonation, auto-used when installed (JA3 defeat).
-# Rung 3: minted-cookie hook — CI (or Colab) runs `--mint` with Playwright and
-#         commits data/session/cookies.json; the app serves with a cheap client.
-# Blocks SELF-IDENTIFY: 202/403/503/429 map to a named cause, never silent retry.
-_MINT_PATH="data/session/cookies.json"
-_KEEP_COOKIES=("XSRF-TOKEN","laravel_token","laravel_session","market",
-               "aws-waf-token","cf_clearance","__cf_bm")
-def _nav_headers(ua=None):
+# ═══ Barchart access — VERBATIM recipe of Faisal's working data_fetcher.py ═════
+# Barchart sits behind AWS WAF. Cookies are minted by CI (Playwright) and committed
+# to data/session/cookies.json. From a plain client they work ONLY with browser-
+# shaped XHR headers AND a Chrome TLS fingerprint (curl_cffi impersonate) — plain
+# requests gets 403, and the HTML page itself is challenged (202) even with
+# cookies, so we NEVER visit a page and NEVER use an XSRF token on this path.
+# If cookies are absent/stale/rejected we fall back to CBOE delayed (~15 min) and
+# SAY SO in the UI — visible degradation, never a dead app, never silent.
+import os as _o, re as _re
+_APP_DIR=_o.path.dirname(_o.path.abspath(__file__)) if "__file__" in globals() else _o.getcwd()
+_MINT_PATHS=[_o.path.join(_APP_DIR,"data","session","cookies.json"),
+             _o.path.join(_o.getcwd(),"data","session","cookies.json")]
+_MINT_PATH=_MINT_PATHS[0]
+_REQUIRED_COOKIES=("aws-waf-token","laravel_session")
+_KEEP_COOKIES=("aws-waf-token","laravel_session","bc_anon","bcFreeUserPageView")
+def _load_minted():
+    """cookies.json blob (contract identical to data_fetcher._load_cookies): requires
+    aws-waf-token AND laravel_session; ALL blob cookies are sent as-is."""
+    for p in _MINT_PATHS:
+        try:
+            if not _o.path.exists(p): continue
+            with open(p) as f: blob=json.load(f)
+            ck=blob.get("cookies") or {}
+            if any(k not in ck for k in _REQUIRED_COOKIES): return None
+            blob["_path"]=p
+            try: blob["_age_min"]=(_time.time()-float(blob.get("minted_at",0)))/60.0
+            except Exception: blob["_age_min"]=float("nan")
+            return blob
+        except Exception: continue
+    return None
+def _bc_headers(ua=None):
+    """EXACT header set of the working fetcher. Origin + Sec-Fetch-Site: same-origin
+    are what the WAF checks to tell a real page's XHR from an outside client."""
+    return {"Accept":"application/json","Accept-Language":"en-US,en;q=0.9",
+            "Referer":BC_PAGE,"Origin":BASE,"User-Agent":ua or _UA,
+            "sec-ch-ua":_SECCHUA,"sec-ch-ua-mobile":"?0","sec-ch-ua-platform":'"Windows"',
+            "Sec-Fetch-Dest":"empty","Sec-Fetch-Mode":"cors","Sec-Fetch-Site":"same-origin",
+            "X-Requested-With":"XMLHttpRequest"}
+def _api_headers(sym,ua=None):            # legacy path: same set, referer = options page
+    h=_bc_headers(ua); h["Referer"]=_page(sym); return h
+def _nav_headers(ua=None):                # legacy path: page GET
     return {"accept":("text/html,application/xhtml+xml,application/xml;q=0.9,"
                       "image/avif,image/webp,*/*;q=0.8"),
             "accept-language":"en-US,en;q=0.9","cache-control":"max-age=0",
             "sec-ch-ua":_SECCHUA,"sec-ch-ua-mobile":"?0","sec-ch-ua-platform":'"Windows"',
             "sec-fetch-dest":"document","sec-fetch-mode":"navigate","sec-fetch-site":"none",
             "sec-fetch-user":"?1","upgrade-insecure-requests":"1","user-agent":ua or _UA}
-def _api_headers(sym,ua=None):
-    return {"accept":"application/json","accept-language":"en-US,en;q=0.9",
-            "referer":_page(sym),"origin":BASE,"user-agent":ua or _UA,
-            "sec-ch-ua":_SECCHUA,"sec-ch-ua-mobile":"?0","sec-ch-ua-platform":'"Windows"',
-            "sec-fetch-dest":"empty","sec-fetch-mode":"cors","sec-fetch-site":"same-origin",
-            "x-requested-with":"XMLHttpRequest"}
-def _load_minted():
-    """CI-minted cookie blob {minted_at, user_agent, cookies} or None.
-    Only the KEEP set is honored (no analytics IDs committed)."""
-    import os as _o
-    try:
-        if not _o.path.exists(_MINT_PATH): return None
-        with open(_MINT_PATH) as f: blob=json.load(f)
-        ck={k:v for k,v in (blob.get("cookies") or {}).items() if k in _KEEP_COOKIES}
-        if not ck: return None
-        blob["cookies"]=ck; return blob
-    except Exception: return None
+class _BlockedError(RuntimeError): pass
+def _classify_block(status, headers, body=""):
+    """Skill step-1 signature table → one LOUD line naming the block."""
+    h={str(k).lower():str(v) for k,v in dict(headers or {}).items()}
+    b=(body or "")[:400]
+    if "x-deny-reason" in h or "host not in allowlist" in b.lower():
+        return (f"HTTP {status}: OUR OWN egress filter (x-deny-reason="
+                f"{h.get('x-deny-reason','?')}) — fix the container/network allowlist")
+    if h.get("x-amzn-waf-action")=="challenge" or "gokuprops" in b.lower() or status==202:
+        return (f"HTTP {status}: AWS WAF JS challenge — needs freshly MINTED cookies "
+                "(CI `python data_fetcher.py --mint` → data/session/cookies.json)")
+    if "cf-mitigated" in h or "just a moment" in b.lower() or "cf_chl_opt" in b:
+        return f"HTTP {status}: Cloudflare challenge — re-mint cookies"
+    if status==403:
+        return ("HTTP 403: WAF token missing/invalid or TLS fingerprint — cookies must "
+                "be sent via curl_cffi impersonate=chrome120 with the full XHR header set")
+    if status==429:
+        return f"HTTP 429 rate-limited (retry-after={h.get('retry-after','?')}) — back off"
+    if status==401:
+        return "HTTP 401: ordinary auth/session expiry (not bot protection)"
+    return f"HTTP {status}: {b[:160]!r}"
+def _resp_block(r):
+    try: body=r.text
+    except Exception: body=""
+    return _classify_block(r.status_code, getattr(r,"headers",{}) or {}, body)
 _TRANSPORT="requests"
 def _new_http_session():
-    """curl_cffi TLS-impersonated session when installed (rung 2), else requests."""
+    """curl_cffi TLS-impersonated session when installed, else requests (legacy path)."""
     global _TRANSPORT
     try:
         from curl_cffi import requests as _creq
@@ -572,110 +639,10 @@ def _new_http_session():
     except Exception:
         _TRANSPORT="requests"
         return requests.Session()
-class _BlockedError(RuntimeError): pass
-def _classify_block(status, headers, body=""):
-    """Skill step-1 signature table → one LOUD line naming the block + next rung."""
-    h={str(k).lower():str(v) for k,v in dict(headers or {}).items()}
-    b=(body or "")[:400]
-    if "x-deny-reason" in h or "host not in allowlist" in b.lower():
-        return (f"HTTP {status}: OUR OWN egress filter (x-deny-reason="
-                f"{h.get('x-deny-reason','?')}) — fix the container/network "
-                "allowlist, not the scraper")
-    if h.get("x-amzn-waf-action")=="challenge" or "gokuprops" in b.lower() or status==202:
-        return (f"HTTP {status}: AWS WAF JS challenge — rung 3: run `python "
-                f"vs3d2.py --mint` (Playwright) and commit {_MINT_PATH}; the app "
-                "then serves with curl_cffi + minted cookies")
-    if "cf-mitigated" in h or "just a moment" in b.lower() or "cf_chl_opt" in b:
-        return (f"HTTP {status}: Cloudflare challenge — rung 3: `--mint` then "
-                f"serve from {_MINT_PATH}")
-    if status==403:
-        return ("HTTP 403 (no challenge markers): TLS fingerprint or header "
-                "block — rung 2: `pip install curl_cffi` (auto-used) and keep "
-                "the full Origin/Sec-Fetch header set")
-    if status==429:
-        return f"HTTP 429 rate-limited (retry-after={h.get('retry-after','?')}) — back off"
-    if status==401:
-        return "HTTP 401: ordinary auth/session expiry — re-init session (not bot protection)"
-    return f"HTTP {status}: {b[:160]!r}"
-def _resp_block(r):
-    try: body=r.text
-    except Exception: body=""
-    return _classify_block(r.status_code, getattr(r,"headers",{}) or {}, body)
-def init_session(sym="$SPX"):
-    global _TRANSPORT
-    s=_new_http_session()
-    blob=_load_minted(); ua=(blob or {}).get("user_agent") or _UA
-    if blob:
-        for k,v in blob["cookies"].items():
-            try: s.cookies.set(k,v,domain=".barchart.com")
-            except Exception:
-                try: s.cookies.set(k,v)
-                except Exception: pass
-        _TRANSPORT+="+minted"
-    r=s.get(_page(sym),headers=_nav_headers(ua),timeout=20)
-    if r.status_code!=200: raise _BlockedError("page: "+_resp_block(r))
-    try: ck=s.cookies.get_dict()
-    except Exception: ck={c.name:c.value for c in s.cookies}
-    if "XSRF-TOKEN" not in ck:
-        raise _BlockedError("page 200 but no XSRF-TOKEN cookie — a challenge page "
-                            "was served instead of the app; rung 3 (`--mint`) applies")
-    xsrf=unquote(unquote(ck["XSRF-TOKEN"]))   # DOUBLE unquote — verified recipe
-    h=_api_headers(sym,ua); h["x-xsrf-token"]=xsrf
-    try: st.session_state["bc_transport"]=_TRANSPORT
-    except Exception: pass
-    return s,h
-# ── CLI: `python vs3d2.py --diag` (step-1 signatures) · `--mint` (rung 3) ────
-def _cli_diag():
-    s=_new_http_session()
-    for tag,url,hd in (("page",_page("$SPX"),_nav_headers()),
-                       ("quote",QUOTE_URL+"?symbols=%24SPX&fields=lastPrice&raw=1",_api_headers("$SPX"))):
-        try:
-            r=s.get(url,headers=hd,timeout=20)
-            marks={k:v for k,v in dict(r.headers).items() if str(k).lower() in
-                   ("server","x-amzn-waf-action","cf-mitigated","cf-ray","x-deny-reason","content-type")}
-            print(f"[{tag}] {r.status_code} transport={_TRANSPORT} {marks}")
-            print("      ",(r.text or "")[:180].replace(chr(10)," "))
-            if r.status_code!=200: print("      ->",_resp_block(r))
-        except Exception as ex: print(f"[{tag}] REQUEST FAILED {type(ex).__name__}: {ex}")
-def _cli_mint():
-    """Solve any JS challenge in a real browser (LAZY Playwright import — the app
-    container never needs it), verify IN-PAGE, write the cookie blob. Raises on
-    failure so CI fails loudly rather than committing dead cookies."""
-    import asyncio, os as _o
-    async def _run():
-        from playwright.async_api import async_playwright
-        p=await async_playwright().start()
-        b=await p.chromium.launch(args=["--no-sandbox","--disable-dev-shm-usage",
-                                        "--disable-blink-features=AutomationControlled"])
-        ctx=await b.new_context(user_agent=_UA,viewport={"width":1440,"height":900},locale="en-US")
-        pg=await ctx.new_page(); t0=_time.time()
-        await pg.goto(_page("$SPX"),wait_until="domcontentloaded",timeout=60000)
-        ck={}
-        for _ in range(40):                 # wait for the APP cookie, not just a WAF token
-            ck={c["name"]:c["value"] for c in await ctx.cookies()}
-            if "XSRF-TOKEN" in ck: break
-            await pg.wait_for_timeout(1000)
-        verify=await pg.evaluate("""async (url)=>{const r=await fetch(url,{headers:{'Accept':'application/json'},credentials:'include'});return {status:r.status,len:(await r.text()).length};}""",
-                                 QUOTE_URL+"?symbols=%24SPX&fields=lastPrice&raw=1")
-        await b.close(); await p.stop()
-        print(f"solve {_time.time()-t0:.1f}s | cookies {sorted(ck)} | in-page verify {verify['status']}")
-        if verify["status"]!=200: raise RuntimeError(f"in-page verify failed: {verify['status']}")
-        if "XSRF-TOKEN" not in ck: raise RuntimeError("XSRF-TOKEN never appeared — challenge unsolved")
-        return {k:v for k,v in ck.items() if k in _KEEP_COOKIES}
-    kept=asyncio.run(_run())
-    _o.makedirs(_o.path.dirname(_MINT_PATH),exist_ok=True)
-    blob={"minted_at":int(_time.time()),
-          "minted_at_iso":_time.strftime("%Y-%m-%d %H:%M:%S UTC",_time.gmtime()),
-          "user_agent":_UA,"cookies":kept}
-    with open(_MINT_PATH,"w") as f: json.dump(blob,f,indent=2)
-    print(f"wrote {_MINT_PATH} ({sorted(kept)})")
-if __name__=="__main__" and ("--diag" in sys.argv or "--mint" in sys.argv):
-    (_cli_mint() if "--mint" in sys.argv else _cli_diag()); sys.exit(0)
-
-def get_spot(s,h,sym="$SPX"):
-    r=s.get(QUOTE_URL,params={"symbols":sym,"fields":"lastPrice","raw":"1"},headers=h,timeout=10)
-    if r.status_code!=200: raise _BlockedError("quote: "+_resp_block(r))
-    d=r.json().get("data",[]); return float(d[0].get("raw",d[0]).get("lastPrice",0))
+def _fnum(v):
+    try:
+        f=float(v); return f if f==f else np.nan
+    except Exception: return np.nan
 def _iv_norm(v):
     """Barchart serves IV percent-style (e.g. 19.5 = 19.5%). Normalize to decimal
     at INGEST so every snapshot chain is decimal everywhere downstream. >3 cannot
@@ -686,7 +653,6 @@ def _iv_norm(v):
         if v is None or (isinstance(v,float) and math.isnan(v)): return v
         return v/100.0 if v>3.0 else v
     except Exception: return v
-
 def _iv_norm_chain(s):
     """Chain-level units detector (v2.1.9): decide percent-vs-decimal ONCE from the
     chain MEDIAN (percent-style medians ~15-30, decimal ~0.15-0.3), then apply
@@ -697,45 +663,249 @@ def _iv_norm_chain(s):
         med=float(ss.dropna().median())
         return ss/100.0 if (med==med and med>3.0) else ss
     except Exception: return s
+def _rows_to_chain(rows):
+    """Common chain schema for every source: strike,type(call/put),iv(decimal),gamma,
+    delta,oi,volume,bid,ask — sorted ascending (the API is fetched desc)."""
+    df=pd.DataFrame(rows)
+    if df.empty: return None
+    df["iv"]=_iv_norm_chain(df["iv"])
+    return df.sort_values(["strike","type"]).reset_index(drop=True)
 
+# ── tier 1: Barchart with MINTED cookies (the working path) ───────────────────
+def _bc_get(params, blob):
+    """One minted Barchart call, verbatim: fresh curl_cffi chrome120 session, cookies=
+    from the blob (ALL of them), browser XHR headers, no page visit, no xsrf.
+    Raises _BlockedError (LOUD, names cookie age + path) on any non-200."""
+    global _TRANSPORT
+    try:
+        from curl_cffi import requests as _creq
+    except Exception:
+        raise _BlockedError("curl_cffi not installed — the minted Barchart path requires it "
+                            "(add `curl_cffi` to requirements.txt)")
+    ua=blob.get("user_agent") or _UA
+    _TRANSPORT="curl_cffi:"+_IMPERSONATE+"+minted"
+    s=_creq.Session(impersonate=_IMPERSONATE)
+    r=s.get(OPTIONS_URL,params=params,cookies=blob["cookies"],headers=_bc_headers(ua),timeout=20)
+    if r.status_code!=200:
+        raise _BlockedError("barchart(minted): "+_resp_block(r)+
+                            f"  [cookies {blob.get('_age_min',float('nan')):.0f}m old from "
+                            f"{blob.get('_path')} were sent and rejected — re-mint]")
+    return r.json()
+def _bc_expirations(blob):
+    """Real expiry list from meta (weekly + monthly, deduped), today or later."""
+    j=_bc_get({"baseSymbol":"$SPX","groupBy":"optionType","expirationDate":"nearest",
+               "raw":"1","meta":"expirations","fields":"strikePrice,optionType"},blob)
+    ex=(j.get("meta") or {}).get("expirations") or {}
+    out=sorted(set(ex.get("weekly",[]) or [])|set(ex.get("monthly",[]) or []))
+    t=today_est().strftime("%Y-%m-%d")
+    return [e for e in out if e>=t]
+def _bc_chain(expiry, blob):
+    """(chain, spot) for one expiry. orderDir=desc keeps ATM inside the 1000-row cap.
+    Spot = baseLastPrice carried in the same (verified) response."""
+    j=_bc_get({"baseSymbol":"$SPX","groupBy":"optionType","expirationDate":expiry,
+               "orderBy":"strikePrice","orderDir":"desc","raw":"1","fields":BC_FIELDS},blob)
+    data=j.get("data") or {}; rows=[]; spot=None
+    for side,items in (data.items() if isinstance(data,dict) else []):
+        for it in (items or []):
+            raw=it.get("raw",it) if isinstance(it,dict) else None
+            if not isinstance(raw,dict): continue
+            rows.append({"strike":_fnum(raw.get("strikePrice")),"type":str(side).lower(),
+                         "iv":_fnum(raw.get("volatility")),"gamma":_fnum(raw.get("gamma")),
+                         "delta":_fnum(raw.get("delta")),"oi":_fnum(raw.get("openInterest")),
+                         "volume":_fnum(raw.get("volume")),"bid":_fnum(raw.get("bidPrice")),
+                         "ask":_fnum(raw.get("askPrice"))})
+            if spot is None:
+                b=_fnum(raw.get("baseLastPrice"))
+                if b==b and b>0: spot=float(b)
+    if not rows: return None,None
+    return _rows_to_chain(rows),spot
+
+# ── tier 2: legacy page → XSRF → API (works from residential IPs, no cookies) ─
+def init_session(sym="$SPX"):
+    s=_new_http_session()
+    r=s.get(_page(sym),headers=_nav_headers(),timeout=20)
+    if r.status_code!=200: raise _BlockedError("barchart(legacy) page: "+_resp_block(r))
+    try: ck=s.cookies.get_dict()
+    except Exception: ck={c.name:c.value for c in s.cookies}
+    if "XSRF-TOKEN" not in ck:
+        raise _BlockedError("barchart(legacy): page 200 but no XSRF-TOKEN — challenge page served")
+    h=_api_headers(sym); h["x-xsrf-token"]=unquote(unquote(ck["XSRF-TOKEN"]))   # DOUBLE unquote
+    return s,h
+def get_spot(s,h,sym="$SPX"):
+    r=s.get(QUOTE_URL,params={"symbols":sym,"fields":"lastPrice","raw":"1"},headers=h,timeout=10)
+    if r.status_code!=200: raise _BlockedError("barchart(legacy) quote: "+_resp_block(r))
+    d=r.json().get("data",[]); return float(d[0].get("raw",d[0]).get("lastPrice",0))
 def fetch_chain(s,h,expiry,sym="$SPX"):
-    f="strikePrice,bidPrice,askPrice,optionType,volatility,delta,gamma,openInterest,volume"
     for a in range(3):
         try:
             r=s.get(OPTIONS_URL,params={"baseSymbol":sym,"groupBy":"optionType","expirationDate":expiry,
-                "fields":f,"orderBy":"strikePrice","orderDir":"asc","raw":"1"},headers=h,timeout=15)
+                "fields":BC_FIELDS,"orderBy":"strikePrice","orderDir":"desc","raw":"1"},headers=h,timeout=15)
             if r.status_code==401: _,h2=init_session(sym); h.update(h2); continue
-            if r.status_code in (202,403,503,429):     # blocks name themselves (skill)
-                raise _BlockedError("chain: "+_resp_block(r))
+            if r.status_code in (202,403,503,429):
+                raise _BlockedError("barchart(legacy) chain: "+_resp_block(r))
             r.raise_for_status(); data=r.json().get("data",{}); rows=[]
             if isinstance(data,dict):
                 for ot,items in data.items():
                     for it in (items or []):
                         raw=it.get("raw",it)
-                        def num(k):
-                            v=raw.get(k,None); return float(v) if v not in (None,"") else np.nan
-                        rows.append({"strike":num("strikePrice"),"type":ot.lower(),"iv":num("volatility"),
-                            "gamma":num("gamma"),"delta":num("delta"),"oi":num("openInterest"),"volume":num("volume"),
-                            "bid":num("bidPrice"),"ask":num("askPrice")})
-            if not rows: return None
-            df=pd.DataFrame(rows); df["iv"]=_iv_norm_chain(df["iv"])
-            return df
+                        rows.append({"strike":_fnum(raw.get("strikePrice")),"type":str(ot).lower(),
+                                     "iv":_fnum(raw.get("volatility")),"gamma":_fnum(raw.get("gamma")),
+                                     "delta":_fnum(raw.get("delta")),"oi":_fnum(raw.get("openInterest")),
+                                     "volume":_fnum(raw.get("volume")),"bid":_fnum(raw.get("bidPrice")),
+                                     "ask":_fnum(raw.get("askPrice"))})
+            return _rows_to_chain(rows) if rows else None
         except _BlockedError:
-            raise                                       # LOUD — never a silent retry
-        except Exception as ex:
+            raise
+        except Exception:
             _time.sleep(2)
     return None
-def discover_expiries(s,h,n,sym="$SPX"):
-    from datetime import date,timedelta
-    d=today_est(); found=[]; exps=[]
-    while len(found)<n and (d-today_est()).days<40:
-        if d.weekday()<5:
-            es=d.strftime("%Y-%m-%d"); ch=fetch_chain(s,h,es,sym)
-            if ch is not None and not ch.empty:
-                ch=ch.copy(); ch["expiry"]=es; found.append(ch); exps.append(es)
+def _weekday_exps(n, max_days=40):
+    from datetime import timedelta
+    d=today_est(); out=[]
+    while len(out)<n and (d-today_est()).days<max_days:
+        if d.weekday()<5: out.append(d.strftime("%Y-%m-%d"))
         d+=timedelta(days=1)
+    return out
+def discover_expiries(s,h,n,sym="$SPX"):
+    found=[]; exps=[]
+    for es in _weekday_exps(n*6):
+        if len(found)>=n: break
+        ch=fetch_chain(s,h,es,sym)
+        if ch is not None and not ch.empty:
+            ch=ch.copy(); ch["expiry"]=es; found.append(ch); exps.append(es)
     if not found: raise RuntimeError("No valid expiries found")
     return exps, pd.concat(found, ignore_index=True)
+
+# ── tier 3: CBOE delayed (~15 min), no auth — the safety net ──────────────────
+_OCC=_re.compile(r"^([A-Z]+)(\d{6})([CP])(\d{8})$")
+_cboe_cache={"ts":0.0,"raw":None}
+def _cboe_raw(force=False):
+    now=_time.time()
+    if not force and _cboe_cache["raw"] is not None and (now-_cboe_cache["ts"])<60: return _cboe_cache["raw"]
+    r=requests.get(CBOE_URL,timeout=30,headers={"accept":"application/json","user-agent":_UA})
+    r.raise_for_status(); data=r.json().get("data")
+    if not data or "options" not in data: raise RuntimeError("CBOE payload had no options")
+    _cboe_cache["raw"],_cboe_cache["ts"]=data,now
+    return data
+def _cboe_expirations(raw):
+    t=today_est().strftime("%Y-%m-%d"); ex=set()
+    for o in raw.get("options",[]):
+        m=_OCC.match(o.get("option",""))
+        if m: y=m.group(2); ex.add(f"20{y[:2]}-{y[2:4]}-{y[4:6]}")
+    return sorted(e for e in ex if e>=t)
+def _cboe_chain(raw, expiry):
+    rows=[]
+    for o in raw.get("options",[]):
+        m=_OCC.match(o.get("option",""))
+        if not m: continue
+        _,y,cp,k=m.groups()
+        if f"20{y[:2]}-{y[2:4]}-{y[4:6]}"!=expiry: continue
+        rows.append({"strike":int(k)/1000.0,"type":("call" if cp=="C" else "put"),
+                     "iv":_fnum(o.get("iv")),"gamma":_fnum(o.get("gamma")),"delta":_fnum(o.get("delta")),
+                     "oi":_fnum(o.get("open_interest")),"volume":_fnum(o.get("volume")),
+                     "bid":_fnum(o.get("bid")),"ask":_fnum(o.get("ask"))})
+    return _rows_to_chain(rows) if rows else None
+
+# ── the tiered fetch used by take_snapshot ────────────────────────────────────
+def fetch_book(n):
+    """→ (source, exps, chain, spot, notes). Tiers: barchart-minted → barchart-legacy
+    (only when no cookie file exists) → cboe-delayed. Every tier failure is kept in
+    `notes` and shown in the UI. Raises only when ALL tiers fail (LOUD)."""
+    notes=[]; blob=_load_minted()
+    if blob:
+        try:
+            exps=_bc_expirations(blob) or _weekday_exps(n*6)
+            found=[]; got=[]; spot=None
+            for es in exps:
+                if len(found)>=n: break
+                ch,sp=_bc_chain(es,blob)
+                if ch is not None and not ch.empty:
+                    ch=ch.copy(); ch["expiry"]=es; found.append(ch); got.append(es)
+                    if spot is None and sp: spot=sp
+            if found:
+                return "barchart-minted",got,pd.concat(found,ignore_index=True),spot,notes
+            notes.append("barchart(minted): 200 but no contracts returned")
+        except _BlockedError as e: notes.append(str(e))
+        except Exception as e: notes.append(f"barchart(minted): {type(e).__name__}: {e}")
+    else:
+        notes.append("no minted cookies found at "+" | ".join(_MINT_PATHS))
+        try:
+            s,h=init_session("$SPX"); sp=get_spot(s,h)
+            exps,chain=discover_expiries(s,h,n)
+            return "barchart-legacy",exps,chain,sp,notes
+        except _BlockedError as e: notes.append(str(e))
+        except Exception as e: notes.append(f"barchart(legacy): {type(e).__name__}: {e}")
+    try:
+        raw=_cboe_raw(); exps=_cboe_expirations(raw)
+        found=[]; got=[]
+        for es in exps:
+            if len(found)>=n: break
+            ch=_cboe_chain(raw,es)
+            if ch is not None and not ch.empty:
+                ch=ch.copy(); ch["expiry"]=es; found.append(ch); got.append(es)
+        if not found: raise RuntimeError("CBOE returned no contracts for upcoming expiries")
+        sp=_fnum(raw.get("close")); sp=float(sp) if sp==sp and sp>0 else None
+        return "cboe-delayed",got,pd.concat(found,ignore_index=True),sp,notes
+    except Exception as e: notes.append(f"cboe: {type(e).__name__}: {e}")
+    raise RuntimeError("ALL data tiers failed → "+"  ‖  ".join(notes))
+def _spot_from_bars():
+    try:
+        b=fetch_bars_raw()
+        if b is not None and len(b): return float(b["c"].iloc[-1])
+    except Exception: pass
+    return None
+
+# ── CLI: `python vs3d2.py --diag` · `--mint` (mirrors data_fetcher.py --mint) ──
+def _cli_diag():
+    blob=_load_minted()
+    print("cookies :",(f"{blob['_path']}  age {blob['_age_min']:.0f}m  keys {sorted(blob['cookies'])}"
+                       if blob else "NONE FOUND at "+" | ".join(_MINT_PATHS)))
+    if blob:
+        try:
+            ex=_bc_expirations(blob); print(f"barchart(minted): 200 OK · expirations {ex[:4]} …")
+            ch,sp=_bc_chain(ex[0],blob); print(f"   chain {ex[0]}: {len(ch)} rows · spot(baseLastPrice)={sp} · "
+                  f"gamma nonzero {(ch['gamma'].fillna(0)!=0).sum()} · oi nonzero {(ch['oi'].fillna(0)!=0).sum()} · "
+                  f"ATM-ish iv median {ch['iv'].median():.4f} (decimal)")
+        except Exception as e: print("barchart(minted) FAILED:",e)
+    try:
+        raw=_cboe_raw(); print(f"cboe    : {len(raw.get('options',[]))} contracts · close={raw.get('close')} · "
+                                f"expirations {_cboe_expirations(raw)[:4]} …")
+    except Exception as e: print("cboe FAILED:",e)
+def _cli_mint():
+    """Solve the WAF challenge in a real browser (LAZY Playwright import), verify the
+    options API IN-PAGE, write the cookie blob. Mirrors data_fetcher.py --mint."""
+    import asyncio
+    async def _run():
+        from playwright.async_api import async_playwright
+        p=await async_playwright().start()
+        b=await p.chromium.launch(args=["--no-sandbox","--disable-dev-shm-usage",
+                                        "--disable-blink-features=AutomationControlled"])
+        ctx=await b.new_context(user_agent=_UA,viewport={"width":1440,"height":900},locale="en-US")
+        pg=await ctx.new_page(); t0=_time.time()
+        await pg.goto(BC_PAGE,wait_until="domcontentloaded",timeout=60000)
+        ck={}
+        for _ in range(40):        # WAF solves in-page, THEN the app sets laravel_session
+            ck={c["name"]:c["value"] for c in await ctx.cookies()}
+            if "laravel_session" in ck and "aws-waf-token" in ck: break
+            await pg.wait_for_timeout(1000)
+        verify=await pg.evaluate("""async (url)=>{const r=await fetch(url,{headers:{'Accept':'application/json'},credentials:'include'});return {status:r.status,len:(await r.text()).length};}""",
+            OPTIONS_URL+"?baseSymbol=%24SPX&groupBy=optionType&expirationDate=nearest&orderBy=strikePrice&orderDir=desc&raw=1&fields=strikePrice,gamma,openInterest,optionType")
+        await b.close(); await p.stop()
+        print(f"solve {_time.time()-t0:.1f}s | cookies {sorted(ck)} | in-page verify {verify['status']} bytes={verify['len']}")
+        if verify["status"]!=200: raise RuntimeError(f"in-page verify failed: {verify['status']}")
+        kept={k:v for k,v in ck.items() if k in _KEEP_COOKIES}
+        miss=[k for k in _REQUIRED_COOKIES if k not in kept]
+        if miss: raise RuntimeError(f"missing required cookies: {miss}")
+        return kept
+    kept=asyncio.run(_run())
+    _o.makedirs(_o.path.dirname(_MINT_PATH),exist_ok=True)
+    blob={"minted_at":int(_time.time()),
+          "minted_at_iso":_time.strftime("%Y-%m-%d %H:%M:%S UTC",_time.gmtime()),
+          "user_agent":_UA,"cookies":kept}
+    with open(_MINT_PATH,"w") as f: json.dump(blob,f,indent=2)
+    print(f"saved {_MINT_PATH} ({len(kept)} cookies)")
+if __name__=="__main__" and ("--diag" in sys.argv or "--mint" in sys.argv):
+    (_cli_mint() if "--mint" in sys.argv else _cli_diag()); sys.exit(0)
 
 # ════════════════════════════ Greeks / weights ══════════════════════════════
 def bs_gamma(S,K,T,sig):
@@ -1903,8 +2073,12 @@ def fetch_vix_live():
     return None
 
 def take_snapshot(num_expiries):
-    s,h=init_session("$SPX"); spot=get_spot(s,h)
-    exps,chain=discover_expiries(s,h,num_expiries)
+    src,exps,chain,spot,notes=fetch_book(num_expiries)          # tiered, LOUD
+    if spot is None or not (spot>0):
+        sp=_spot_from_bars()
+        if sp: spot=sp; notes.append("spot from CAPITALCOM:SPX500 last close (chain carried no baseLastPrice)")
+    if spot is None or not (spot>0):
+        raise RuntimeError("chain fetched but NO spot from any source → "+"  ‖  ".join(notes))
     # VIX: TradingView TVC:VIX ONLY (user rule — never Barchart $VIX; its free
     # quote can lag, and a stale LOW during a spike is worse than an honest n/a).
     vix=fetch_vix_live(); vix_src=("tvc" if vix is not None else None)
@@ -1920,7 +2094,10 @@ def take_snapshot(num_expiries):
         bc_update_ledger(chain[chain["expiry"]==exps[0]],exps[0],ts)
     except Exception as _lex:
         st.sidebar.caption(f"⚠ flow-ledger update failed: {type(_lex).__name__}: {_lex}")
-    st.session_state.snaps.append(dict(ts=ts,spot=spot,chain=chain,exps=exps,vix=vix,vix_src=vix_src))
+    st.session_state.snaps.append(dict(ts=ts,spot=spot,chain=chain,exps=exps,vix=vix,vix_src=vix_src,src=src))
+    st.session_state["bc_source"]=src; st.session_state["bc_notes"]=notes
+    try: st.session_state["bc_transport"]=_TRANSPORT
+    except Exception: pass
     st.session_state.last_ts=ts
     save_day_state()
     return spot,exps
@@ -2023,7 +2200,7 @@ if c2.button("🗑 Clear",use_container_width=True):
     try: _os.remove(_state_path())
     except Exception: pass
     st.rerun()
-st.sidebar.caption(f"**vBC-0.1b** · transport {st.session_state.get('bc_transport','requests')} · "
+st.sidebar.caption(f"**vBC-0.2** · {st.session_state.get('bc_source','no data yet')} · transport {st.session_state.get('bc_transport','—')} · "
                    "snapshots in-memory + /tmp day-state · sign = dealer calls+/puts− · "
                    "volume unsigned · quotes as-of snapshot (Barchart may lag ~15m)")
 
@@ -2184,6 +2361,16 @@ m2.metric("Straddle",f"${straddle:.2f}" if straddle else "—")
 m3.metric("Expiry",exps[0]+(f" +{len(exps)-1}" if len(exps)>1 else ""))
 m4.metric("Viewing snap",f"{sel_i+1}/{len(snaps)}")
 m5.metric("Snapshot (EST)",sel_ts.strftime("%H:%M:%S"))
+_src=latest.get("src") or st.session_state.get("bc_source")
+_notes=st.session_state.get("bc_notes") or []
+if _src=="cboe-delayed":
+    st.warning("Data source: CBOE DELAYED (~15 min) — Barchart minted cookies missing/rejected. "
+               +(_notes[0][:260] if _notes else ""),icon="⚠️")
+elif _src=="barchart-legacy":
+    st.caption("source: Barchart via legacy page/XSRF (no minted cookie file) — works from "
+               "residential IPs; on Cloud you want data/session/cookies.json from CI.")
+elif _src=="barchart-minted":
+    st.caption("source: Barchart LIVE via minted cookies"+(f" · {_notes[0][:120]}" if _notes else ""))
 if bars is None:
     st.caption(f"Candles: none overlaid — {bars_msg}.{_atmiv_txt}")
 else:
