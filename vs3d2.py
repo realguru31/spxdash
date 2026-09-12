@@ -1,5 +1,5 @@
 """
-vs3d2.py — SPX 0DTE Dealer Terrain + Book on BARCHART data · current: vBC-0.7
+vs3d2.py — SPX 0DTE Dealer Terrain + Book on BARCHART data · current: vBC-0.8
 =================================================
 Point your streamlit.io app at this file. Barchart edition of the GBT app:
 same engine chassis (v2.2.2b, Barchart-native, harness-era), plus the Book tab
@@ -7,6 +7,20 @@ the Barchart line never had, plus a WAF-hardened fetch layer.
 
 CHANGELOG (newest first) — what changed and why, per version
 ─────────────────────────────────────────────────────────────────────────────
+vBC-0.8 [🧮 GEX³ TAB — ported from vGBT-0.9.45→0.9.60, two lenses]
+  • gex3_lens_rows / gex3_draw_profile / gex3_zone_shade / gex3_model ported
+    VERBATIM (5-pt grid, [¼ ½ ¼] smooth, right-anchored density with buy/sell/
+    TOTAL curves + ▲▼ peaks + HHI ◆, pos/neg γ field bands, flip → walls →
+    gravity trio → pin scoring → HHI regime → floor/ceiling → hedge walls →
+    Dan-threshold dial, label de-collision, per-panel HH:MM axis, colored
+    readout + detail expander, K* omitted with the reason printed).
+  • Lenses on Barchart: P1 CONVENTION (naive, OI+volume) · P2 FRESH PAPER
+    (today's volume, naive) with P1 dotted over it. The GBT build's FLOW-SIGNED
+    (dsign) and Δ-OI (open_interest_change) lenses and the METHOD-lock overlay
+    have no Barchart source — omitted, not faked; the tab says so.
+  • dispatch (no live fragment in this engine); sig = ts · sliders · bars.
+  • Only layout deviation: hspace 0.14→0.22 (panel-2 title collided with panel-1
+    time labels on two taller panels). Everything else pixel-faithful.
 vBC-0.7 [OWN COOKIE JOB] vs3d2 ships its own GitHub Actions mint,
   .github/workflows/vs3d2_cookies.yml (name/group distinct from spxdash's
   barchart_cookies.yml, which is left untouched along with data_fetcher.py).
@@ -2296,6 +2310,206 @@ def bc_book_figure(rows,dots,spot,straddle,p_min,p_max,mode,units,meta,bars=None
     fig.tight_layout()
     return fig
 
+# ═══════════ GEX³ — NIFTY GEX model on two lenses [ported verbatim from vGBT-0.9.45→0.9.60] ═══════════
+# Constants per the validated Colab SPX adaptation: contract MULT=100 (never the
+# NIFTY lot 65), strike GRID=5, NIFTY point-distance constants ×SC=0.1. Barchart
+# carries no aggressor tape and no ΔOI feed, so the GBT build's FLOW-SIGNED and
+# Δ-OI lenses are NOT available here; what remains is exactly the two lenses the
+# model can honestly run on this data: CONVENTION (naive, OI+volume) and FRESH
+# PAPER (today's volume). Dealer sign is the ASSUMED convention on both (calls
+# dealer-long / puts dealer-short) — not clearing truth. DISPLAY-ONLY LENS.
+GEX3_MULT=100.0; GEX3_GRID=5.0; GEX3_SC=0.1
+
+def gex3_lens_rows(ch, sp, exp, lens):
+    """Per-strike gamma masses for one lens. pos = dealer-LONG-gamma side mass,
+    neg = dealer-SHORT side (both ≥0); net=pos−neg; total=pos+neg. Naive lens ⇒
+    pos=γ·w(calls), neg=γ·w(puts) — exactly methodology §2. lens ∈ {'naive','vol'}.
+    Weights: naive = OI+volume [USER 08-04 tri-panel]; vol = today's volume only
+    (live fresh-paper upper bound). Returns DataFrame(strike,pos,neg,net,total)
+    on the 5-pt grid, or None. (dsign / ΔOI lenses of the GBT build omitted —
+    no Barchart source.)"""
+    try:
+        cc=ch[ch["expiry"]==exp] if "expiry" in getattr(ch,"columns",[]) else ch
+        if cc is None or not len(cc): return None
+        nv=np.where(cc["type"].values=="call",1.0,-1.0)
+        eff=pd.Series(nv,index=cc.index)                       # naive: the only sign Barchart supports
+        g=cc["gamma"].fillna(0)*GEX3_MULT*float(sp)
+        if lens=="vol":
+            w=cc["volume"].fillna(0)
+        else:
+            w=cc["oi"].fillna(0)+cc["volume"].fillna(0)
+        contrib=eff*g*w
+        kk=(cc["strike"]/GEX3_GRID).round()*GEX3_GRID
+        pos=contrib.clip(lower=0).groupby(kk).sum()
+        neg=(-contrib.clip(upper=0)).groupby(kk).sum()
+        ks=np.arange(float(min(pos.index.min(),neg.index.min())),
+                     float(max(pos.index.max(),neg.index.max()))+GEX3_GRID,GEX3_GRID)
+        P=np.array([float(pos.get(k,0.0)) for k in ks]); N=np.array([float(neg.get(k,0.0)) for k in ks])
+        # light smooth (σ=1 grid step) matching the script's gaussian_filter1d
+        kern=np.array([0.25,0.5,0.25])
+        Ps=np.convolve(P,kern,mode="same"); Ns=np.convolve(N,kern,mode="same")
+        return pd.DataFrame({"strike":ks,"pos":Ps,"neg":Ns,"net":Ps-Ns,"total":Ps+Ns})
+    except Exception:
+        return None
+
+def gex3_draw_profile(axp, rows, ylo, yhi, mdl=None, ref_rows=None, width_frac=0.45):
+    """vGBT-0.9.46: density anchored at the RIGHT edge growing LEFT (Colab
+    tri-panel orientation; pixel-gated). vGBT-0.9.47: full skill-grade vocabulary,
+    rotated to strikes-on-Y —
+      • buy/sell/TOTAL curves (green/red/orange lines) over the net fills
+      • buy▲/sell▼ peak markers at each side's biggest strike
+      • top-5 HHI strikes: violet ◆ + share-% labels (skill §8 chart marks)
+      • ref_rows: dotted buy/sell comparison curves of the base lens
+    Fills stay right-anchored → the 0.9.46 pixel gate still binds."""
+    m=(rows["strike"]>=ylo)&(rows["strike"]<=yhi)
+    K=rows["strike"][m].values
+    P=rows["pos"][m].values; N=rows["neg"][m].values
+    T=(rows["total"][m].values if "total" in rows else P+N)
+    mx=float(max(P.max(),N.max(),T.max() if len(T) else 0.0,1e-9))
+    axp.set_ylim(ylo,yhi)
+    # 0.9.49: width_frac = share of the panel the density may occupy (0.45
+    # default; slider, capped 0.60 so the left third stays candle-clean).
+    axp.set_xlim(mx/max(min(width_frac,0.60),0.20),0.0)   # 0 at the RIGHT edge → bars grow leftward
+    axp.fill_betweenx(K,0,P,color="#3fb950",alpha=.22,zorder=2)
+    axp.fill_betweenx(K,0,N,color="#ef5350",alpha=.22,zorder=2)
+    axp.plot(P,K,color="#3fb950",lw=1.5,zorder=3)              # buy γ
+    axp.plot(N,K,color="#ef5350",lw=1.5,zorder=3)              # sell γ
+    if len(T): axp.plot(T,K,color="#d4a017",lw=1.9,alpha=.95,zorder=3)   # TOTAL γ
+    axp.plot(np.abs(rows["net"][m]),K,color="#e8ecf2",lw=0.9,alpha=.55,zorder=3)
+    if ref_rows is not None:                                    # dotted comparison lens
+        mr=(ref_rows["strike"]>=ylo)&(ref_rows["strike"]<=yhi)
+        sc=mx/max(float(max(ref_rows["pos"][mr].max(),ref_rows["neg"][mr].max())),1e-9)
+        axp.plot(ref_rows["pos"][mr]*sc,ref_rows["strike"][mr],color="#3fb950",lw=1.0,ls=":",alpha=.8,zorder=3)
+        axp.plot(ref_rows["neg"][mr]*sc,ref_rows["strike"][mr],color="#ef5350",lw=1.0,ls=":",alpha=.8,zorder=3)
+    if P.max()>0:
+        iP=int(np.argmax(P)); axp.plot([P[iP]],[K[iP]],marker="^",ms=7,color="#1a7f37",zorder=5)
+    if N.max()>0:
+        iN=int(np.argmax(N)); axp.plot([N[iN]],[K[iN]],marker="v",ms=7,color="#c62828",zorder=5)
+    if mdl and mdl.get("hhi"):
+        for _k,_sh in mdl["hhi"].get("top",[])[:5]:
+            if ylo<=_k<=yhi:
+                axp.plot([mx*0.06],[_k],marker="D",ms=4,color="#8b5cf6",zorder=5)
+                axp.text(mx*0.10,_k,f"{_sh*100:.0f}%",color="#8b5cf6",fontsize=6.5,va="center",ha="left",zorder=5)
+    axp.axis("off")
+    return mx
+
+def gex3_zone_shade(ax, rows, ylo, yhi, x0, x1):
+    """0.9.47: the skill's positive/negative gamma FIELDS as horizontal bands —
+    contiguous net>0 runs tinted green, net<0 pink, full panel width."""
+    m=(rows["strike"]>=ylo)&(rows["strike"]<=yhi)
+    K=rows["strike"][m].values; NV=rows["net"][m].values
+    if not len(K): return
+    i=0
+    while i<len(K):
+        j=i
+        sgn=NV[i]>=0
+        while j+1<len(K) and (NV[j+1]>=0)==sgn: j+=1
+        y0=K[i]-2.5; y1=K[j]+2.5
+        ax.axhspan(max(y0,ylo),min(y1,yhi),xmin=0,xmax=1,
+                   color=("#22aa22" if sgn else "#ff4444"),alpha=0.045,zorder=0)
+        i=j+1
+
+def gex3_model(rows, spot):
+    """The NIFTY model, ported [methodology.md §3-§9 · SPX constants ×SC=0.1].
+    Pure math over gex3_lens_rows output; harness-gated. K* omitted honestly —
+    §10 needs market premiums and our chain carries model mids (circular)."""
+    try:
+        ks=rows["strike"].values; net=rows["net"].values
+        pos=rows["pos"].values; neg=rows["neg"].values; tot=rows["total"].values
+        # §3 vol trigger: net zero-cross nearest spot, linear interp
+        flip=None; best=1e18
+        for i in range(len(ks)-1):
+            a,b=net[i],net[i+1]
+            if a==0: x=ks[i]
+            elif a*b<0: x=ks[i]+(ks[i+1]-ks[i])*(-a)/(b-a)
+            else: continue
+            if abs(x-spot)<best: best=abs(x-spot); flip=float(x)
+        ref=flip if flip is not None else float(spot)
+        # §4 walls + three gravity methods (ratios 0.30/0.35 are ratios — unscaled)
+        up=ks>ref; dn=ks<ref
+        cw=float(ks[up][np.argmax(pos[up])]) if up.any() and pos[up].max()>0 else None
+        pw=float(ks[dn][np.argmax(neg[dn])]) if dn.any() and neg[dn].max()>0 else None
+        def _grav(side_mask,wall,ratio,side):
+            if wall is None: return dict(fixed=None,cent=None,med=None)
+            fixed=ref+side*ratio*abs(wall-ref)
+            m=side_mask&( (pos if side>0 else neg) >0 )
+            w_=(pos if side>0 else neg)[m]; k_=ks[m]
+            cent=float((k_*w_).sum()/w_.sum()) if w_.sum()>0 else fixed
+            order=np.argsort(np.abs(k_-ref)) if len(k_) else []
+            med=fixed
+            if len(k_):
+                cw_=np.cumsum(w_[order]); half=0.5*w_.sum()
+                med=float(k_[order][int(np.searchsorted(cw_,half))]) if w_.sum()>0 else fixed
+            return dict(fixed=float(fixed),cent=cent,med=med)
+        gv_c=_grav(up,cw,0.30,+1); gv_p=_grav(dn,pw,0.35,-1)
+        # §5 pin: four components; distances ×SC (100→10, 200→20, 1%→1%, round→5)
+        score=0.0; pin=None; notes=[]
+        posreg=spot> (flip if flip is not None else spot)
+        if flip is not None and spot>flip: score+=40; notes.append("pos-γ +40")
+        k_g=float(ks[np.argmax(tot)]) if tot.max()>0 else None
+        # OI-vs-GEX convergence stand-in: total-mass max vs pos+neg weight max = same array
+        k_o=float(ks[np.argmax(pos+neg)]) if (pos+neg).max()>0 else None
+        if k_g is not None and k_o is not None:
+            gap=abs(k_g-k_o)
+            if gap<=10: pin=k_g; score+=25; notes.append("converge +25")
+            else:
+                wsum=tot[np.argmax(tot)]+ (pos+neg)[np.argmax(pos+neg)]
+                pin=(k_g*tot[np.argmax(tot)]+k_o*(pos+neg)[np.argmax(pos+neg)])/max(wsum,1e-9)
+                score+=max(0.0,25-gap/2.0); notes.append(f"gap {gap:.0f}")
+        spread_c=(max(x for x in gv_c.values() if x is not None)-min(x for x in gv_c.values() if x is not None)) if all(v is not None for v in gv_c.values()) else 99
+        spread_p=(max(x for x in gv_p.values() if x is not None)-min(x for x in gv_p.values() if x is not None)) if all(v is not None for v in gv_p.values()) else 99
+        if spread_c<20 and spread_p<20: score+=20; notes.append("consensus +20")
+        else: score+=max(0.0,20-(spread_c+spread_p)/4.0)
+        if pin is not None:
+            dpct=abs(pin-spot)/spot*100
+            score+=15 if dpct<=1.0 else max(0.0,15-dpct*5)
+            pin=round(pin/GEX3_GRID)*GEX3_GRID
+        raw=min(100.0,score)
+        # §8 HHI (scale-free thresholds unchanged) + §5 confidence multiplier
+        def _hhi(v):
+            a=np.abs(v); ssum=a.sum()
+            return float(((a/ssum)**2).sum()) if ssum>0 else 0.0
+        h_t,h_c,h_p=_hhi(tot),_hhi(pos),_hhi(neg)
+        regime=("COMPRESSED" if h_t>=0.15 else "BALANCED" if h_t>=0.06 else "DISPERSED")
+        mult={"COMPRESSED":1.00,"BALANCED":0.85,"DISPERSED":0.65}[regime]
+        adj=raw*mult
+        def _lbl(x): return ("STRONG PIN" if x>=70 else "MODERATE PIN" if x>=45 else "WEAK PIN" if x>=25 else "NO PIN")
+        top=np.argsort(-np.abs(tot))[:5]
+        hhi_top=[(float(ks[i]),float(np.abs(tot[i])/max(np.abs(tot).sum(),1e-9))) for i in top]
+        # §6 floor/ceiling: positive-net strikes each side of SPOT, activity = side-mass²-ish
+        upS=ks>spot; dnS=ks<spot
+        cmask=upS&(net>0); fmask=dnS&(net>0)
+        ceil_=float(ks[cmask][np.argmax((pos*(pos+neg))[cmask])]) if cmask.any() else None
+        floor_=float(ks[fmask][np.argmax((neg*(pos+neg))[fmask])]) if fmask.any() else None
+        # §7 hedge walls: exp(-5·(K-CW)/CW) decay × (1+vanna_norm)
+        def _hedge(wall,side):
+            if wall is None: return None,None
+            m=(ks>wall) if side>0 else (ks<wall)
+            if not m.any(): return None,None
+            base=(pos if side>0 else neg)[m]*(pos+neg)[m]
+            vann=base/max(base.max(),1e-9)
+            hp=base*np.exp(-5.0*np.abs(ks[m]-wall)/max(wall,1e-9))*(1.0+vann)
+            hw=float(ks[m][np.argmax(hp)]); gap=abs(hw-wall)
+            lab=("TIGHT" if gap<=10 else "NORMAL" if gap<=25 else "WIDE")
+            return hw,lab
+        uhw,uhl=_hedge(cw,+1); dhw,dhl=_hedge(pw,-1)
+        # §9 magnitude dial — Dan's REAL SPX thresholds (strip formula, minis per $)
+        def _dial(v):
+            m_=2.0*abs(float(v)); posv=float(v)>0
+            lab=("HEAVY" if m_>=250 else "LIGHT" if m_>=100 else "THIN" if m_>=25 else "VIRTUALLY-NEG") if posv else "TRUE-NEG"
+            return m_,lab,posv
+        net_minis=float(net.sum())/(float(spot)*GEX3_MULT)*GEX3_MULT   # Σnet_gex/(S·100) ≙ contracts/$; strip-consistent ×2 inside _dial
+        loc=np.abs(ks-ref)<=30.0
+        loc_minis=float(net[loc].sum())/(float(spot)*GEX3_MULT)*GEX3_MULT if loc.any() else 0.0
+        d_all=_dial(net_minis); d_loc=_dial(loc_minis)
+        return dict(flip=flip,cw=cw,pw=pw,grav_call=gv_c,grav_put=gv_p,
+                    pin=pin,pin_raw=raw,pin_adj=adj,pin_lbl=_lbl(raw),pin_adj_lbl=_lbl(adj),
+                    hhi=dict(total=h_t,call=h_c,put=h_p,regime=regime,top=hhi_top),
+                    floor=floor_,ceiling=ceil_,uhw=uhw,uhl=uhl,dhw=dhw,dhl=dhl,
+                    dial=d_all,dial_local=d_loc,notes=notes)
+    except Exception as _e:
+        return dict(err=f"{type(_e).__name__}: {_e}")
+
 # ════════════════════════════ snapshot taking ═══════════════════════════════
 def fetch_vix_live():
     """VIX from TradingView TVC:VIX via tvdatafeed — the ONLY VIX source
@@ -2446,7 +2660,7 @@ if c2.button("🗑 Clear",use_container_width=True):
     st.rerun()
 _SRC_LABEL={"barchart-minted":"Barchart LIVE (minted cookies)","barchart-legacy":"Barchart LIVE (legacy page/XSRF)",
             "cboe-delayed":"CBOE delayed ~15m (standalone)"}
-st.sidebar.caption(f"**vBC-0.7** · {_SRC_LABEL.get(st.session_state.get('bc_source'),'no data yet')} · "
+st.sidebar.caption(f"**vBC-0.8** · {_SRC_LABEL.get(st.session_state.get('bc_source'),'no data yet')} · "
                    f"cookies {('url' if str(st.session_state.get('bc_cookie_src','')).startswith('url:') else 'disk') if st.session_state.get('bc_cookie_src') else 'none'} · "
                    "snapshots in-memory + /tmp day-state · sign = dealer calls+/puts− · "
                    "volume unsigned · quotes as-of snapshot (Barchart may lag ~15m)")
@@ -2684,9 +2898,9 @@ def dispatch(tab, render_fn, sig=None):
     st.session_state.frames.setdefault(ts,{})[tab]=list(_EMIT_BUF.get(tab,[]))
     last[tab]=sig
 
-tab_comb,tab_book,tab_terr,tab_sig,tab_read=st.tabs([
+tab_comb,tab_book,tab_terr,tab_sig,tab_read,tab_gex3=st.tabs([
     "🖥 Combined (VS3D pair)","📊 Book (by strike)","🗺 Terrain (gradient chart)",
-    "🧭 Signals (daily workflow)","📖 Read (what happens next)"])
+    "🧭 Signals (daily workflow)","📖 Read (what happens next)","🧮 GEX³ (2-lens)"])
 
 with tab_book:
     emit_caption("book","📊 Three constructions over ONE naive sign convention "
@@ -3123,6 +3337,160 @@ with tab_read:
         emit("read",fr)
     _rsig=repr((sel_ts.isoformat(),sel_i,len(snaps)))
     dispatch("read",_render_read,sig=_rsig)
+
+with tab_gex3:
+    emit_caption("gex3","GEX³ [EXPERIMENTAL] — the NIFTY GEX model (skill: nifty-gex-analysis) on the two lenses "
+        "Barchart can honestly feed, strikes on Y with candles, both panels sharing one price window. "
+        "DISPLAY-ONLY: a level map, never a trigger. Panel 1 CONVENTION = OI+volume under the assumed US "
+        "dealer-sign convention (methodology §2 — assumed, not measured; roles can invert). Panel 2 FRESH PAPER = "
+        "today's volume only, same convention, with panel 1 dotted over it for comparison. The GBT build's "
+        "flow-signed and Δ-OI lenses need aggressor/ΔOI feeds Barchart does not carry — omitted, not faked.")
+    _g3h=st.slider("panel height (inches)",3.0,8.0,5.5,0.5,key="g3h",
+        help='0.9.51 [USER 08-12 "make it longer"]: vertical size per panel; the figure is 2× this.')
+    _g3room=st.slider("± % price room (display)",0.25,3.0,0.5,0.25,key="g3room",
+        help="0.9.60 [USER 08-25]: absolute view height around spot — 0.5% default, max-zoom-first. "
+             "Independent of the fetch window; model still computes on the full fetch.")/100.0
+    _g3wd=st.slider("density width (share of panel)",0.25,0.60,0.45,0.05,key="g3wd",
+        help="0.9.49: horizontal room for the γ-density curves. Wider = more nuance, less candle room. "
+             "Capped at 0.60 so candles keep the left third.")
+    def _render_gex3():
+        ch=latest.get("chain"); sp=float(latest["spot"]); exp=(latest.get("exps") or [None])[0]
+        if ch is None or not len(ch): st.info("No chain in this snapshot."); return
+        panels=[("CONVENTION (naive — assumed dealer sign · OI + volume)","naive"),
+                ("FRESH PAPER (today's volume only · naive sign) — dotted = panel-1 comparison","vol")]
+        # 0.9.50 [USER 08-12 "1% is still too wide"]: display-only y-zoom, same
+        # pattern as the Book tab's zoom — the fetch window (and the model's
+        # breadth) stays at the Price-window slider; only the view tightens.
+        _gr=min(_g3room,window_pct)                     # clamp inside the fetched range
+        ylo,yhi=sp*(1-_gr),sp*(1+_gr)
+        fig,axs=plt.subplots(2,1,figsize=(13,2*_g3h),dpi=90,sharex=True,sharey=True)
+        fig.patch.set_facecolor(DARK)
+        rd=[]
+        # 0.9.54 [USER 08-12 "window should be limited to RTH like terrain"]:
+        # x-axis = session_window(), the app-wide single source of truth.
+        x0,x1=session_window()
+        if bars is None or not len(bars):
+            st.caption("no price bars in this frame yet — profiles only (candles return with the next price fetch)")
+        _prep=[]
+        for (ttl,lens) in panels:
+            rows=gex3_lens_rows(ch,sp,exp,lens)
+            _prep.append((ttl,lens,rows,gex3_model(rows,sp) if rows is not None else {"err":"no rows"}))
+        # 0.9.54 [USER 08-12 "lots of space above and below"]: auto-fit y to
+        # where the MASS actually is — the Colab tri-panel rule (strikes whose
+        # total or |net| exceed 2% of the frame max) ∪ candle range, padded
+        # 3×GRID, CLAMPED inside spot ± window×zoom. Shared across panels.
+        _ylos,_yhis=[],[]
+        for _,_,rows,_ in _prep:
+            if rows is None: continue
+            _t54=(rows["total"] if "total" in rows else rows["pos"]+rows["neg"]).values
+            _n54=np.abs(rows["net"].values)
+            _mk=(_t54>0.02*max(float(_t54.max()),1e-9))|(_n54>0.02*max(float(_n54.max()),1e-9))
+            if _mk.any():
+                _ylos.append(float(rows["strike"][_mk].min())); _yhis.append(float(rows["strike"][_mk].max()))
+        if bars is not None and len(bars):
+            _ylos.append(float(bars["l"].min())); _yhis.append(float(bars["h"].max()))
+        if _ylos:
+            ylo=max(min(_ylos)-15.0,ylo); yhi=min(max(_yhis)+15.0,yhi)
+        _base_rows=_prep[0][2]                          # panel-1 rows = the dotted comparison on panel 2
+        for ax,(ttl,lens,rows,mdl) in zip(axs,_prep):
+            ax.set_facecolor("#101826"); ax.set_ylim(ylo,yhi)
+            rd.append((ttl,mdl))
+            ax.set_xlim(x0,x1)
+            if rows is not None: gex3_zone_shade(ax,rows,ylo,yhi,x0,x1)   # 0.9.47 pos/neg γ fields
+            if bars is not None and len(bars): draw_candles(ax,bars,x0,x1,ylo,yhi)
+            if rows is not None:
+                _ref=(_base_rows if lens=="vol" else None)   # panel 2: dotted base-lens comparison
+                gex3_draw_profile(ax.twiny(),rows,ylo,yhi,mdl=mdl,ref_rows=_ref,width_frac=_g3wd)   # density RIGHT, candles across
+            if not mdl.get("err"):
+                if mdl["flip"] is not None:
+                    ax.axhline(mdl["flip"],color="#c792ea",lw=1.2,ls="--",zorder=4)
+                    ax.text(1.001,mdl["flip"],f" flip {mdl['flip']:,.0f}",transform=ax.get_yaxis_transform(),color="#c792ea",fontsize=8,va="center")
+                # 0.9.48 [USER SCREENSHOT 08-12]: labels collided into mush at 5-pt
+                # spacing. Lines draw at true level; labels stagger to ≥ the min gap
+                # the font needs, and gap tags shrink to ·T/·N/·W.
+                _sh48={"TIGHT":"·T","NORMAL":"·N","WIDE":"·W"}
+                _gaps={"uhw":_sh48.get(mdl.get("uhl") or "",""),"dhw":_sh48.get(mdl.get("dhl") or "","")}
+                _lbls=[]
+                for lv,cl,nm,ls_,ex in ((mdl["cw"],"#3fb950","CW","-",""),(mdl["pw"],"#ef5350","PW","-",""),
+                                        (mdl["pin"],"#f0ad4e","PIN","-",""),
+                                        (mdl.get("ceiling"),"#ff8844","CEIL","--",""),(mdl.get("floor"),"#33cc99","FLOOR","--",""),
+                                        (mdl.get("uhw"),"#8b5cf6","UHW","-.",_gaps["uhw"]),(mdl.get("dhw"),"#1a7f37","DHW","-.",_gaps["dhw"])):
+                    if lv is not None:
+                        ax.axhline(lv,color=cl,lw=1.0 if ls_!="-" else 1.1,ls=ls_,alpha=.9,zorder=4)
+                        _lbls.append([float(lv),cl,f"{nm} {lv:,.0f}{ex}"])
+                _lbls.sort(key=lambda t:t[0])
+                _min=(yhi-ylo)*0.024                             # ≈ one 7.5-pt line height in data units
+                for _i in range(1,len(_lbls)):                   # push up from below
+                    if _lbls[_i][0]-_lbls[_i-1][0]<_min: _lbls[_i][0]=_lbls[_i-1][0]+_min
+                for _i in range(len(_lbls)-2,-1,-1):             # relax back down within bounds
+                    if _lbls[_i+1][0]-_lbls[_i][0]<_min: _lbls[_i][0]=_lbls[_i+1][0]-_min
+                for _y,_c,_t in _lbls:
+                    ax.text(1.001,_y,f" {_t}",transform=ax.get_yaxis_transform(),color=_c,fontsize=7.5,va="center",clip_on=False)
+                # 0.9.47 per-panel scorecard — the skill's info-box, compact;
+                # 0.9.53: lines carry the SAME colors as their chart lines.
+                _hh=mdl["hhi"]
+                for _dy,_txt53,_col53 in (
+                    (0.000,f"pin {mdl['pin'] if mdl['pin'] is not None else '—'} raw {mdl['pin_raw']:.0f}→adj {mdl['pin_adj']:.0f} ({mdl['pin_adj_lbl']})","#f0ad4e"),
+                    (0.035,f"floor {mdl['floor'] if mdl['floor'] is not None else '—'} · ceil {mdl['ceiling'] if mdl['ceiling'] is not None else '—'}","#33cc99"),
+                    (0.070,f"HHI {_hh['total']:.3f} {_hh['regime']} · local γ {mdl['dial_local'][1]}","#8b949e")):
+                    ax.text(0.006,0.97-_dy,_txt53,transform=ax.transAxes,color=_col53,fontsize=6.8,family="monospace",
+                            va="top",ha="left",zorder=6,bbox=dict(fc="#0d1117",ec="#3a4150",lw=0.4,alpha=.8,pad=1.8))
+                _d=mdl["dial"]
+                ax.text(0.995,0.03,f"γ {_d[1]} {'+' if _d[2] else '−'}{_d[0]:,.0f}",transform=ax.transAxes,
+                        color=("#3fb950" if _d[2] else "#ef5350"),fontsize=9,fontweight="bold",ha="right")
+            ax.set_title(ttl,color="#8b949e",fontsize=9.5,loc="left",pad=2)
+            # 0.9.52 [USER 08-12 "time is not visible on x axis"]: sharex hides
+            # tick labels on the upper panels — force them on EVERY panel.
+            ax.tick_params(colors="#8a93a6",labelsize=7.5,labelbottom=True)
+            ax.xaxis.set_major_locator(mdates.MinuteLocator(byminute=(0,30)))
+            ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
+            for _sp2 in ax.spines.values(): _sp2.set_color("#30363d")
+            ax.xaxis_date()
+        fig.tight_layout(pad=0.6); fig.subplots_adjust(right=0.905,hspace=0.22)   # 0.9.48 label room · 0.9.52 axis room · hspace 0.14→0.22: two taller panels, title/tick collision
+        emit("gex3",fig)
+        # 0.9.53: ONE line per lens, every level in ITS CHART COLOR (flip violet,
+        # CW green, PW red, PIN orange, FLOOR teal, CEIL orange-red, HW violet,
+        # dial by sign); gravity trio + HHI top-5 live in a collapsed expander.
+        _n1=lambda v: f"{v:,.1f}" if v is not None else "—"
+        _n0=lambda v: f"{v:,.0f}" if v is not None else "—"
+        _sp53=lambda t,c: f"<span style='color:{c}'>{t}</span>"
+        _LC={"flip":"#c792ea","cw":"#3fb950","pw":"#ef5350","pin":"#f0ad4e",
+             "floor":"#33cc99","ceil":"#ff8844","hw":"#8b5cf6","dim":"#8b949e"}
+        _html,_det=[],[]
+        for ttl,mdl in rd:
+            if mdl.get("err"):
+                _html.append(f"<div style='color:#ef5350'>{ttl}: {mdl['err']}</div>"); continue
+            _d=mdl["dial"]
+            _html.append(
+                "<div style='margin:2px 0'><b style='color:#e8ecf2'>"+ttl+"</b><br>"
+                +" · ".join((
+                    _sp53(f"flip {_n1(mdl['flip'])}",_LC["flip"]),
+                    _sp53(f"CW {_n0(mdl['cw'])}",_LC["cw"]),
+                    _sp53(f"PW {_n0(mdl['pw'])}",_LC["pw"]),
+                    _sp53(f"PIN {_n0(mdl['pin'])} ({mdl['pin_adj_lbl']})",_LC["pin"]),
+                    _sp53(f"FLOOR {_n0(mdl['floor'])}",_LC["floor"]),
+                    _sp53(f"CEIL {_n0(mdl['ceiling'])}",_LC["ceil"]),
+                    _sp53(f"HW ↑{_n0(mdl['uhw'])}·{(mdl['uhl'] or '—')[:1]} ↓{_n0(mdl['dhw'])}·{(mdl['dhl'] or '—')[:1]}",_LC["hw"]),
+                    _sp53(f"γ {_d[1]} {'+' if _d[2] else '−'}{_d[0]:,.0f}","#3fb950" if _d[2] else "#ef5350"),
+                ))+"</div>")
+            gc,gp=mdl["grav_call"],mdl["grav_put"]
+            _det.append(f"{ttl}\n  gravity call FR/CEN/MED {_n0(gc['fixed'])}/{_n0(gc['cent'])}/{_n0(gc['med'])} · "
+                        f"put {_n0(gp['fixed'])}/{_n0(gp['cent'])}/{_n0(gp['med'])}\n"
+                        f"  pin raw {mdl['pin_raw']:.0f} ({mdl['pin_lbl']}) → HHI-adj {mdl['pin_adj']:.0f} ({mdl['pin_adj_lbl']})\n"
+                        f"  HHI tot {mdl['hhi']['total']:.3f} ({mdl['hhi']['regime']}, fixed thresholds — no session history) · "
+                        f"top: "+", ".join(f"{k:,.0f} {sh*100:.0f}%" for k,sh in mdl['hhi']['top'])+"\n"
+                        f"  dial whole {mdl['dial'][1]} {mdl['dial'][0]:,.0f} · local(±30) {mdl['dial_local'][1]} {mdl['dial_local'][0]:,.0f}")
+        st.markdown("<div style='font-family:monospace;font-size:12.5px;line-height:1.55'>"
+                    +"".join(_html)
+                    +f"<div style='color:{_LC['dim']};font-size:11px;margin-top:3px'>K* omitted: §10 needs market premiums; "
+                    "chain carries mids (circular). Dealer sign: the assumed convention on BOTH panels (calls dealer-long / "
+                    "puts dealer-short) — not clearing truth; Barchart has no aggressor tape, so the GBT build's flow-signed lens "
+                    "is not available here.</div></div>",unsafe_allow_html=True)
+        with st.expander("model detail (gravity trio · pin scoring · HHI top-5 · dials)"):
+            st.code("\n".join(_det),language=None)
+    _g3sig=repr((sel_ts.isoformat(),sel_i,round(window_pct,4),round(_g3room,4),round(_g3wd,2),round(_g3h,1),
+                 (len(bars) if bars is not None else 0)))
+    dispatch("gex3",_render_gex3,sig=_g3sig)
 
 with tab_comb:
     st.caption("🖥 VS3D-style pair — 📊 Book beside the 🗺 gradient chart (+ stacked "
