@@ -1,5 +1,5 @@
 """
-vs3dbc.py — SPX 0DTE Dealer Terrain + Book on BARCHART data · current: vBC-0.1
+vs3d2.py — SPX 0DTE Dealer Terrain + Book on BARCHART data · current: vBC-0.1a
 =================================================
 Point your streamlit.io app at this file. Barchart edition of the GBT app:
 same engine chassis (v2.2.2b, Barchart-native, harness-era), plus the Book tab
@@ -7,6 +7,8 @@ the Barchart line never had, plus a WAF-hardened fetch layer.
 
 CHANGELOG (newest first) — what changed and why, per version
 ─────────────────────────────────────────────────────────────────────────────
+vBC-0.1a [RENAME] file is now vs3d2.py (continues the vs3d2 line); CLI hints,
+  page title and version caption updated to match. No logic change from vBC-0.1.
 vBC-0.1 [BARCHART PORT — Book x3 + Combined + hardened fetch]
   • 📊 Book (by strike), THREE modes (user spec):
       1) Naive (standing OI)      — dealer sign convention calls+/puts− on the
@@ -33,7 +35,7 @@ vBC-0.1 [BARCHART PORT — Book x3 + Combined + hardened fetch]
     rung 3, Playwright imported LAZILY so the app container never needs it),
     block self-identification on 202/403/503/429 (AWS-WAF, Cloudflare and
     own-egress-filter signatures named LOUD in the error — no silent retry),
-    plus `python vs3dbc.py --diag` and `--mint` CLI paths.
+    plus `python vs3d2.py --diag` and `--mint` CLI paths.
   • Portability: tvdatafeed OPTIONAL (candles/VIX degrade to honest banners,
     never crash); NO tokens anywhere (Barchart is session-cookie auth); one
     file; /tmp day-state now persists the bc_ flow ledger too (reload-proof).
@@ -510,7 +512,7 @@ def now_est():            # current time, EST, naive (tz stripped for arithmetic
 def today_est():
     return now_est().date()
 
-st.set_page_config(page_title="vs3dbc · SPX 0DTE (Barchart)", layout="wide")
+st.set_page_config(page_title="vs3d2 · SPX 0DTE (Barchart)", layout="wide")
 
 # ════════════════════════════ Barchart ══════════════════════════════════════
 _UA=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -577,7 +579,7 @@ def _classify_block(status, headers, body=""):
                 "allowlist, not the scraper")
     if h.get("x-amzn-waf-action")=="challenge" or "gokuprops" in b.lower() or status==202:
         return (f"HTTP {status}: AWS WAF JS challenge — rung 3: run `python "
-                f"vs3dbc.py --mint` (Playwright) and commit {_MINT_PATH}; the app "
+                f"vs3d2.py --mint` (Playwright) and commit {_MINT_PATH}; the app "
                 "then serves with curl_cffi + minted cookies")
     if "cf-mitigated" in h or "just a moment" in b.lower() or "cf_chl_opt" in b:
         return (f"HTTP {status}: Cloudflare challenge — rung 3: `--mint` then "
@@ -618,7 +620,7 @@ def init_session(sym="$SPX"):
     try: st.session_state["bc_transport"]=_TRANSPORT
     except Exception: pass
     return s,h
-# ── CLI: `python vs3dbc.py --diag` (step-1 signatures) · `--mint` (rung 3) ────
+# ── CLI: `python vs3d2.py --diag` (step-1 signatures) · `--mint` (rung 3) ────
 def _cli_diag():
     s=_new_http_session()
     for tag,url,hd in (("page",_page("$SPX"),_nav_headers()),
@@ -2017,7 +2019,7 @@ if c2.button("🗑 Clear",use_container_width=True):
     try: _os.remove(_state_path())
     except Exception: pass
     st.rerun()
-st.sidebar.caption(f"**vBC-0.1** · transport {st.session_state.get('bc_transport','requests')} · "
+st.sidebar.caption(f"**vBC-0.1a** · transport {st.session_state.get('bc_transport','requests')} · "
                    "snapshots in-memory + /tmp day-state · sign = dealer calls+/puts− · "
                    "volume unsigned · quotes as-of snapshot (Barchart may lag ~15m)")
 
