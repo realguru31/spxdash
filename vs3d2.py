@@ -1,5 +1,5 @@
 """
-vs3d2.py — SPX 0DTE Dealer Terrain + Book on BARCHART data · current: vBC-0.1a
+vs3d2.py — SPX 0DTE Dealer Terrain + Book on BARCHART data · current: vBC-0.1b
 =================================================
 Point your streamlit.io app at this file. Barchart edition of the GBT app:
 same engine chassis (v2.2.2b, Barchart-native, harness-era), plus the Book tab
@@ -7,6 +7,10 @@ the Barchart line never had, plus a WAF-hardened fetch layer.
 
 CHANGELOG (newest first) — what changed and why, per version
 ─────────────────────────────────────────────────────────────────────────────
+vBC-0.1b [FIX] Book-control widgets given explicit keys (book_mode/units/
+  strad/overlay) — the Book "Straddle bounds" checkbox collided with the
+  Terrain one (Streamlit derives element IDs from the label). Keys are kept
+  OUT of the bc_ namespace so they never enter the persisted flow ledger.
 vBC-0.1a [RENAME] file is now vs3d2.py (continues the vs3d2 line); CLI hints,
   page title and version caption updated to match. No logic change from vBC-0.1.
 vBC-0.1 [BARCHART PORT — Book x3 + Combined + hardened fetch]
@@ -1997,20 +2001,20 @@ with st.sidebar.expander("🗺 Terrain controls", expanded=False):
     t_charm2=st.checkbox("Charm panel below (stacked, VS3D-style)",value=True,
         help="Second field under the main greek — gold = dealers must SELL as time passes · blue = BUY. No more dropdown flip-flopping.")
 with st.sidebar.expander("📊 Book controls", expanded=True):
-    b_mode=st.radio("Book mode",BOOK_MODES,index=0,
+    b_mode=st.radio("Book mode",BOOK_MODES,index=0,key="book_mode",
         help="1) OI = yesterday's settled book (static all session — the opening "
              "position §4.5 says to respect). 2) Flow-from-zero = ONLY volume "
              "printed since the first snapshot today; monotone ledger; GEX priced "
              "on the new paper. 3) OI + new volume = standing book refreshed live "
              "with the same ledger; dots mark the OI-only component, so bar minus "
              "dot = today's fresh paper (lesson 30).")
-    b_units=st.radio("Units",BOOK_UNITS,index=0,
+    b_units=st.radio("Units",BOOK_UNITS,index=0,key="book_units",
         help="GEX = γ·weight·100/50 → e-minis per $1 (magnitudes reprice with γ — "
              "the model view, same convention as the terrain). Contracts = the "
              "pure ledger: weights only, zero model repricing, bars can only "
              "grow (modes 2/3) or hold (mode 1) intraday.")
-    b_strad=st.checkbox("Straddle bounds",value=True)
-    b_overlay=st.checkbox("Spot-path overlay",value=True)
+    b_strad=st.checkbox("Straddle bounds",value=True,key="book_strad")
+    b_overlay=st.checkbox("Spot-path overlay",value=True,key="book_overlay")
 auto_on=st.sidebar.toggle("Auto-refresh (5 min)",value=True)
 c1,c2=st.sidebar.columns(2)
 force=c1.button("📸 Snapshot now",use_container_width=True)
@@ -2019,7 +2023,7 @@ if c2.button("🗑 Clear",use_container_width=True):
     try: _os.remove(_state_path())
     except Exception: pass
     st.rerun()
-st.sidebar.caption(f"**vBC-0.1a** · transport {st.session_state.get('bc_transport','requests')} · "
+st.sidebar.caption(f"**vBC-0.1b** · transport {st.session_state.get('bc_transport','requests')} · "
                    "snapshots in-memory + /tmp day-state · sign = dealer calls+/puts− · "
                    "volume unsigned · quotes as-of snapshot (Barchart may lag ~15m)")
 
