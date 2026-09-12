@@ -1,5 +1,5 @@
 """
-vs3d2.py — SPX 0DTE Dealer Terrain + Book on BARCHART data · current: vBC-0.6
+vs3d2.py — SPX 0DTE Dealer Terrain + Book on BARCHART data · current: vBC-0.7
 =================================================
 Point your streamlit.io app at this file. Barchart edition of the GBT app:
 same engine chassis (v2.2.2b, Barchart-native, harness-era), plus the Book tab
@@ -7,6 +7,15 @@ the Barchart line never had, plus a WAF-hardened fetch layer.
 
 CHANGELOG (newest first) — what changed and why, per version
 ─────────────────────────────────────────────────────────────────────────────
+vBC-0.7 [OWN COOKIE JOB] vs3d2 ships its own GitHub Actions mint,
+  .github/workflows/vs3d2_cookies.yml (name/group distinct from spxdash's
+  barchart_cookies.yml, which is left untouched along with data_fetcher.py).
+  Same schedule, same install step (playwright only), same commit of
+  data/session/cookies.json to main — but the Mint step is `python vs3d2.py
+  --mint`, which imports nothing beyond stdlib + Playwright and therefore runs
+  on that bare runner. The file it commits is the one both apps read.
+vBC-0.6a [PATHS] also reads data/baseline/cookies.json (the folder the repo's Actions
+  jobs already commit to), after data/session/cookies.json. No other change.
 vBC-0.6 [SAME WAY AS spxdash] No inventions. Cookies are minted by a GitHub
   Actions job with the SAME structure and file name as spxdash's
   (.github/workflows/barchart_cookies.yml: cron 0,30 13-21 UTC weekdays ·
@@ -582,7 +591,7 @@ _MINT_REL=os.path.join("data","session","cookies.json")
 _MINT_PATH=os.path.join(_APP_DIR,_MINT_REL)
 _REQUIRED_COOKIES=("aws-waf-token","laravel_session")
 _KEEP_COOKIES=("aws-waf-token","laravel_session","bc_anon","bcFreeUserPageView")
-_CI_FILE=os.path.join(".github","workflows","barchart_cookies.yml")   # same name/structure as spxdash
+_CI_FILE=os.path.join(".github","workflows","vs3d2_cookies.yml")   # vs3d2's OWN job; spxdash files untouched
 
 _REQUIREMENTS="""streamlit==1.58.0
 streamlit-autorefresh==1.0.1
@@ -595,16 +604,18 @@ tzdata
 curl_cffi>=0.7.0
 git+https://github.com/rongardF/tvdatafeed.git
 """   # Faisal's proven Streamlit Cloud pins (Sep 2026)
-_CI_YAML="""name: Mint Barchart cookies
-# Same structure as data_fetcher.py's job: solve the AWS WAF challenge in a real
-# browser, write data/session/cookies.json, commit it to the deployed branch.
+_CI_YAML="""name: vs3d2 Cookie Mint
+# vs3d2's own mint job (leaves barchart_cookies.yml / data_fetcher.py untouched).
+# Solves the AWS WAF challenge in a real browser, writes data/session/cookies.json,
+# commits it. `python vs3d2.py --mint` is stdlib + Playwright only, so this bare
+# runner (no requests/numpy/pandas) is all it needs.
 on:
   schedule:
     - cron: '0,30 13,14,15,16,17,18,19,20,21 * * 1-5'
   workflow_dispatch:
 
 concurrency:                      # prevent overlapping runs racing on the file
-  group: mint-cookies
+  group: vs3d2-cookies
   cancel-in-progress: false
 
 permissions:
@@ -638,9 +649,9 @@ jobs:
             echo "No change"
           else
             git commit -m "🔑 Cookies: $(date -u +'%Y-%m-%d %H:%M UTC')"
-            git fetch origin ${{ github.ref_name }}
-            git rebase origin/${{ github.ref_name }}
-            git push origin HEAD:${{ github.ref_name }}
+            git fetch origin main
+            git rebase origin/main
+            git push origin main
           fi
 """
 
@@ -690,8 +701,8 @@ def _cli_mint():
     print(f"saved {_MINT_PATH} ({len(kept)} cookies)")
 
 def _cli_install_ci():
-    """Bootstrap a repo from this one file, the same way spxdash is set up: the mint
-    workflow (.github/workflows/barchart_cookies.yml), data/session/.gitkeep, and
+    """Bootstrap a repo from this one file: vs3d2's own mint workflow
+    (.github/workflows/vs3d2_cookies.yml), data/session/.gitkeep, and
     requirements.txt if missing. Existing files are never overwritten."""
     wf=os.path.join(_APP_DIR,_CI_FILE)
     if os.path.exists(wf):
@@ -707,7 +718,7 @@ def _cli_install_ci():
     else:
         with open(rq,"w") as f: f.write(_REQUIREMENTS)
         print("wrote",rq)
-    print("\nNEXT: commit + push → GitHub → Actions → 'Mint Barchart cookies' → Run workflow.\n"
+    print("\nNEXT: commit + push → GitHub → Actions → 'vs3d2 Cookie Mint' → Run workflow.\n"
           "Green run = data/session/cookies.json in the repo → the app serves Barchart LIVE.")
 
 if __name__=="__main__" and "--mint" in sys.argv: _cli_mint(); sys.exit(0)
@@ -770,7 +781,9 @@ def _ss_get(k,d=None):
 def _ss_set(k,v):
     try: st.session_state[k]=v
     except Exception: _BARE_STATE[k]=v
-_MINT_PATHS=list(dict.fromkeys([_MINT_PATH,_o.path.join(_o.getcwd(),_MINT_REL)]))   # disk fallbacks
+_MINT_PATHS=list(dict.fromkeys([_MINT_PATH,_o.path.join(_o.getcwd(),_MINT_REL),
+                                _o.path.join(_APP_DIR,"data","baseline","cookies.json"),      # in case the job writes beside the baselines
+                                _o.path.join(_o.getcwd(),"data","baseline","cookies.json")]))
 def _secret(name):
     """Streamlit secret, else environment variable (CLI / CI / Colab)."""
     v=None
@@ -2433,7 +2446,7 @@ if c2.button("🗑 Clear",use_container_width=True):
     st.rerun()
 _SRC_LABEL={"barchart-minted":"Barchart LIVE (minted cookies)","barchart-legacy":"Barchart LIVE (legacy page/XSRF)",
             "cboe-delayed":"CBOE delayed ~15m (standalone)"}
-st.sidebar.caption(f"**vBC-0.6** · {_SRC_LABEL.get(st.session_state.get('bc_source'),'no data yet')} · "
+st.sidebar.caption(f"**vBC-0.7** · {_SRC_LABEL.get(st.session_state.get('bc_source'),'no data yet')} · "
                    f"cookies {('url' if str(st.session_state.get('bc_cookie_src','')).startswith('url:') else 'disk') if st.session_state.get('bc_cookie_src') else 'none'} · "
                    "snapshots in-memory + /tmp day-state · sign = dealer calls+/puts− · "
                    "volume unsigned · quotes as-of snapshot (Barchart may lag ~15m)")
@@ -2611,11 +2624,12 @@ if _src=="cboe-delayed":
                 "Barchart is behind AWS WAF; a session minted by a real browser is the only thing a cloud IP can use. "
                 "A GitHub Actions job in this repo mints it every 30 min during US hours and commits one file, "
                 "`data/session/cookies.json`, which this app reads. Three steps, once:\n\n"
-                "**1.** Add `.github/workflows/barchart_cookies.yml` with this content "
+                "**1.** Add a NEW file `.github/workflows/vs3d2_cookies.yml` with this content — it is vs3d2's own job "
+                "and leaves any existing workflows and `data_fetcher.py` untouched "
                 "(or run `python vs3d2.py --install-ci` in a checkout — it writes it, plus `data/session/.gitkeep`):")
             st.code(_CI_YAML,language="yaml")
             st.markdown(
-                "**2.** GitHub → **Actions** → *Mint Barchart cookies* → **Run workflow**. If the push is rejected: "
+                "**2.** GitHub → **Actions** → *vs3d2 Cookie Mint* → **Run workflow**. If the push is rejected: "
                 "Settings → Actions → General → Workflow permissions → **Read and write**.\n\n"
                 "**3.** Green run ⇒ `data/session/cookies.json` is in the repo ⇒ next snapshot here says "
                 "*Barchart LIVE (minted cookies)*. CBOE stays as the automatic backup. Deploy this app from the "
