@@ -1,5 +1,5 @@
 """
-vs3d2.py — SPX 0DTE Dealer Terrain + Book on BARCHART data · current: vBC-0.2a
+vs3d2.py — SPX 0DTE Dealer Terrain + Book on BARCHART data · current: vBC-0.4
 =================================================
 Point your streamlit.io app at this file. Barchart edition of the GBT app:
 same engine chassis (v2.2.2b, Barchart-native, harness-era), plus the Book tab
@@ -7,6 +7,33 @@ the Barchart line never had, plus a WAF-hardened fetch layer.
 
 CHANGELOG (newest first) — what changed and why, per version
 ─────────────────────────────────────────────────────────────────────────────
+vBC-0.4 [INDEPENDENT BARCHART-LIVE] Brand-new-repo ready; CBOE is the backup.
+  • stdlib-only BOOTSTRAP at the top of the file: shared constants + `--mint`
+    (Playwright, verifies the options API in-page, writes cookies.json) +
+    `--install-ci` (writes .github/workflows/mint-cookies.yml, data/session/
+    .gitkeep, requirements.txt if missing). CI never installs pandas/streamlit.
+  • Mint job publishes cookies.json on the orphan branch `cookies` (single file,
+    force-pushed). The deployed branch never moves → Streamlit Cloud never
+    redeploys → intraday ledger / snapshots / frames survive all day. Cookies on
+    `main` would reboot the app every 30 min (that is why not).
+  • App reads cookies from BC_COOKIE_URL (Streamlit secret or env; optional
+    BC_COOKIE_TOKEN for private repos; ?v= busts raw's 5-min cache), falling
+    back to data/session/cookies.json on disk. Cookie diagnosis (404 = run the
+    workflow once; 401/403 = needs token; missing keys = re-mint) is shown in
+    the banner, the sidebar and `--diag`.
+  • In-app setup guide (expander) while on CBOE: the YAML, the secret line, the
+    requirements — nothing to look up elsewhere.
+vBC-0.3 [STANDALONE] Independent of app.py / data_fetcher.py infrastructure.
+  • No cookie file ⇒ CBOE delayed (~15 min) is the EXPECTED source: calm ℹ️ info
+    line, not a failure warning. A yellow ⚠️ appears only when minted cookies
+    exist and were REJECTED (a real problem). Barchart live still activates
+    automatically if data/session/cookies.json ever appears — opt-in, not required.
+  • Spot LIVE from TradingView CAPITALCOM:SPX500 1-min bars when serving CBOE
+    (the chain stays delayed; the spot line does not) — same split as the
+    working data_fetcher (tvDatafeed spot, CBOE chain). Noted in the banner.
+  • The no-cookie Barchart page/XSRF attempt (works from residential IPs) runs
+    ONCE per session; if it is WAF-blocked the block is remembered
+    (bc_legacy_blocked) so we never re-poke a challenged endpoint every 5 min.
 vBC-0.2a [COSMETIC] cookie search paths deduped (app-dir == cwd on Cloud printed twice).
 vBC-0.2 [FETCH = the WORKING data_fetcher.py recipe, verbatim semantics]
   • Tier 1 barchart-minted: cookies.json (requires aws-waf-token + laravel_session,
@@ -512,10 +539,160 @@ Notes
 • Sign = standard dealer convention (calls +, puts −). Volume is unsigned; we
   do not guess buy/sell.
 """
+# ═══ BOOTSTRAP — stdlib only. Shared constants + the CLI paths that must run in a
+# ═══ bare CI container (no pandas / streamlit): `--mint`, `--install-ci`.
+import sys, os, json, time
+_UA=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")      # mint UA == serve UA
+_SECCHUA='"Chromium";v="120", "Google Chrome";v="120", "Not-A.Brand";v="99"'
+_IMPERSONATE="chrome120"      # UA / sec-ch-ua / TLS must agree WITH THE MINTED SESSION
+BASE="https://www.barchart.com"
+OPTIONS_URL=f"{BASE}/proxies/core-api/v1/options/get"
+QUOTE_URL=f"{BASE}/proxies/core-api/v1/quotes/get"            # legacy (no-cookie) path only
+BC_PAGE=f"{BASE}/stocks/quotes/$SPX/volatility-greeks"        # the page the cookies are minted on
+BC_FIELDS=("strikePrice,bidPrice,askPrice,optionType,volatility,delta,gamma,"
+           "openInterest,volume,baseLastPrice")
+CBOE_URL="https://cdn.cboe.com/api/global/delayed_quotes/options/_SPX.json"
+_APP_DIR=os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else os.getcwd()
+_MINT_REL=os.path.join("data","session","cookies.json")
+_MINT_PATH=os.path.join(_APP_DIR,_MINT_REL)
+_REQUIRED_COOKIES=("aws-waf-token","laravel_session")
+_KEEP_COOKIES=("aws-waf-token","laravel_session","bc_anon","bcFreeUserPageView")
+_COOKIE_BRANCH="cookies"      # orphan branch the CI job force-pushes; main never moves → no redeploys
+
+_REQUIREMENTS="""streamlit
+streamlit-autorefresh
+scipy
+matplotlib
+requests
+pandas
+numpy
+curl_cffi
+git+https://github.com/rongardF/tvdatafeed
+"""
+_CI_YAML=f"""name: Mint Barchart cookies
+# Solves the AWS WAF challenge in a real browser every 30 min during US hours and
+# publishes cookies.json on the orphan branch `{_COOKIE_BRANCH}` (single file, force-pushed).
+# The deployed branch never changes, so Streamlit Cloud never redeploys/reboots the app.
+on:
+  schedule:
+    - cron: '*/30 13-21 * * 1-5'      # 13:00-21:30 UTC ≈ 9:00-17:30 ET (covers EDT and EST)
+  workflow_dispatch:
+concurrency:
+  group: mint-cookies
+  cancel-in-progress: false
+permissions:
+  contents: write
+jobs:
+  mint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Playwright (stdlib-only mint — no app deps needed)
+        run: |
+          pip install -q playwright
+          python -m playwright install --with-deps chromium
+      - name: Mint
+        run: python vs3d2.py --mint
+      - name: Publish to the `{_COOKIE_BRANCH}` branch
+        env:
+          TOKEN: ${{{{ secrets.GITHUB_TOKEN }}}}
+        run: |
+          set -e
+          mkdir -p /tmp/pub && cp data/session/cookies.json /tmp/pub/cookies.json
+          cd /tmp/pub
+          git init -q -b {_COOKIE_BRANCH}
+          git config user.name  "cookie-bot"
+          git config user.email "cookie-bot@users.noreply.github.com"
+          git add cookies.json
+          git commit -qm "cookies $(date -u +'%Y-%m-%d %H:%M UTC')"
+          git push -f "https://x-access-token:${{TOKEN}}@github.com/${{GITHUB_REPOSITORY}}.git" {_COOKIE_BRANCH}
+          echo "published → https://raw.githubusercontent.com/${{GITHUB_REPOSITORY}}/{_COOKIE_BRANCH}/cookies.json"
+"""
+
+def _cli_mint():
+    """Solve the WAF challenge in a real browser (Playwright), verify the options API
+    IN-PAGE, write data/session/cookies.json. stdlib + playwright ONLY. Raises on
+    failure so CI fails loudly rather than publishing dead cookies."""
+    import asyncio
+    try:
+        from playwright.async_api import async_playwright
+    except Exception:
+        print("ERROR: playwright not installed. `pip install playwright && python -m playwright "
+              "install --with-deps chromium`", file=sys.stderr); sys.exit(1)
+    async def _run():
+        p=await async_playwright().start()
+        b=await p.chromium.launch(args=["--no-sandbox","--disable-dev-shm-usage",
+                                        "--disable-blink-features=AutomationControlled"])
+        ctx=await b.new_context(user_agent=_UA,viewport={"width":1440,"height":900},locale="en-US")
+        pg=await ctx.new_page(); t0=time.time()
+        await pg.goto(BC_PAGE,wait_until="domcontentloaded",timeout=60000)
+        ck={}
+        for _ in range(40):        # WAF solves in-page, THEN the app sets laravel_session
+            ck={c["name"]:c["value"] for c in await ctx.cookies()}
+            if all(k in ck for k in _REQUIRED_COOKIES): break
+            await pg.wait_for_timeout(1000)
+        title=await pg.title()
+        verify=await pg.evaluate("""async (url)=>{const r=await fetch(url,{headers:{'Accept':'application/json'},credentials:'include'});const t=await r.text();return {status:r.status,len:t.length,waf:r.headers.get('x-amzn-waf-action'),deny:r.headers.get('x-deny-reason'),cf:r.headers.get('cf-mitigated'),body:t.slice(0,160)};}""",
+            OPTIONS_URL+"?baseSymbol=%24SPX&groupBy=optionType&expirationDate=nearest&orderBy=strikePrice&orderDir=desc&raw=1&fields=strikePrice,gamma,openInterest,optionType")
+        await b.close(); await p.stop()
+        print(f"solve {time.time()-t0:.1f}s | title {title[:60]!r} | cookies {sorted(ck)} | "
+              f"in-page verify {verify['status']} bytes={verify['len']}",flush=True)
+        if verify["status"]!=200:
+            why=("OWN network egress filter (x-deny-reason=%s) — not Barchart"%verify["deny"] if verify.get("deny")
+                 else "AWS WAF challenge not cleared (x-amzn-waf-action=%s) — challenge did not solve in 40s"%verify["waf"] if verify.get("waf")
+                 else "Cloudflare challenge" if verify.get("cf") else "see body")
+            raise RuntimeError(f"in-page verify failed: HTTP {verify['status']} — {why} | cookies seen {sorted(ck)} | body {verify['body']!r}")
+        kept={k:v for k,v in ck.items() if k in _KEEP_COOKIES}
+        miss=[k for k in _REQUIRED_COOKIES if k not in kept]
+        if miss: raise RuntimeError(f"missing required cookies: {miss}")
+        return kept
+    kept=asyncio.run(_run())
+    os.makedirs(os.path.dirname(_MINT_PATH),exist_ok=True)
+    blob={"minted_at":int(time.time()),
+          "minted_at_iso":time.strftime("%Y-%m-%d %H:%M:%S UTC",time.gmtime()),
+          "user_agent":_UA,"cookies":kept}
+    with open(_MINT_PATH,"w") as f: json.dump(blob,f,indent=2)
+    print(f"saved {_MINT_PATH} ({len(kept)} cookies)")
+
+def _cli_install_ci():
+    """Bootstrap a brand-new repo from this one file: writes the mint workflow, the
+    cookie folder marker, and requirements.txt (only if missing). Never overwrites."""
+    wf=os.path.join(_APP_DIR,".github","workflows","mint-cookies.yml")
+    os.makedirs(os.path.dirname(wf),exist_ok=True)
+    with open(wf,"w") as f: f.write(_CI_YAML)
+    print("wrote",wf)
+    os.makedirs(os.path.dirname(_MINT_PATH),exist_ok=True)
+    gk=os.path.join(os.path.dirname(_MINT_PATH),".gitkeep")
+    open(gk,"a").close(); print("wrote",gk)
+    rq=os.path.join(_APP_DIR,"requirements.txt")
+    if os.path.exists(rq): print("kept existing",rq)
+    else:
+        with open(rq,"w") as f: f.write(_REQUIREMENTS)
+        print("wrote",rq)
+    print("\nNEXT: commit + push → GitHub → Actions → 'Mint Barchart cookies' → Run workflow.\n"
+          "Then in Streamlit Cloud → app → Settings → Secrets add:\n"
+          f'  BC_COOKIE_URL = "https://raw.githubusercontent.com/OWNER/REPO/{_COOKIE_BRANCH}/cookies.json"\n'
+          "  (private repo: also BC_COOKIE_TOKEN = a fine-grained PAT with Contents: read)")
+
+if __name__=="__main__" and "--mint" in sys.argv: _cli_mint(); sys.exit(0)
+if __name__=="__main__" and "--install-ci" in sys.argv: _cli_install_ci(); sys.exit(0)
+# ═══ end bootstrap — heavy imports below ═══════════════════════════════════════
 import datetime as dt, time as _time, warnings
-import sys, json
 import requests, numpy as np, pandas as pd
-import streamlit as st
+try:
+    import streamlit as st
+except ModuleNotFoundError:
+    if __name__=="__main__" and "--diag" in sys.argv:
+        class _NoSt:              # `--diag` shim: fetch diagnostics run in Colab/CI without Streamlit
+            session_state={}; secrets={}
+            def __getattr__(self,k): return lambda *a,**kw: None
+        st=_NoSt()
+    else: raise
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -544,17 +721,6 @@ def today_est():
 st.set_page_config(page_title="vs3d2 · SPX 0DTE (Barchart)", layout="wide")
 
 # ════════════════════════════ Barchart ══════════════════════════════════════
-_UA=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")      # == the mint UA (data_fetcher.py)
-_SECCHUA='"Chromium";v="120", "Google Chrome";v="120", "Not-A.Brand";v="99"'
-_IMPERSONATE="chrome120"      # UA / sec-ch-ua / TLS must agree WITH THE MINTED SESSION
-BASE="https://www.barchart.com"
-OPTIONS_URL=f"{BASE}/proxies/core-api/v1/options/get"
-QUOTE_URL=f"{BASE}/proxies/core-api/v1/quotes/get"            # legacy (no-cookie) path only
-BC_PAGE=f"{BASE}/stocks/quotes/$SPX/volatility-greeks"        # the page the cookies are minted on
-BC_FIELDS=("strikePrice,bidPrice,askPrice,optionType,volatility,delta,gamma,"
-           "openInterest,volume,baseLastPrice")
-CBOE_URL="https://cdn.cboe.com/api/global/delayed_quotes/options/_SPX.json"
 def _page(sym): return f"{BASE}/stocks/quotes/{sym.replace('$','%24')}/options"   # legacy
 
 # ═══ Barchart access — VERBATIM recipe of Faisal's working data_fetcher.py ═════
@@ -566,26 +732,56 @@ def _page(sym): return f"{BASE}/stocks/quotes/{sym.replace('$','%24')}/options" 
 # If cookies are absent/stale/rejected we fall back to CBOE delayed (~15 min) and
 # SAY SO in the UI — visible degradation, never a dead app, never silent.
 import os as _o, re as _re
-_APP_DIR=_o.path.dirname(_o.path.abspath(__file__)) if "__file__" in globals() else _o.getcwd()
-_MINT_PATHS=list(dict.fromkeys([_o.path.join(_APP_DIR,"data","session","cookies.json"),
-                                _o.path.join(_o.getcwd(),"data","session","cookies.json")]))  # deduped
-_MINT_PATH=_MINT_PATHS[0]
-_REQUIRED_COOKIES=("aws-waf-token","laravel_session")
-_KEEP_COOKIES=("aws-waf-token","laravel_session","bc_anon","bcFreeUserPageView")
+_BARE_STATE={}
+def _ss_get(k,d=None):
+    try: return st.session_state.get(k,d)
+    except Exception: return _BARE_STATE.get(k,d)
+def _ss_set(k,v):
+    try: st.session_state[k]=v
+    except Exception: _BARE_STATE[k]=v
+_MINT_PATHS=list(dict.fromkeys([_MINT_PATH,_o.path.join(_o.getcwd(),_MINT_REL)]))   # disk fallbacks
+def _cookie_cfg():
+    """BC_COOKIE_URL / BC_COOKIE_TOKEN from Streamlit secrets, else environment."""
+    url=tok=None
+    try:
+        url=st.secrets.get("BC_COOKIE_URL"); tok=st.secrets.get("BC_COOKIE_TOKEN")
+    except Exception: pass
+    return (url or _o.environ.get("BC_COOKIE_URL") or "").strip(), (tok or _o.environ.get("BC_COOKIE_TOKEN") or "").strip()
+def _valid_blob(blob,where):
+    ck=(blob or {}).get("cookies") or {}
+    if any(k not in ck for k in _REQUIRED_COOKIES):
+        _ss_set("bc_cookie_note",f"cookie blob at {where} lacks {_REQUIRED_COOKIES} — re-mint"); return None
+    blob["_path"]=where
+    try: blob["_age_min"]=(_time.time()-float(blob.get("minted_at",0)))/60.0
+    except Exception: blob["_age_min"]=float("nan")
+    _ss_set("bc_cookie_src",where); _ss_set("bc_cookie_note",None)
+    return blob
 def _load_minted():
-    """cookies.json blob (contract identical to data_fetcher._load_cookies): requires
-    aws-waf-token AND laravel_session; ALL blob cookies are sent as-is."""
+    """Minted cookie blob, in priority: (1) BC_COOKIE_URL — raw GitHub URL of the
+    orphan `cookies` branch published by the CI mint (the deployed branch never
+    moves, so the app never reboots); (2) data/session/cookies.json on disk.
+    Requires aws-waf-token AND laravel_session; ALL blob cookies are sent as-is."""
+    url,tok=_cookie_cfg()
+    if url:
+        try:
+            hdr={"accept":"application/json","user-agent":_UA}
+            if tok: hdr["authorization"]="token "+tok
+            r=requests.get(url,params={"v":int(_time.time()//60)},headers=hdr,timeout=10)   # ?v busts the 5-min raw cache
+            if r.status_code==200: return _valid_blob(r.json(),"url:"+url)
+            _ss_set("bc_cookie_note",f"BC_COOKIE_URL → HTTP {r.status_code} ("
+                    +("branch/file not published yet — run the mint workflow once" if r.status_code==404
+                      else "private repo needs BC_COOKIE_TOKEN" if r.status_code in (401,403) else "check the URL")+")")
+        except Exception as e:
+            _ss_set("bc_cookie_note",f"BC_COOKIE_URL fetch failed: {type(e).__name__}: {e}")
     for p in _MINT_PATHS:
         try:
             if not _o.path.exists(p): continue
             with open(p) as f: blob=json.load(f)
-            ck=blob.get("cookies") or {}
-            if any(k not in ck for k in _REQUIRED_COOKIES): return None
-            blob["_path"]=p
-            try: blob["_age_min"]=(_time.time()-float(blob.get("minted_at",0)))/60.0
-            except Exception: blob["_age_min"]=float("nan")
-            return blob
-        except Exception: continue
+            return _valid_blob(blob,p)
+        except Exception as e:
+            _ss_set("bc_cookie_note",f"{p}: {type(e).__name__}: {e}")
+    if not url and _ss_get("bc_cookie_note") is None:
+        _ss_set("bc_cookie_note","no BC_COOKIE_URL secret and no data/session/cookies.json")
     return None
 def _bc_headers(ua=None):
     """EXACT header set of the working fetcher. Origin + Sec-Fetch-Site: same-origin
@@ -829,13 +1025,18 @@ def fetch_book(n):
         except _BlockedError as e: notes.append(str(e))
         except Exception as e: notes.append(f"barchart(minted): {type(e).__name__}: {e}")
     else:
-        notes.append("no minted cookies found at "+" | ".join(_MINT_PATHS))
-        try:
-            s,h=init_session("$SPX"); sp=get_spot(s,h)
-            exps,chain=discover_expiries(s,h,n)
-            return "barchart-legacy",exps,chain,sp,notes
-        except _BlockedError as e: notes.append(str(e))
-        except Exception as e: notes.append(f"barchart(legacy): {type(e).__name__}: {e}")
+        notes.append("standalone mode: "+str(_ss_get("bc_cookie_note") or "no minted cookies"))
+        _lb=_ss_get("bc_legacy_blocked")
+        if _lb:
+            notes.append("barchart(legacy) skipped — blocked earlier this session: "+str(_lb)[:120])
+        else:
+            try:
+                s,h=init_session("$SPX"); sp=get_spot(s,h)
+                exps,chain=discover_expiries(s,h,n)
+                return "barchart-legacy",exps,chain,sp,notes
+            except _BlockedError as e:
+                _ss_set("bc_legacy_blocked",str(e)); notes.append(str(e))   # remember: no re-poke every 5 min
+            except Exception as e: notes.append(f"barchart(legacy): {type(e).__name__}: {e}")
     try:
         raw=_cboe_raw(); exps=_cboe_expirations(raw)
         found=[]; got=[]
@@ -860,7 +1061,7 @@ def _spot_from_bars():
 def _cli_diag():
     blob=_load_minted()
     print("cookies :",(f"{blob['_path']}  age {blob['_age_min']:.0f}m  keys {sorted(blob['cookies'])}"
-                       if blob else "NONE FOUND at "+" | ".join(_MINT_PATHS)))
+                       if blob else "NONE — "+str(_ss_get("bc_cookie_note"))))
     if blob:
         try:
             ex=_bc_expirations(blob); print(f"barchart(minted): 200 OK · expirations {ex[:4]} …")
@@ -872,41 +1073,7 @@ def _cli_diag():
         raw=_cboe_raw(); print(f"cboe    : {len(raw.get('options',[]))} contracts · close={raw.get('close')} · "
                                 f"expirations {_cboe_expirations(raw)[:4]} …")
     except Exception as e: print("cboe FAILED:",e)
-def _cli_mint():
-    """Solve the WAF challenge in a real browser (LAZY Playwright import), verify the
-    options API IN-PAGE, write the cookie blob. Mirrors data_fetcher.py --mint."""
-    import asyncio
-    async def _run():
-        from playwright.async_api import async_playwright
-        p=await async_playwright().start()
-        b=await p.chromium.launch(args=["--no-sandbox","--disable-dev-shm-usage",
-                                        "--disable-blink-features=AutomationControlled"])
-        ctx=await b.new_context(user_agent=_UA,viewport={"width":1440,"height":900},locale="en-US")
-        pg=await ctx.new_page(); t0=_time.time()
-        await pg.goto(BC_PAGE,wait_until="domcontentloaded",timeout=60000)
-        ck={}
-        for _ in range(40):        # WAF solves in-page, THEN the app sets laravel_session
-            ck={c["name"]:c["value"] for c in await ctx.cookies()}
-            if "laravel_session" in ck and "aws-waf-token" in ck: break
-            await pg.wait_for_timeout(1000)
-        verify=await pg.evaluate("""async (url)=>{const r=await fetch(url,{headers:{'Accept':'application/json'},credentials:'include'});return {status:r.status,len:(await r.text()).length};}""",
-            OPTIONS_URL+"?baseSymbol=%24SPX&groupBy=optionType&expirationDate=nearest&orderBy=strikePrice&orderDir=desc&raw=1&fields=strikePrice,gamma,openInterest,optionType")
-        await b.close(); await p.stop()
-        print(f"solve {_time.time()-t0:.1f}s | cookies {sorted(ck)} | in-page verify {verify['status']} bytes={verify['len']}")
-        if verify["status"]!=200: raise RuntimeError(f"in-page verify failed: {verify['status']}")
-        kept={k:v for k,v in ck.items() if k in _KEEP_COOKIES}
-        miss=[k for k in _REQUIRED_COOKIES if k not in kept]
-        if miss: raise RuntimeError(f"missing required cookies: {miss}")
-        return kept
-    kept=asyncio.run(_run())
-    _o.makedirs(_o.path.dirname(_MINT_PATH),exist_ok=True)
-    blob={"minted_at":int(_time.time()),
-          "minted_at_iso":_time.strftime("%Y-%m-%d %H:%M:%S UTC",_time.gmtime()),
-          "user_agent":_UA,"cookies":kept}
-    with open(_MINT_PATH,"w") as f: json.dump(blob,f,indent=2)
-    print(f"saved {_MINT_PATH} ({len(kept)} cookies)")
-if __name__=="__main__" and ("--diag" in sys.argv or "--mint" in sys.argv):
-    (_cli_mint() if "--mint" in sys.argv else _cli_diag()); sys.exit(0)
+if __name__=="__main__" and "--diag" in sys.argv: _cli_diag(); sys.exit(0)
 
 # ════════════════════════════ Greeks / weights ══════════════════════════════
 def bs_gamma(S,K,T,sig):
@@ -2075,6 +2242,11 @@ def fetch_vix_live():
 
 def take_snapshot(num_expiries):
     src,exps,chain,spot,notes=fetch_book(num_expiries)          # tiered, LOUD
+    if src=="cboe-delayed":
+        sp=_spot_from_bars()
+        if sp and sp>0:
+            notes.append(f"spot LIVE from CAPITALCOM:SPX500 1-min ({sp:,.2f}); CBOE delayed close was {spot}")
+            spot=sp
     if spot is None or not (spot>0):
         sp=_spot_from_bars()
         if sp: spot=sp; notes.append("spot from CAPITALCOM:SPX500 last close (chain carried no baseLastPrice)")
@@ -2201,7 +2373,10 @@ if c2.button("🗑 Clear",use_container_width=True):
     try: _os.remove(_state_path())
     except Exception: pass
     st.rerun()
-st.sidebar.caption(f"**vBC-0.2a** · {st.session_state.get('bc_source','no data yet')} · transport {st.session_state.get('bc_transport','—')} · "
+_SRC_LABEL={"barchart-minted":"Barchart LIVE (minted cookies)","barchart-legacy":"Barchart LIVE (legacy page/XSRF)",
+            "cboe-delayed":"CBOE delayed ~15m (standalone)"}
+st.sidebar.caption(f"**vBC-0.4** · {_SRC_LABEL.get(st.session_state.get('bc_source'),'no data yet')} · "
+                   f"cookies {('url' if str(st.session_state.get('bc_cookie_src','')).startswith('url:') else 'disk') if st.session_state.get('bc_cookie_src') else 'none'} · "
                    "snapshots in-memory + /tmp day-state · sign = dealer calls+/puts− · "
                    "volume unsigned · quotes as-of snapshot (Barchart may lag ~15m)")
 
@@ -2365,8 +2540,31 @@ m5.metric("Snapshot (EST)",sel_ts.strftime("%H:%M:%S"))
 _src=latest.get("src") or st.session_state.get("bc_source")
 _notes=st.session_state.get("bc_notes") or []
 if _src=="cboe-delayed":
-    st.warning("Data source: CBOE DELAYED (~15 min) — Barchart minted cookies missing/rejected. "
-               +(_notes[0][:260] if _notes else ""),icon="⚠️")
+    _rej=[n for n in _notes if "rejected" in n]
+    _live=[n for n in _notes if n.startswith("spot LIVE")]
+    if _rej:
+        st.warning("Barchart minted cookies REJECTED — serving CBOE delayed (~15 min). "+_rej[0][:240],icon="⚠️")
+    else:
+        st.info("Data source: CBOE delayed (~15 min) — backup mode. Chain / IV / OI / volume are as-of ~15 min ago"
+                +("; spot line is LIVE (TradingView)." if _live else "; spot is CBOE delayed close.")
+                +"  Barchart live: "+str(st.session_state.get("bc_cookie_note") or "not configured")+".",icon="ℹ️")
+        with st.expander("🔑 Turn on LIVE Barchart (one-time, ~10 min) — this file brings its own mint job",expanded=False):
+            st.markdown(
+                "Barchart sits behind AWS WAF; the only thing that works from a cloud IP is a session minted by a "
+                "real browser. A GitHub Actions job in **this repo** does that every 30 min and publishes one file on an "
+                f"orphan branch `{_COOKIE_BRANCH}` — the deployed branch never changes, so this app never reboots.\n\n"
+                "**1.** Add this file to the repo at `.github/workflows/mint-cookies.yml` "
+                "(or run `python vs3d2.py --install-ci` locally — it writes it, plus `requirements.txt` if missing):")
+            st.code(_CI_YAML,language="yaml")
+            st.markdown(
+                "**2.** GitHub → **Actions** → *Mint Barchart cookies* → **Run workflow**. Green run = "
+                f"`https://raw.githubusercontent.com/OWNER/REPO/{_COOKIE_BRANCH}/cookies.json` now exists.\n\n"
+                "**3.** Streamlit Cloud → this app → **Settings → Secrets**, add (replace OWNER/REPO):")
+            st.code(f'BC_COOKIE_URL = "https://raw.githubusercontent.com/OWNER/REPO/{_COOKIE_BRANCH}/cookies.json"\n'
+                    '# private repo only:\n# BC_COOKIE_TOKEN = "github_pat_…"   # fine-grained PAT, Contents: read',language="toml")
+            st.markdown("**4.** Next snapshot → sidebar says *Barchart LIVE (minted cookies)*. CBOE stays as the "
+                        "automatic backup if a mint ever fails.  \n`requirements.txt` needs: "
+                        +", ".join(l for l in _REQUIREMENTS.split() if l)+".")
 elif _src=="barchart-legacy":
     st.caption("source: Barchart via legacy page/XSRF (no minted cookie file) — works from "
                "residential IPs; on Cloud you want data/session/cookies.json from CI.")
