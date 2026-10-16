@@ -1,11 +1,11 @@
 {
-  "minted_at": 1792180815,
-  "minted_at_iso": "2026-10-16 20:00:15 UTC",
+  "minted_at": 1792190438,
+  "minted_at_iso": "2026-10-16 22:40:38 UTC",
   "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
   "cookies": {
-    "aws-waf-token": "bc720aa4-e811-43a9-a646-5b049e1167b3:EwoAntp9fXILEQAA:QIfVWXwjN/VxkEqpVMjGtEyzuaMNr1vVMIQdDsqaN2PW7E/2Zlm4gLLE3ZGepvTTvpblU9TLWYF3aRNbozqqDD1A3EEAuwsgSs437F9mWCbdlpNfYRWMIjsbYi5LpWM4aP/RNMZjkApdg90LvrnucsG5BHo5WziFTRNvvDm8Vtgg4GgJD2hAk04e285Cq5stDrUJxg4vDVXI/f9iA3c4c1uLrPidj9Oe2bhm54nKsQnHJIh/2SDMgSGdewYPHVsdFhGdRgpYPu3aiLWDGOc5dVHcwAAzNQ==",
+    "aws-waf-token": "bc720aa4-e811-43a9-a646-5b049e1167b3:EwoAkkCdC5m+AQAA:iTawEztXczgn4XtphHxaSrvM4SUbqkcJ3RRmyGxSRpc2Fi4rEJfntA7KgFXWbzjJ46GVlXqqDXnLZmwBOBv2KWO4icgAs1azz1L+oCRbhS5EiDl8UjuAu7iL+oL9nvsCHtJmdpgiYrEfS4YmEAVKfJ2mTWt9fOS2PSnSilYpf3M3OvloIsrDhsQDOT/PSbbEpul+Ef5vM/2cL/CJ6Ywpil2+poHNcxPxB+iMFUTFj3sZtaNqdQ+/Lh7ekHS1H/uT5JzMuiWzvREl6qmggR6FsDkkR5k1qA==",
     "bc_anon": "1",
-    "laravel_session": "eyJpdiI6IjIwM25iMmg3WFFXMVVDNmtBbGJQNXc9PSIsInZhbHVlIjoib3gzYW55d0pVTDNsYU02dm9PcmJJV2pmbGV0RXlESkVqZm5nOWdLRTlUMUJUSElhcXJBbmlFbHhIMjlKRmIwYVlxRXVyWENrVlM1bGdqeXluYkVYUkpjeU1ZdlE5SElrUVI5eVl6Y3RUVUhaQjlQeWFITjZMT2dZd3FjcUtVMXMiLCJtYWMiOiJmNDg0MzlhZjA3MDc2MmZmNDIwNTAyMjE4ZWUxZGEyYWE5OTgwY2U0Yzk0ZjRlYWU5YjBjNzgyN2ViYzkyMWE4IiwidGFnIjoiIn0%3D",
+    "laravel_session": "eyJpdiI6IlVOaTgycEpGMVM2VmRkOXlzZE9ldHc9PSIsInZhbHVlIjoidHl1ZXcrSjZZcGdPMmptejJCNXh2dEhBYkYvMVhuVEt3cjVTODJlL0o0VDZzNmRIVytTSjhCQ21zWVA3MXNSYmZBTjBvQ050U2FvUWlzK3lwODNVc2N5c2UwK1BYTHhoS3V3R0ZpL1ZwbzdNNzRzd3hwRVE1UHdJNkJJMSs5YW4iLCJtYWMiOiI5ODZlYzk5ZTVmZmYzMTU3OTRkZDgxOGRmZTg2ZTc2NTRlNTk1ZDFhNzk1ZjJhYjY1NmYxNTVjY2UxYjcwMjkxIiwidGFnIjoiIn0%3D",
     "bcFreeUserPageView": "0"
   }
 }
